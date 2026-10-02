@@ -7,41 +7,80 @@
 #ifndef OPG_MODELS_FAST_H
 #define OPG_MODELS_FAST_H
 
+#include <string>
+#include <vector>
+
 #include "opg/models/hermitian3.h"
 
 namespace opg {
 
+  /// Fast parameters with scalar type S (independent of the device precision).
+  template <class S> struct FastParams {
+      MixingParamsT<3, S> mix;
+  };
+
+  /// Fast prepared state with scalar type S.
+  template <class S> struct FastPrepared {
+      Hermitian3Common<S> common;
+  };
+
   template <class R = double> struct Fast {
-      using Real                   = R;
-      static constexpr int  N      = 3;
+      using Real                        = R;
+      static constexpr int         N    = 3;
       static constexpr const char* name = "Fast";
 
-      struct Params {
-          MixingParams<3> mix;
-      };
+      /// Derivative directions per gradient pass (see opg::grad_traits).
+#ifdef OPG_FAST_GRAD_CHUNK
+      static constexpr int grad_chunk = OPG_FAST_GRAD_CHUNK;
+#else
+      static constexpr int grad_chunk = 2;  // tuned on V100 (2 and 3 equal, 2 spills less)
+#endif
 
-      struct Prepared {
-          Hermitian3Common<R> common;
-      };
+      template <class S> using ParamsT   = FastParams<S>;
+      using Params                       = FastParams<double>;
+      template <class S> using PreparedT = FastPrepared<S>;
+      using Prepared                     = FastPrepared<R>;
 
-      static Prepared prepare(const Params& p)
+      /// Names of the differentiable parameters (MixingRegistry<3>):
+      /// th12, th13, th23, d13, dm21, dm31.
+      static std::vector<std::string> param_names()
       {
-        Prepared out;
-        prepare_hermitian3<R>(p.mix, out.common);
+        return MixingRegistry<3>::names();
+      }
+      template <class S> static S& param_ref(ParamsT<S>& p, int idx)
+      {
+        return MixingRegistry<3>::ref(p.mix, idx);
+      }
+      template <class S> static ParamsT<S> cast(const Params& p)
+      {
+        return ParamsT<S>{cast_mixing<S>(p.mix)};
+      }
+
+      template <class S> static PreparedT<S> prepare_generic(const ParamsT<S>& p)
+      {
+        PreparedT<S> out;
+        prepare_hermitian3_generic<S>(p.mix, out.common);
         return out;
       }
 
-      /// Port of PMNS_Fast::UpdateHam (upper triangle + diagonal).
-      OPG_HD OPG_INLINE static void hamiltonian(const Prepared& P, R E,
-                                                bool nubar, const Segment<R>& s,
-                                                Mat<3, R>& H)
+      static Prepared prepare(const Params& p)
       {
-        R lv = 2 * R(constants::kGeV2eV) * E;  // 2E in eV
+        return prepare_generic<R>(cast<R>(p));
+      }
 
-        R kr2GNe = P.common.vfac;
+      /// Port of PMNS_Fast::UpdateHam (upper triangle + diagonal), for any
+      /// scalar type S of the prepared state.
+      template <class S>
+      OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
+                                                bool nubar, const Segment<R>& s,
+                                                Mat<3, S>& H)
+      {
+        const S lv = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
+
+        S kr2GNe = P.common.vfac;
         kr2GNe *= s.density * s.zoa;  // Matter potential in eV
 
-        const Mat<3, R>& Hms = P.common.Hms;
+        const Mat<3, S>& Hms = P.common.Hms;
         OPG_UNROLL
         for (int i = 0; i < 3; i++) {
           H(i, i) = Hms(i, i) / lv;
@@ -70,8 +109,32 @@ namespace opg {
         hermitian3_step<Fast, R>(P, E, nubar, s, S);
       }
 
-      OPG_HD OPG_INLINE static void finalize(const Prepared&, bool,
-                                             Mat<3, R>&)
+      OPG_HD OPG_INLINE static void finalize(const Prepared&, bool, Mat<3, R>&) {}
+
+      // --- gradients ---------------------------------------------------------
+      template <int K>
+      OPG_HD OPG_INLINE static void initial_grad(const PreparedT<Dual<R, K>>&,
+                                                 bool, Mat<3, R> (&dS)[K])
+      {
+        OPG_UNROLL
+        for (int k = 0; k < K; k++) dS[k] = Mat<3, R>::zero();
+      }
+
+      template <int K>
+      OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
+                                              const PreparedT<Dual<R, K>>& PD,
+                                              R E, bool nubar,
+                                              const Segment<R>& s, Mat<3, R>& S,
+                                              Mat<3, R> (&dS)[K])
+      {
+        hermitian3_step_grad<Fast, R, K>(P, PD, E, nubar, s, S, dS);
+      }
+
+      template <int K>
+      OPG_HD OPG_INLINE static void finalize_grad(const Prepared&,
+                                                  const PreparedT<Dual<R, K>>&,
+                                                  bool, Mat<3, R>&,
+                                                  Mat<3, R> (&)[K])
       {
       }
   };

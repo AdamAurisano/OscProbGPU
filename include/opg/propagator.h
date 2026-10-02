@@ -19,8 +19,10 @@
 #ifndef OPG_PROPAGATOR_H
 #define OPG_PROPAGATOR_H
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <stdexcept>
 #include <vector>
 
@@ -94,8 +96,91 @@ namespace opg {
       /// Set the model parameters (runs Model::prepare on the host).
       void set_params(const Params& p)
       {
-        fPrepared    = Model::prepare(p);
-        fHaveParams  = true;
+        fParams     = p;
+        fPrepared   = Model::prepare(p);
+        fHaveParams = true;
+        fChunksValid = false;
+      }
+
+      //.......................................................................
+      // Gradients. Off unless parameters are selected with
+      // set_gradient_params(); probability-only calls are unaffected.
+
+      /// True if this model supports gradients (and they were compiled in).
+      static constexpr bool has_gradients() { return grad_traits<Model>::enabled; }
+
+      /// Names of the differentiable parameters of this model.
+      static std::vector<std::string> parameter_names()
+      {
+        if constexpr (grad_traits<Model>::enabled) return Model::param_names();
+        else return {};
+      }
+
+      /// Select the parameters to differentiate with respect to, by name
+      /// (see parameter_names()). An empty list turns gradients off and
+      /// frees the gradient buffers.
+      void set_gradient_params(const std::vector<std::string>& names)
+      {
+        if (!names.empty() && !has_gradients())
+          throw std::logic_error("opg::Propagator: gradients are not available "
+                                 "for this model (or were disabled at build "
+                                 "time)");
+        auto all = parameter_names();
+        std::vector<int> idx;
+        for (auto& n : names) {
+          auto it = std::find(all.begin(), all.end(), n);
+          if (it == all.end())
+            throw std::invalid_argument("opg::Propagator: unknown gradient "
+                                        "parameter '" + n + "'");
+          idx.push_back(int(it - all.begin()));
+        }
+        fGradNames   = names;
+        fGradIdx     = idx;
+        fChunksValid = false;
+        if (names.empty()) fChunks.clear();
+      }
+
+      const std::vector<std::string>& gradient_params() const { return fGradNames; }
+      size_t n_gradient_params() const { return fGradIdx.size(); }
+
+      /// Launch the grid computation; with gradient = true also compute
+      /// dP/dp for the selected parameters (see grad()).
+      void calculate(Flavor which, bool gradient)
+      {
+        if (!gradient) return calculate(which);
+        require_params();
+        fEngine->calculate_grad(fPrepared, chunks(), int(fGradIdx.size()), which);
+      }
+
+      /// Grid gradients grad[nubar][p][a][b][iC][iE] = dP(a -> b)/dp, with p
+      /// in the order given to set_gradient_params(). Waits for completion.
+      const R* grad() { return fEngine->host_grad(); }
+      const R* device_grad(int device_index = 0)
+      {
+        return fEngine->device_grad(device_index);
+      }
+      R grad(size_t p, int a, int b, size_t iC, size_t iE, bool nubar)
+      {
+        const R* g = grad();
+        return g[((((size_t(nubar) * fGradIdx.size() + p) * N + a) * N + b) *
+                      fNC + iC) * fNE + iE];
+      }
+
+      /// Weighted gradient on the grid: g[p] = sum w * dP/dp over all grid
+      /// points and channels, with w[nubar][a][b][iC][iE] (the layout of
+      /// probs()). Only the gradient vector is returned; no per-point
+      /// derivatives are stored. Typically w = dchi2/dP.
+      std::vector<R> weighted_gradient(const std::vector<R>& w,
+                                       Flavor which = Flavor::Both)
+      {
+        require_params();
+        if (w.size() != 2 * size_t(N) * N * fNC * fNE)
+          throw std::invalid_argument("weighted_gradient: weights must have "
+                                      "the layout of probs()");
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad(fPrepared, chunks(), int(fGradIdx.size()), which,
+                               w.data(), g.data());
+        return g;
       }
 
       const Prepared& prepared() const { return fPrepared; }
@@ -287,12 +372,56 @@ namespace opg {
                                  const std::vector<uint8_t>& nubar)
       {
         require_params();
-        if (E.size() != cosZ.size() || E.size() != nubar.size())
-          throw std::invalid_argument("prob_points: size mismatch");
+        check_points(E, cosZ, nubar);
         std::vector<R> out(size_t(N) * N * E.size());
         fEngine->prob_points(fPrepared, E.data(), cosZ.data(), nubar.data(),
                              E.size(), out.data());
         return out;
+      }
+
+      /// Event list with gradients: P[a][b][i] and dP[p][a][b][i].
+      void prob_points_grad(const std::vector<R>& E, const std::vector<R>& cosZ,
+                            const std::vector<uint8_t>& nubar, std::vector<R>& P,
+                            std::vector<R>& dP)
+      {
+        require_params();
+        check_points(E, cosZ, nubar);
+        P.assign(size_t(N) * N * E.size(), R(0));
+        dP.assign(fGradIdx.size() * N * N * E.size(), R(0));
+        fEngine->prob_points_grad(fPrepared, chunks(), int(fGradIdx.size()),
+                                  E.data(), cosZ.data(), nubar.data(), E.size(),
+                                  P.data(), dP.data());
+      }
+
+      /// Weighted gradient over an event list: g[p] = sum_i,ab w[a][b][i]
+      /// dP_ab(i)/dp.
+      std::vector<R> weighted_gradient_points(const std::vector<R>& E,
+                                              const std::vector<R>& cosZ,
+                                              const std::vector<uint8_t>& nubar,
+                                              const std::vector<R>& w)
+      {
+        require_params();
+        check_points(E, cosZ, nubar);
+        if (w.size() != size_t(N) * N * E.size())
+          throw std::invalid_argument("weighted_gradient_points: weights must "
+                                      "be [a][b][i]");
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad_points(fPrepared, chunks(), int(fGradIdx.size()),
+                                      E.data(), cosZ.data(), nubar.data(),
+                                      E.size(), w.data(), g.data());
+        return g;
+      }
+
+      /// Fixed path with gradients: P[a][b][iE] and dP[p][a][b][iE].
+      void prob_path_grad(const std::vector<R>& E, const std::vector<Segment<R>>& path,
+                          bool nubar, std::vector<R>& P, std::vector<R>& dP)
+      {
+        require_params();
+        P.assign(size_t(N) * N * E.size(), R(0));
+        dP.assign(fGradIdx.size() * N * N * E.size(), R(0));
+        fEngine->prob_path_grad(fPrepared, chunks(), int(fGradIdx.size()),
+                                E.data(), E.size(), path.data(), int(path.size()),
+                                nubar, P.data(), dP.data());
       }
 
       /// Fixed baseline through explicit segments. Returns out[a][b][iE].
@@ -307,6 +436,42 @@ namespace opg {
       }
 
     private:
+      static void check_points(const std::vector<R>& E, const std::vector<R>& C,
+                               const std::vector<uint8_t>& nb)
+      {
+        if (E.size() != C.size() || E.size() != nb.size())
+          throw std::invalid_argument("prob_points: size mismatch");
+      }
+
+      /// Gradient passes for the selected parameters (cached until the
+      /// parameters or the selection change).
+      const std::vector<GradChunk<Model>>& chunks()
+      {
+        if (fGradIdx.empty())
+          throw std::logic_error("opg::Propagator: no gradient parameters "
+                                 "selected (set_gradient_params)");
+        if constexpr (grad_traits<Model>::enabled) {
+          if (!fChunksValid) {
+            constexpr int K = grad_traits<Model>::K;
+            using D         = Dual<R, K>;
+            fChunks.clear();
+            for (size_t off = 0; off < fGradIdx.size(); off += K) {
+              auto pd = Model::template cast<D>(fParams);
+              int  cnt = int(std::min<size_t>(K, fGradIdx.size() - off));
+              for (int k = 0; k < cnt; k++)
+                Model::template param_ref<D>(pd, fGradIdx[off + k]).d[k] += R(1);
+              GradChunk<Model> c;
+              c.P      = Model::template prepare_generic<D>(pd);
+              c.offset = int(off);
+              c.count  = cnt;
+              fChunks.push_back(c);
+            }
+            fChunksValid = true;
+          }
+        }
+        return fChunks;
+      }
+
       void require_params() const
       {
         if (!fHaveParams)
@@ -317,6 +482,11 @@ namespace opg {
       PremModel                           fEarth;
       std::unique_ptr<EngineBase<Model>>  fEngine;
       Prepared                            fPrepared{};
+      Params                              fParams{};
+      std::vector<std::string>            fGradNames;
+      std::vector<int>                    fGradIdx;
+      std::vector<GradChunk<Model>>       fChunks;
+      bool                                fChunksValid = false;
       bool                                fHaveParams = false;
       size_t                              fNE = 0, fNC = 0;
       size_t                              fNEb = 0, fNCb = 0;

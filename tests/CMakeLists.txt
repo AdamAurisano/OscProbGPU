@@ -7,7 +7,8 @@ set(OPG_OSCPROB_DIR "${PROJECT_SOURCE_DIR}/../OscProb"
     CACHE PATH "Original OscProb sources (optional, for bitwise tests)")
 
 add_executable(opg_tests_cpu test_main.cpp test_core.cpp test_numerics.cpp
-                             test_models_cpu.cpp test_averaging.cpp)
+                             test_models_cpu.cpp test_averaging.cpp
+                             test_gradients.cpp)
 target_link_libraries(opg_tests_cpu PRIVATE oscprobgpu opg_doctest)
 
 # Compile the original Kopp eigensolvers (LGPL) into the test, if available,
@@ -36,7 +37,8 @@ set_tests_properties(cpu PROPERTIES LABELS "cpu")
 # GPU tests
 if(OPG_ENABLE_CUDA)
   add_executable(opg_tests_gpu test_main.cpp gpu/test_cuda_smoke.cu
-                               gpu/test_models_gpu.cpp gpu/test_averaging_gpu.cpp)
+                               gpu/test_models_gpu.cpp gpu/test_averaging_gpu.cpp
+                               gpu/test_gradients_gpu.cpp)
   target_link_libraries(opg_tests_gpu PRIVATE oscprobgpu opg_doctest
                                               CUDA::cudart)
   target_compile_definitions(

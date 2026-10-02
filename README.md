@@ -97,6 +97,7 @@ On pre-Ampere GPUs with old drivers (no PTX JIT), set
 | `OPG_ENABLE_CUDA`     | auto    | build the CUDA backend |
 | `OPG_ENABLE_PYTHON`   | OFF     | build the `oscprobgpu` Python module |
 | `OPG_ENABLE_TESTS`    | ON      | build the test suites |
+| `OPG_ENABLE_GRADIENTS`| ON      | compile the gradient code paths |
 | `OPG_OSCPROB_BITWISE` | OFF     | call the 3x3 eigensolver exactly as OscProb (bit-identical on CPU, ~2x slower) |
 | `OPG_OSCPROB_DIR`     | `../OscProb` | original sources, used only by tests (bitwise eigensolver check) |
 
@@ -163,6 +164,68 @@ Measured on the reference bins (`tests/test_averaging.cpp`), error vs order:
 
 (The E column is dominated by a 1–1.5 GeV core-crossing bin spanning ~2
 oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
+
+## Gradients
+
+Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
+**Status:** available for `Fast` (θ12, θ13, θ23, δ13, Δm²21, Δm²31); NSI, NUNM,
+Sterile and Decay, bin-averaged gradients and Earth Z/A parameters are planned.
+
+Gradients are **off unless requested**: probability-only calls run the same
+code as before and are unaffected, and gradient buffers are only allocated when
+gradients are computed. `-DOPG_ENABLE_GRADIENTS=OFF` compiles them out.
+
+```python
+p = opg.Fast(devices=[0])
+print(opg.Fast.parameter_names)   # ['th12', 'th13', 'th23', 'd13', 'dm21', 'dm31']
+p.set_gradient_params(["th23", "dm31", "d13"])   # [] turns gradients off
+p.set_grid(E, cosZ)
+
+p.calculate_gradient()            # probabilities + gradients
+P, G = p.probs(), p.grad()        # G[nubar, p, a, b, iC, iE] = dP(a->b)/dp
+
+# Weighted mode: only sum(w * dP/dp) is formed on the device
+g = p.weighted_gradient(w)        # w has the shape of probs(); g[p]
+
+P, dP = p.prob_points_grad(E_ev, cosZ_ev, nubar_ev)   # dP[p, a, b, i]
+g     = p.weighted_gradient_points(E_ev, cosZ_ev, nubar_ev, w_ev)
+P, dP = p.prob_path_grad(E, path)                     # fixed baseline
+```
+
+C++: `set_gradient_params()`, `calculate(Flavor, /*gradient=*/true)`, `grad()`,
+`weighted_gradient()`, `prob_points_grad()`, `weighted_gradient_points()`,
+`prob_path_grad()` on `opg::Propagator`.
+
+**Weighted mode.** A fit needs the gradient of a scalar such as χ², not every
+dP/dp: dχ²/dp = Σ w · dP/dp with w = ∂χ²/∂P (e.g. flux × cross-section ×
+exposure × ∂χ²/∂N for the bin of each point). Pass w, get one number per
+parameter. For a 10⁶-point grid this avoids storing and copying
+2 × N_par × 9 × 10⁶ derivatives (864 MB for 6 parameters). The sums are formed
+in a fixed order, so results are reproducible run to run.
+
+**Method.** Parameter dependence enters through the host-side prepared state,
+which is computed with forward-mode dual numbers (`opg::Dual`); the value parts
+are bit-identical to the plain computation. On each segment the value
+eigensystem is the usual one, and the derivative of U = exp(−iHL) follows from
+the Daleckii–Krein formula dU = V[(V†dH V) ∘ Γ]V†, with divided differences
+Γ evaluated stably for any eigenvalue separation. Derivatives are therefore
+exact (no step sizes) and well behaved at zero mixing angles and near
+degeneracies. Parameters are processed in passes of K = 2 directions.
+
+**Validation** (`tests/test_gradients.cpp`, `tests/gpu/test_gradients_gpu.cpp`,
+`python/tests/test_gradients.py`): against 4-point central differences
+computed entirely in long double, the maximum error relative to the largest
+derivative of each parameter is ≤ 6e-12 for generic parameters and ≤ 2.4e-10
+at θ13 = 0 or θ12 = 0 (PREM event lists, test path and vacuum, ν and ν̄; GPU
+and CPU). Probabilities are bit-identical with gradients on or off; GPU and CPU
+gradients agree to 4e-14; grid, event-list and weighted modes are consistent;
+multi-GPU results equal single-GPU results.
+
+**Cost** (1000 × 1000 grid, ν and ν̄, all 6 parameters, relative to a
+probability-only evaluation): ~10.5x on one V100 (0.25 s; 0.13 s on two),
+weighted mode ~12.6x including the upload of the weights (0.31 s; 0.19 s on two);
+~5.7x on the CPU. This is about 1.6 probability evaluations per parameter,
+cheaper than central finite differences (2 per parameter) and exact.
 
 ## Validation
 

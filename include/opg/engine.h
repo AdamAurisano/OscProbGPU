@@ -17,9 +17,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <vector>
 
 #include "opg/earth/prem.h"
+#include "opg/physics/grad.h"
 
 namespace opg {
 
@@ -55,7 +57,23 @@ namespace opg {
       int                 nglE = 0;
   };
 
+  /// One gradient pass: the prepared state in dual numbers, seeded with
+  /// parameters offset .. offset+count-1 (count <= grad_traits<Model>::K).
+  template <class Model> struct GradChunk {
+      typename grad_traits<Model>::Prepared P;
+      int                                   offset = 0;
+      int                                   count  = 0;
+  };
+
   template <class Model> class EngineBase {
+    protected:
+      [[noreturn]] static void no_grad()
+      {
+        throw std::logic_error(
+            "OscProbGPU: gradients are not available for this model/backend "
+            "(or were disabled at build time)");
+      }
+
     public:
       using R                = typename Model::Real;
       using Prepared         = typename Model::Prepared;
@@ -81,6 +99,50 @@ namespace opg {
       /// Host pointer to avg[2][N][N][nCbins][nEbins]
       virtual const R* host_binned() = 0;
       virtual const R* device_binned(int /*device_index*/) { return nullptr; }
+
+      // --- gradients --------------------------------------------------------
+      // Layouts: grid grad[nu][p][a][b][iC][iE]; points grad[p][a][b][i];
+      // path grad[p][a][b][iE]. Weighted modes return
+      //   g[p] = sum over points and channels of w * dP/dp,
+      // with w in the layout of the corresponding probabilities, summed in
+      // a fixed order (deterministic for a given device configuration).
+      using Chunks = std::vector<GradChunk<Model>>;
+
+      /// Grid probabilities and gradients (probs as in calculate()).
+      virtual void calculate_grad(const Prepared&, const Chunks&, int /*npar*/,
+                                  Flavor)
+      {
+        no_grad();
+      }
+      virtual const R* host_grad()
+      {
+        no_grad();
+        return nullptr;
+      }
+      virtual const R* device_grad(int) { return nullptr; }
+      virtual void     weighted_grad(const Prepared&, const Chunks&, int, Flavor,
+                                     const R* /*w*/, R* /*g*/)
+      {
+        no_grad();
+      }
+      virtual void prob_points_grad(const Prepared&, const Chunks&, int,
+                                    const R*, const R*, const uint8_t*, size_t,
+                                    R* /*P*/, R* /*G*/)
+      {
+        no_grad();
+      }
+      virtual void weighted_grad_points(const Prepared&, const Chunks&, int,
+                                        const R*, const R*, const uint8_t*,
+                                        size_t, const R* /*w*/, R* /*g*/)
+      {
+        no_grad();
+      }
+      virtual void prob_path_grad(const Prepared&, const Chunks&, int, const R*,
+                                  size_t, const Segment<R>*, int, bool,
+                                  R* /*P*/, R* /*G*/)
+      {
+        no_grad();
+      }
 
       // --- one-shot modes ---------------------------------------------------
       /// Event list: out[a][b][i], i < n

@@ -23,6 +23,8 @@ endif()
 option(OPG_ENABLE_CUDA "Build the CUDA backend" ${_opg_cuda_default})
 option(OPG_ENABLE_TESTS "Build the test suite" ON)
 option(OPG_ENABLE_PYTHON "Build the Python bindings" OFF)
+option(OPG_ENABLE_GRADIENTS
+       "Compile the gradient (derivative) code paths" ON)
 option(OPG_OSCPROB_BITWISE
        "Use OscProb's exact eigensolver call (bit-identical on CPU, ~2x slower)"
        OFF)
@@ -57,6 +59,9 @@ if(OpenMP_CXX_FOUND)
 endif()
 if(OPG_OSCPROB_BITWISE)
   target_compile_definitions(opg_core INTERFACE OPG_OSCPROB_BITWISE)
+endif()
+if(NOT OPG_ENABLE_GRADIENTS)
+  target_compile_definitions(opg_core INTERFACE OPG_DISABLE_GRADIENTS)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -17,5 +17,5 @@ tar czf - --exclude='./build*' --exclude='./.git' --exclude='./wheelhouse' \
     --exclude='__pycache__' . |
   ssh -o BatchMode=yes -o ConnectTimeout=20 "$REMOTE_HOST" \
     "mkdir -p '$REMOTE_DIR' && cd '$REMOTE_DIR' && tar xzmf - 1>&2 && \
-     find . -path ./build -prune -o -type f -exec touch {} + 1>&2 && \
+     find . -path './build*' -prune -o -type f -exec touch {} + 1>&2 && \
      echo synced to \$(hostname):$REMOTE_DIR 1>&2"

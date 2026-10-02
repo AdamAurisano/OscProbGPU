@@ -15,6 +15,7 @@
 
 #include <cmath>
 
+#include "opg/core/dual.h"
 #include "opg/core/macros.h"
 
 namespace opg {
@@ -57,7 +58,36 @@ namespace opg {
         im /= s;
         return *this;
       }
+      /// Adds a real number (to the real part), as std::complex.
+      OPG_HD OPG_INLINE Complex& operator+=(Real s)
+      {
+        re += s;
+        return *this;
+      }
+      OPG_HD OPG_INLINE Complex& operator-=(Real s)
+      {
+        re -= s;
+        return *this;
+      }
   };
+
+  template <class R> OPG_HD OPG_INLINE Complex<R> operator+(Complex<R> a, R s)
+  {
+    return a += s;
+  }
+  template <class R> OPG_HD OPG_INLINE Complex<R> operator-(Complex<R> a, R s)
+  {
+    return a -= s;
+  }
+  template <class R> OPG_HD OPG_INLINE Complex<R> operator+(R s, const Complex<R>& a)
+  {
+    return Complex<R>(s + a.re, a.im);
+  }
+  /// real - complex, as std::complex: (s - re, -im)
+  template <class R> OPG_HD OPG_INLINE Complex<R> operator-(R s, const Complex<R>& a)
+  {
+    return Complex<R>(s - a.re, -a.im);
+  }
 
   template <class R>
   OPG_HD OPG_INLINE Complex<R> operator+(Complex<R> a, const Complex<R>& b)
@@ -90,7 +120,8 @@ namespace opg {
   OPG_HD OPG_INLINE Complex<R> operator/(const Complex<R>& a, const Complex<R>& b)
   {
     // Smith's algorithm (robust against overflow), as used by most libms.
-    if (std::fabs(b.re) >= std::fabs(b.im)) {
+    using std::fabs;
+    if (fabs(b.re) >= fabs(b.im)) {
       R r = b.im / b.re;
       R d = b.re + b.im * r;
       return Complex<R>((a.re + a.im * r) / d, (a.im - a.re * r) / d);
@@ -122,12 +153,15 @@ namespace opg {
   }
   template <class R> OPG_HD OPG_INLINE R abs(const Complex<R>& a)
   {
-    return std::hypot(a.re, a.im);
+    using std::hypot;
+    return hypot(a.re, a.im);
   }
   /// exp(i*phi)
   template <class R> OPG_HD OPG_INLINE Complex<R> expi(R phi)
   {
-    return Complex<R>(std::cos(phi), std::sin(phi));
+    using std::cos;
+    using std::sin;
+    return Complex<R>(cos(phi), sin(phi));
   }
 
 } // namespace opg

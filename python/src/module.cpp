@@ -223,6 +223,80 @@ namespace {
              "energies"_a, "path"_a, "nubar"_a = false,
              "Fixed path given as rows (length km, density, [zoa, layer]); "
              "returns P[a, b, iE].")
+        // gradients
+        .def_prop_ro_static("parameter_names",
+                            [](nb::handle) { return opg::Propagator<Model>::parameter_names(); },
+                            "Names of the differentiable parameters.")
+        .def_prop_ro_static("has_gradients",
+                            [](nb::handle) { return opg::Propagator<Model>::has_gradients(); })
+        .def("set_gradient_params",
+             [](W& w, const std::vector<std::string>& names) {
+               w.prop.set_gradient_params(names);
+             },
+             "names"_a,
+             "Select parameters to differentiate (empty list = gradients off).")
+        .def_prop_ro("gradient_params", [](W& w) { return w.prop.gradient_params(); })
+        .def("calculate_gradient",
+             [](W& w, const std::string& fl) {
+               w.sync();
+               w.prop.calculate(parse_flavor(fl), true);
+             },
+             "flavor"_a = "both",
+             "Grid probabilities and gradients (see probs() and grad()).")
+        .def("grad",
+             [](W& w) {
+               const double* g  = w.prop.grad();
+               size_t        np = w.prop.n_gradient_params();
+               size_t        n  = 2 * np * N * N * w.prop.n_cosines() * w.prop.n_energies();
+               return make_array(std::vector<double>(g, g + n),
+                                 {2, np, N, N, w.prop.n_cosines(), w.prop.n_energies()});
+             },
+             "Grid gradients G[nubar, p, a, b, iC, iE] = dP(a -> b)/dp (copy).")
+        .def("weighted_gradient",
+             [](W& w, nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
+                const std::string& fl) {
+               w.sync();
+               std::vector<double> v(wt.data(), wt.data() + wt.size());
+               auto g = w.prop.weighted_gradient(v, parse_flavor(fl));
+               return make_array(std::move(g), {g.size()});
+             },
+             "weights"_a, "flavor"_a = "both",
+             "sum of weights * dP/dp over the grid; weights have the shape of "
+             "probs(). Returns one value per gradient parameter.")
+        .def("prob_points_grad",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_) {
+               w.sync();
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               std::vector<double>  P, dP;
+               w.prop.prob_points_grad(to_vec(E), to_vec(C), nbv, P, dP);
+               size_t np = w.prop.n_gradient_params();
+               return nb::make_tuple(make_array(std::move(P), {N, N, E.shape(0)}),
+                                     make_array(std::move(dP), {np, N, N, E.shape(0)}));
+             },
+             "energies"_a, "cosines"_a, "nubar"_a,
+             "Event list: returns (P[a, b, i], dP[p, a, b, i]).")
+        .def("weighted_gradient_points",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_,
+                nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt) {
+               w.sync();
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               std::vector<double>  v(wt.data(), wt.data() + wt.size());
+               auto g = w.prop.weighted_gradient_points(to_vec(E), to_vec(C), nbv, v);
+               return make_array(std::move(g), {g.size()});
+             },
+             "energies"_a, "cosines"_a, "nubar"_a, "weights"_a,
+             "sum of weights[a, b, i] * dP_ab(i)/dp over an event list.")
+        .def("prob_path_grad",
+             [](W& w, Arr1 E, Arr2 seg, bool nubar) {
+               w.sync();
+               std::vector<double> P, dP;
+               w.prop.prob_path_grad(to_vec(E), to_path(seg), nubar, P, dP);
+               size_t np = w.prop.n_gradient_params();
+               return nb::make_tuple(make_array(std::move(P), {N, N, E.shape(0)}),
+                                     make_array(std::move(dP), {np, N, N, E.shape(0)}));
+             },
+             "energies"_a, "path"_a, "nubar"_a = false,
+             "Fixed path: returns (P[a, b, iE], dP[p, a, b, iE]).")
         .def("avg_path",
              [](W& w, Arr1 Ee, int nE, Arr2 seg, bool nubar, const std::string& meas) {
                w.sync();

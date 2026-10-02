@@ -108,6 +108,48 @@ namespace {
                 Model::name, dev.empty() ? "cpu" : "cuda", nEb, nCb, ngl, t);
   }
 
+  /// Gradient throughput: full grid gradients and weighted gradient.
+  template <class Model>
+  void run_grad(typename Model::Params p, int nE, int nC, const std::vector<int>& dev,
+                int reps)
+  {
+    using R = typename Model::Real;
+    std::vector<R> E(nE), C(nC);
+    for (int i = 0; i < nE; i++) E[i] = R(std::pow(10.0, -0.5 + 2.5 * i / (nE - 1.0)));
+    for (int i = 0; i < nC; i++) C[i] = R(-1 + 1.0 * i / (nC - 1.0));
+    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    prop.set_grid(E, C);
+    prop.set_params(p);
+    auto names = Model::param_names();
+    prop.set_gradient_params(names);
+    std::vector<R> w(2 * Model::N * Model::N * size_t(nE) * nC, R(1e-3));
+    using clk = std::chrono::steady_clock;
+    prop.calculate(opg::Flavor::Both, true);
+    prop.wait();
+    prop.weighted_gradient(w);
+    double tfull = 1e30, tw = 1e30, tp = 1e30;
+    for (int r = 0; r < reps; r++) {
+      p.mix.th[1][2] *= 1.0 + 1e-6;
+      prop.set_params(p);
+      auto a = clk::now();
+      prop.calculate();
+      prop.wait();
+      auto b = clk::now();
+      prop.calculate(opg::Flavor::Both, true);
+      prop.wait();
+      auto c = clk::now();
+      prop.weighted_gradient(w);
+      auto d = clk::now();
+      tp    = std::min(tp, std::chrono::duration<double>(b - a).count());
+      tfull = std::min(tfull, std::chrono::duration<double>(c - b).count());
+      tw    = std::min(tw, std::chrono::duration<double>(d - c).count());
+    }
+    std::printf("%-8s grad   backend=%-5s grid=%dx%d x2, %zu params (K=%d): P only %.4fs, "
+                "P+full grad %.4fs (%.1fx), weighted grad %.4fs (%.1fx)\n",
+                Model::name, dev.empty() ? "cpu" : "cuda", nE, nC, names.size(),
+                opg::grad_traits<Model>::K, tp, tfull, tfull / tp, tw, tw / tp);
+  }
+
   template <class Model> typename Model::Params nominal_params()
   {
     typename Model::Params p;
@@ -158,6 +200,9 @@ int main(int argc, char** argv)
     auto p = nominal_params<opg::Decay<double>>();
     p.SetAlpha3(1e-4);
     run<opg::Decay<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad")) {
+    run_grad<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), nE, nC, dev, reps);
   }
   if (want("binned")) {
     run_binned<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 40, 20, 8,
