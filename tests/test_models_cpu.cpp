@@ -13,7 +13,7 @@ namespace {
 
   template <class Model>
   void check_all(opg::Propagator<Model>& prop, const std::string& tag,
-                 double tol = kTolCPU)
+                 double tol = kTolCPU, bool bitwise_port = false)
   {
     auto rt = refcmp::compare_path(prop, tag + "_testpath.npy", refcmp::test_path());
     auto rv = refcmp::compare_path(prop, tag + "_vacuum.npy", refcmp::vacuum_path());
@@ -28,6 +28,17 @@ namespace {
     CHECK(rv.max_abs < tol);
     CHECK(rp.max_abs < tol);
     CHECK(re.max_abs < tol);
+#ifdef OPG_OSCPROB_BITWISE
+    // Exact ports of OscProb's arithmetic reproduce it bit for bit.
+    if (bitwise_port) {
+      CHECK(rt.n_exact == rt.n);
+      CHECK(rv.n_exact == rv.n);
+      CHECK(rp.n_exact == rp.n);
+      CHECK(re.n_exact == re.n);
+    }
+#else
+    (void)bitwise_port;
+#endif
   }
 
 } // namespace
@@ -40,29 +51,29 @@ TEST_CASE("Fast (CPU) matches OscProb PMNS_Fast")
   M::Params p;
   p.mix = variants::nominal_mix<3>();
   prop.set_params(p);
-  check_all(prop, "fast");
+  check_all(prop, "fast", kTolCPU, true);
 
   p.mix = variants::fast_io_mix();
   prop.set_params(p);
-  check_all(prop, "fast_io");
+  check_all(prop, "fast_io", kTolCPU, true);
 }
 
 TEST_CASE("NSI (CPU) matches OscProb PMNS_NSI")
 {
   opg::Propagator<opg::NSI<>> prop;
   prop.set_params(variants::nsi());
-  check_all(prop, "nsi");
+  check_all(prop, "nsi", kTolCPU, true);
   prop.set_params(variants::nsi_phases());
-  check_all(prop, "nsi_phases");
+  check_all(prop, "nsi_phases", kTolCPU, true);
 }
 
 TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
 {
   opg::Propagator<opg::NUNM<>> prop;
   prop.set_params(variants::nunm(0));
-  check_all(prop, "nunm");
+  check_all(prop, "nunm", kTolCPU, true);
   prop.set_params(variants::nunm_phases());
-  check_all(prop, "nunm_phases");
+  check_all(prop, "nunm_phases", kTolCPU, true);
   prop.set_params(variants::nunm(1));
   check_all(prop, "nunm_high");
 }

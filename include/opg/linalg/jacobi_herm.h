@@ -35,19 +35,27 @@ namespace opg {
 
     // Convergence threshold relative to the Frobenius norm.
     R fro2 = 0;
+    OPG_UNROLL
     for (int i = 0; i < N; i++)
-      for (int j = 0; j < N; j++) fro2 += norm(A(i, j));
+      OPG_UNROLL
+    for (int j = 0; j < N; j++) fro2 += norm(A(i, j));
     const R eps  = kopp::Eps<R>::value;
     const R tol2 = eps * eps * fro2 * R(1e-2);
 
     int sweep = 0;
     for (; sweep < max_sweeps; sweep++) {
       R off2 = 0;
+      OPG_UNROLL
       for (int p = 0; p < N; p++)
-        for (int q = p + 1; q < N; q++) off2 += norm(A(p, q));
+        OPG_UNROLL
+      for (int q = p + 1; q < N; q++) off2 += norm(A(p, q));
       if (off2 <= tol2) break;
 
+      // All loops below are fully unrolled so that every matrix index is a
+      // compile-time constant and A, V stay in registers on the GPU.
+      OPG_UNROLL
       for (int p = 0; p < N - 1; p++) {
+        OPG_UNROLL
         for (int q = p + 1; q < N; q++) {
           const Complex<R> apq = A(p, q);
           const R          r   = abs(apq);
@@ -80,6 +88,7 @@ namespace opg {
           A(p, q)    = Complex<R>(0, 0);
           A(q, p)    = Complex<R>(0, 0);
 
+          OPG_UNROLL
           for (int k = 0; k < N; k++) {
             if (k == p || k == q) continue;
             const Complex<R> g = A(k, p);
@@ -91,6 +100,7 @@ namespace opg {
           }
 
           // V <- V J
+          OPG_UNROLL
           for (int k = 0; k < N; k++) {
             const Complex<R> g = V(k, p);
             const Complex<R> h = V(k, q) * conj(e);
@@ -101,6 +111,7 @@ namespace opg {
       }
     }
 
+    OPG_UNROLL
     for (int i = 0; i < N; i++) w[i] = A(i, i).re;
     return sweep < max_sweeps ? sweep : -1;
   }

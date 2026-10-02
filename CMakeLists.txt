@@ -23,6 +23,9 @@ endif()
 option(OPG_ENABLE_CUDA "Build the CUDA backend" ${_opg_cuda_default})
 option(OPG_ENABLE_TESTS "Build the test suite" ON)
 option(OPG_ENABLE_PYTHON "Build the Python bindings" OFF)
+option(OPG_OSCPROB_BITWISE
+       "Use OscProb's exact eigensolver call (bit-identical on CPU, ~2x slower)"
+       OFF)
 
 if(OPG_ENABLE_CUDA)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
@@ -51,6 +54,9 @@ target_compile_definitions(
   opg_core INTERFACE OPG_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
 if(OpenMP_CXX_FOUND)
   target_link_libraries(opg_core INTERFACE OpenMP::OpenMP_CXX)
+endif()
+if(OPG_OSCPROB_BITWISE)
+  target_compile_definitions(opg_core INTERFACE OPG_OSCPROB_BITWISE)
 endif()
 
 # ---------------------------------------------------------------------------

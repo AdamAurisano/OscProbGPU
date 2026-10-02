@@ -263,7 +263,9 @@ namespace opg {
           G.host.resize(G.probs.n);
           OPG_CUDA(cudaStreamSynchronize(D.stream));
         }
-        if (nd > 1) fProbs.assign(2 * N * N * fNC * fNE, R(0));
+        if (nd > 1) fProbs.resize(2 * N * N * fNC * fNE);
+        // (single device: the slab's own pinned buffer is used)
+        for (size_t k = 0; k < nd && nd > 1; k++) fDev[k]->grid.host.release();
         fHostValid = false;
       }
 
@@ -332,7 +334,8 @@ namespace opg {
           D.binned.host.resize(D.binned.probs.n);
           OPG_CUDA(cudaStreamSynchronize(D.stream));
         }
-        if (nd > 1) fBinned.assign(2 * N * N * B.nCb * B.nEb, R(0));
+        if (nd > 1) fBinned.resize(2 * N * N * B.nCb * B.nEb);
+        for (size_t k = 0; k < nd && nd > 1; k++) fDev[k]->binned.host.release();
         fBinnedValid = false;
       }
 
@@ -460,36 +463,39 @@ namespace opg {
         OPG_CUDA(cudaGetLastError());
       }
 
-      /// Copy each device's slab (selected by member pointer) to the host and
-      /// gather its rows into full[2*N*N][nrows][ncols].
+      /// Copy each device's slab (selected by member pointer) to the host.
+      /// With one device the slab's pinned buffer is the result. With several,
+      /// rows were dealt round-robin (row r of device k is global row
+      /// k + r*nd), so each channel is one strided 2D copy straight into the
+      /// pinned full array full[2*N*N][nrows][ncols].
       const R* gather(Slab Device::*which, size_t nrows, size_t ncols,
-                      std::vector<R>& full, bool& valid)
+                      PinnedBuf<R>& full, bool& valid)
       {
-        if (valid) return fDev.size() == 1 ? (fDev[0].get()->*which).host.ptr
-                                           : full.data();
-        for (auto& Dp : fDev) {
-          Device& D = *Dp;
+        const size_t nd = fDev.size();
+        if (valid) return nd == 1 ? (fDev[0].get()->*which).host.ptr : full.ptr;
+        for (size_t k = 0; k < nd; k++) {
+          Device& D = *fDev[k];
           Slab&   G = D.*which;
           if (G.probs.n == 0) continue;
           OPG_CUDA(cudaSetDevice(D.id));
-          OPG_CUDA(cudaMemcpyAsync(G.host.ptr, G.probs.ptr, G.probs.n * sizeof(R),
-                                   cudaMemcpyDeviceToHost, D.stream));
-        }
-        for (auto& Dp : fDev) {
-          Device& D = *Dp;
-          Slab&   G = D.*which;
-          OPG_CUDA(cudaSetDevice(D.id));
-          OPG_CUDA(cudaStreamSynchronize(D.stream));
-          if (fDev.size() == 1) continue;  // pinned buffer is the result
+          if (nd == 1) {
+            OPG_CUDA(cudaMemcpyAsync(G.host.ptr, G.probs.ptr, G.probs.n * sizeof(R),
+                                     cudaMemcpyDeviceToHost, D.stream));
+            continue;
+          }
           const size_t nr = G.rows.size();
           for (size_t ch = 0; ch < size_t(2 * N * N); ch++)
-            for (size_t r = 0; r < nr; r++)
-              std::copy(G.host.ptr + (ch * nr + r) * ncols,
-                        G.host.ptr + (ch * nr + r + 1) * ncols,
-                        full.begin() + (ch * nrows + G.rows[r]) * ncols);
+            OPG_CUDA(cudaMemcpy2DAsync(
+                full.ptr + (ch * nrows + k) * ncols, nd * ncols * sizeof(R),
+                G.probs.ptr + ch * nr * ncols, ncols * sizeof(R),
+                ncols * sizeof(R), nr, cudaMemcpyDeviceToHost, D.stream));
+        }
+        for (auto& Dp : fDev) {
+          OPG_CUDA(cudaSetDevice(Dp->id));
+          OPG_CUDA(cudaStreamSynchronize(Dp->stream));
         }
         valid = true;
-        return fDev.size() == 1 ? (fDev[0].get()->*which).host.ptr : full.data();
+        return nd == 1 ? (fDev[0].get()->*which).host.ptr : full.ptr;
       }
 
       /// Copy per-device [a][b][i] chunks into out[a][b][i] (i < n).
@@ -518,7 +524,7 @@ namespace opg {
       }
 
       std::vector<std::unique_ptr<Device>> fDev;
-      std::vector<R>                       fProbs, fBinned;
+      PinnedBuf<R>                         fProbs, fBinned;  ///< multi-GPU results
       BinSpec<R>                           fBins;
       size_t                               fNE = 0, fNC = 0;
       bool                                 fHaveEarth   = false;

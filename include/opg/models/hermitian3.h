@@ -81,14 +81,24 @@ namespace opg {
 
   /// Diagonalise a hermitian 3x3 matrix (upper triangle) with zheevh3.
   ///
-  /// In double precision this is exactly OscProb's call. Hamiltonians in eV
-  /// are O(1e-12), so in single precision the cubic invariants used by
-  /// Cardano's method (~1e-36) underflow; for float we therefore rescale H
-  /// to O(1) before diagonalising and scale the eigenvalues back.
+  /// Hamiltonians in eV are O(1e-12). Kopp's zheevh3 decides whether to
+  /// trust Cardano's analytic solution with an absolute error estimate made
+  /// for O(1) matrices, so OscProb, which calls it on the raw Hamiltonian,
+  /// always falls back to the slower iterative QL algorithm (and in single
+  /// precision the cubic invariants would underflow). We therefore rescale
+  /// H to O(1) first; near-degenerate cases still fall back to QL. This is
+  /// ~2x faster on GPUs and agrees with OscProb to round-off (~1e-13 in P).
+  /// Define OPG_OSCPROB_BITWISE (CMake option of the same name) to call
+  /// zheevh3 on the unscaled matrix in double precision, which reproduces
+  /// OscProb bit-for-bit on the CPU.
   template <class R>
   OPG_HD OPG_INLINE void diagonalize3(Mat<3, R>& H, Mat<3, R>& V, R lam[3])
   {
+#ifdef OPG_OSCPROB_BITWISE
     if constexpr (sizeof(R) < sizeof(double)) {
+#else
+    if constexpr (true) {
+#endif
       R sc = 0;
       OPG_UNROLL
       for (int i = 0; i < 3; i++)

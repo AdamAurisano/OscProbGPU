@@ -81,6 +81,40 @@ namespace {
                 npts / tcalc);
   }
 
+  template <class Model>
+  void run_binned(typename Model::Params p, int nEb, int nCb, int ngl,
+                  const std::vector<int>& dev, int reps)
+  {
+    std::vector<double> Ee(nEb + 1), Ce(nCb + 1);
+    for (int i = 0; i <= nEb; i++) Ee[i] = std::pow(10.0, -0.5 + 2.5 * i / nEb);
+    for (int i = 0; i <= nCb; i++) Ce[i] = -1 + 1.0 * i / nCb;
+    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    prop.set_params(p);
+    prop.set_bins(Ee, Ce, ngl, ngl, opg::EMeasure::Log);
+    prop.calculate_binned();
+    prop.binned();
+    using clk = std::chrono::steady_clock;
+    double t  = 1e30;
+    for (int r = 0; r < reps; r++) {
+      p.mix.th[1][2] *= 1.0 + 1e-6;
+      auto a = clk::now();
+      prop.set_params(p);
+      prop.calculate_binned();
+      prop.binned();
+      t = std::min(t, std::chrono::duration<double>(clk::now() - a).count());
+    }
+    std::printf("%-8s binned backend=%-5s %dx%d bins, %d GL nodes/dir/piece (layer-adapted): "
+                "%.4fs per evaluation (incl. D2H)\n",
+                Model::name, dev.empty() ? "cpu" : "cuda", nEb, nCb, ngl, t);
+  }
+
+  template <class Model> typename Model::Params nominal_params()
+  {
+    typename Model::Params p;
+    opg::set_std_pars(p.mix);
+    return p;
+  }
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -91,8 +125,9 @@ int main(int argc, char** argv)
   int         reps  = argc > 4 ? std::atoi(argv[4]) : 5;
   std::string model = argc > 5 ? argv[5] : "fast";
   auto        dev   = parse_devices(devs);
+  auto        want  = [&](const char* m) { return model == m || model == "all"; };
 
-  if (model == "fast" || model == "all") {
+  if (want("fast")) {
     opg::Fast<double>::Params p;
     p.mix = nominal3();
     run<opg::Fast<double>>(p, nE, nC, dev, reps);
@@ -101,6 +136,32 @@ int main(int argc, char** argv)
       pf.mix = nominal3();
       run<opg::Fast<float>>(pf, nE, nC, dev, reps);
     }
+  }
+  if (want("nsi")) {
+    auto p = nominal_params<opg::NSI<double>>();
+    p.SetEps(0, 1, 0.1, 0.3);
+    p.SetEps(0, 2, 0.1, 0);
+    run<opg::NSI<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("nunm")) {
+    auto p = nominal_params<opg::NUNM<double>>();
+    p.SetAlpha(1, 0, 0.02, 0.1);
+    run<opg::NUNM<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("sterile")) {
+    auto p = nominal_params<opg::Sterile<double>>();
+    p.mix.SetDm(4, 1.0);
+    p.mix.SetAngle(2, 4, 0.1);
+    run<opg::Sterile<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("decay")) {
+    auto p = nominal_params<opg::Decay<double>>();
+    p.SetAlpha3(1e-4);
+    run<opg::Decay<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("binned")) {
+    run_binned<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 40, 20, 8,
+                                  dev, reps);
   }
   return 0;
 }
