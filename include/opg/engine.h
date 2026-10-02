@@ -8,6 +8,7 @@
 ///   grid   : probs[nu][a][b][iC][iE]   nu = 0 (neutrino) / 1 (antineutrino)
 ///   points : out[a][b][i]
 ///   path   : out[a][b][iE]
+///   binned : avg[nu][a][b][iCbin][iEbin]
 /// where P(a -> b) and a, b are flavour indices (0=e, 1=mu, 2=tau, 3=s).
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -32,6 +33,28 @@ namespace opg {
     InvE   = 2   ///< uniform in 1/E (i.e. in L/E at fixed L)
   };
 
+  /// How the cosZ direction of a bin is integrated.
+  enum class CosZRule : int {
+    /// Plain Gauss-Legendre in cosZ on each bin.
+    Plain = 0,
+    /// Split each bin at the cosines where trajectories graze an Earth layer
+    /// boundary (where P(cosZ) has square-root kinks) and use Gauss-Legendre
+    /// in u with cosZ = a + (b-a)(1 - cos(pi u))/2 on each piece, which
+    /// restores fast convergence. Default.
+    LayerAdapted = 1
+  };
+
+  /// Quadrature node grid for bin averaging (built by Propagator).
+  /// Nodes of E bin b are nodesE[b*nglE .. (b+1)*nglE); cosZ bin c owns
+  /// nodesC[offC[c] .. offC[c+1]) (a variable number with LayerAdapted).
+  /// Weights are normalised to sum to 1 within each bin.
+  template <class R> struct BinSpec {
+      std::vector<R>      nodesE, wE, nodesC, wC;
+      std::vector<size_t> offC;  ///< size nCb + 1
+      size_t              nEb = 0, nCb = 0;
+      int                 nglE = 0;
+  };
+
   template <class Model> class EngineBase {
     public:
       using R                = typename Model::Real;
@@ -51,6 +74,13 @@ namespace opg {
       virtual const R* host_probs() = 0;
       /// Device pointer for GPU consumers (nullptr for CPU backends).
       virtual const R* device_probs(int /*device_index*/) { return nullptr; }
+
+      // --- bin-averaged grid mode ----------------------------------------------
+      virtual void set_bins(const BinSpec<R>& spec)                  = 0;
+      virtual void calculate_binned(const Prepared& P, Flavor which) = 0;
+      /// Host pointer to avg[2][N][N][nCbins][nEbins]
+      virtual const R* host_binned() = 0;
+      virtual const R* device_binned(int /*device_index*/) { return nullptr; }
 
       // --- one-shot modes ---------------------------------------------------
       /// Event list: out[a][b][i], i < n

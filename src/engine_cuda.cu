@@ -156,6 +156,34 @@ namespace opg {
       }
     }
 
+    /// Weighted Gauss-Legendre reduction of a node grid into bin averages.
+    /// node: [2][N][N][nCn][nEn] (local C nodes), out: [2][N][N][nCb][nEb].
+    template <class R, int N>
+    __global__ void reduce_bins_kernel(const R* __restrict__ node, size_t nCn,
+                                       size_t nEn, const R* __restrict__ wE,
+                                       const R* __restrict__ wC,
+                                       const size_t* __restrict__ offC, int nglE,
+                                       size_t nEb, size_t nCb, int nb_first,
+                                       R* __restrict__ out)
+    {
+      const size_t ieb = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
+      if (ieb >= nEb) return;
+      const int ch = blockIdx.z + nb_first * N * N;  // channel incl. nubar
+      for (size_t icb = blockIdx.y; icb < nCb; icb += gridDim.y) {
+        const R* pc  = node + size_t(ch) * nCn * nEn;
+        R        acc = 0;
+        for (size_t rc = offC[icb]; rc < offC[icb + 1]; rc++) {
+          R rowacc = 0;
+          for (int i = 0; i < nglE; i++) {
+            const size_t ce = ieb * nglE + i;
+            rowacc += wE[ce] * pc[rc * nEn + ce];
+          }
+          acc += wC[rc] * rowacc;
+        }
+        out[(size_t(ch) * nCb + icb) * nEb + ieb] = acc;
+      }
+    }
+
     unsigned blocks_for(size_t n, unsigned bs)
     {
       size_t b = (n + bs - 1) / bs;
@@ -223,15 +251,16 @@ namespace opg {
         const size_t nd = fDev.size();
         for (size_t k = 0; k < nd; k++) {
           Device& D = *fDev[k];
-          D.rows.clear();
-          for (size_t ic = k; ic < fNC; ic += nd) D.rows.push_back(ic);
+          Slab&   G = D.grid;
+          G.rows.clear();
+          for (size_t ic = k; ic < fNC; ic += nd) G.rows.push_back(ic);
           std::vector<R> c;
-          for (size_t ic : D.rows) c.push_back(cosZ[ic]);
+          for (size_t ic : G.rows) c.push_back(cosZ[ic]);
           OPG_CUDA(cudaSetDevice(D.id));
-          D.E.upload(D.id, E.data(), E.size(), D.stream);
-          D.C.upload(D.id, c.data(), c.size(), D.stream);
-          D.probs.resize(D.id, 2 * N * N * D.rows.size() * fNE);
-          D.host.resize(D.probs.n);
+          G.E.upload(D.id, E.data(), E.size(), D.stream);
+          G.C.upload(D.id, c.data(), c.size(), D.stream);
+          G.probs.resize(D.id, 2 * N * N * G.rows.size() * fNE);
+          G.host.resize(G.probs.n);
           OPG_CUDA(cudaStreamSynchronize(D.stream));
         }
         if (nd > 1) fProbs.assign(2 * N * N * fNC * fNE, R(0));
@@ -246,16 +275,8 @@ namespace opg {
         if (hi < lo) return;
         for (auto& Dp : fDev) {
           Device& D = *Dp;
-          if (D.rows.empty() || fNE == 0) continue;
           OPG_CUDA(cudaSetDevice(D.id));
-          dim3 block(kBlockE);
-          dim3 grid(unsigned((fNE + kBlockE - 1) / kBlockE),
-                    unsigned(std::min<size_t>(D.rows.size(), 65535)),
-                    unsigned(hi - lo + 1));
-          grid_kernel<Model, R><<<grid, block, 0, D.stream>>>(
-              P, D.earth, D.E.ptr, int(fNE), D.C.ptr, int(D.rows.size()), lo,
-              D.probs.ptr);
-          OPG_CUDA(cudaGetLastError());
+          launch_grid(D, D.grid, fNE, P, lo, hi);
         }
         fHostValid = false;
       }
@@ -270,36 +291,86 @@ namespace opg {
 
       const R* host_probs() override
       {
-        if (fHostValid) return fDev.size() == 1 ? fDev[0]->host.ptr : fProbs.data();
-        // Copy every device's slab, then gather rows into the full layout.
-        for (auto& Dp : fDev) {
-          Device& D = *Dp;
-          if (D.probs.n == 0) continue;
-          OPG_CUDA(cudaSetDevice(D.id));
-          OPG_CUDA(cudaMemcpyAsync(D.host.ptr, D.probs.ptr,
-                                   D.probs.n * sizeof(R),
-                                   cudaMemcpyDeviceToHost, D.stream));
-        }
-        for (auto& Dp : fDev) {
-          Device& D = *Dp;
-          OPG_CUDA(cudaSetDevice(D.id));
-          OPG_CUDA(cudaStreamSynchronize(D.stream));
-          if (fDev.size() == 1) continue;  // pinned buffer is the result
-          const size_t nr = D.rows.size();
-          for (size_t ch = 0; ch < size_t(2 * N * N); ch++)
-            for (size_t r = 0; r < nr; r++)
-              std::copy(D.host.ptr + (ch * nr + r) * fNE,
-                        D.host.ptr + (ch * nr + r + 1) * fNE,
-                        fProbs.begin() + (ch * fNC + D.rows[r]) * fNE);
-        }
-        fHostValid = true;
-        return fDev.size() == 1 ? fDev[0]->host.ptr : fProbs.data();
+        return gather(&Device::grid, fNC, fNE, fProbs, fHostValid);
       }
 
       const R* device_probs(int k) override
       {
         if (k < 0 || k >= int(fDev.size())) return nullptr;
-        return fDev[k]->probs.ptr;
+        return fDev[k]->grid.probs.ptr;
+      }
+
+      //.......................................................................
+      void set_bins(const BinSpec<R>& B) override
+      {
+        fBins           = B;
+        const size_t nd = fDev.size();
+        for (size_t k = 0; k < nd; k++) {
+          Device& D = *fDev[k];
+          // C bins dealt round-robin; all nodes of a bin on the same device
+          D.binned.rows.clear();
+          D.nodes.rows.clear();
+          std::vector<R>      c, wc;
+          std::vector<size_t> off = {0};
+          for (size_t icb = k; icb < B.nCb; icb += nd) {
+            D.binned.rows.push_back(icb);
+            for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) {
+              D.nodes.rows.push_back(rc);
+              c.push_back(B.nodesC[rc]);
+              wc.push_back(B.wC[rc]);
+            }
+            off.push_back(c.size());
+          }
+          OPG_CUDA(cudaSetDevice(D.id));
+          D.nodes.E.upload(D.id, B.nodesE.data(), B.nodesE.size(), D.stream);
+          D.nodes.C.upload(D.id, c.data(), c.size(), D.stream);
+          D.nodes.probs.resize(D.id, 2 * N * N * c.size() * B.nodesE.size());
+          D.wE.upload(D.id, B.wE.data(), B.wE.size(), D.stream);
+          D.wC.upload(D.id, wc.data(), wc.size(), D.stream);
+          D.offC.upload(D.id, off.data(), off.size(), D.stream);
+          D.binned.probs.resize(D.id, 2 * N * N * D.binned.rows.size() * B.nEb);
+          D.binned.host.resize(D.binned.probs.n);
+          OPG_CUDA(cudaStreamSynchronize(D.stream));
+        }
+        if (nd > 1) fBinned.assign(2 * N * N * B.nCb * B.nEb, R(0));
+        fBinnedValid = false;
+      }
+
+      void calculate_binned(const Prepared& P, Flavor which) override
+      {
+        if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+        const int lo = (int(which) & 1) ? 0 : 1;
+        const int hi = (int(which) & 2) ? 1 : 0;
+        if (hi < lo) return;
+        const size_t nEn = fBins.nodesE.size();
+        for (auto& Dp : fDev) {
+          Device& D = *Dp;
+          if (D.binned.rows.empty()) continue;
+          OPG_CUDA(cudaSetDevice(D.id));
+          launch_grid(D, D.nodes, nEn, P, lo, hi);
+          const size_t ncb = D.binned.rows.size();
+          dim3 block(64);
+          dim3 grid(unsigned((fBins.nEb + 63) / 64),
+                    unsigned(std::min<size_t>(ncb, 65535)),
+                    unsigned((hi - lo + 1) * N * N));
+          reduce_bins_kernel<R, N><<<grid, block, 0, D.stream>>>(
+              D.nodes.probs.ptr, D.nodes.C.n, nEn, D.wE.ptr, D.wC.ptr,
+              D.offC.ptr, fBins.nglE, fBins.nEb, ncb, lo, D.binned.probs.ptr);
+          OPG_CUDA(cudaGetLastError());
+        }
+        fBinnedValid = false;
+      }
+
+      const R* host_binned() override
+      {
+        return gather(&Device::binned, fBins.nCb, fBins.nEb, fBinned,
+                      fBinnedValid);
+      }
+
+      const R* device_binned(int k) override
+      {
+        if (k < 0 || k >= int(fDev.size())) return nullptr;
+        return fDev[k]->binned.probs.ptr;
       }
 
       void prob_points(const Prepared& P, const R* E, const R* cosZ,
@@ -350,21 +421,76 @@ namespace opg {
       }
 
     private:
+      /// A (E x cosZ-rows) grid resident on one device.
+      struct Slab {
+          DevBuf<R>           E, C, probs;
+          PinnedBuf<R>        host;
+          std::vector<size_t> rows;  ///< global row (cosine or bin) indices
+      };
+
       struct Device {
           int                id     = 0;
           cudaStream_t       stream = nullptr;
           DevBuf<R>          radius, density, zoa;
           DevBuf<int>        type;
           EarthView<R>       earth{};
-          DevBuf<R>          E, C, probs;
-          PinnedBuf<R>       host;
-          std::vector<size_t> rows;  ///< global cosine indices on this device
+          Slab               grid;      ///< plain (E, cosZ) grid
+          Slab               nodes;     ///< GL node grid (rows = C nodes)
+          Slab               binned;    ///< reduced bins (rows = C bins)
+          DevBuf<R>          wE, wC;    ///< GL weights (local C bins)
+          DevBuf<size_t>     offC;      ///< node offsets of local C bins
           // one-shot buffers
           DevBuf<R>          pE, pC, pOut;
           DevBuf<uint8_t>    pNb;
           DevBuf<Segment<R>> path;
           std::vector<R>     pHost;
       };
+
+      /// Launch the grid kernel on a slab.
+      void launch_grid(Device& D, Slab& G, size_t nE, const Prepared& P,
+                       int lo, int hi)
+      {
+        if (G.rows.empty() || nE == 0) return;
+        const size_t nrow = G.C.n;
+        dim3 block(kBlockE);
+        dim3 grid(unsigned((nE + kBlockE - 1) / kBlockE),
+                  unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
+        grid_kernel<Model, R><<<grid, block, 0, D.stream>>>(
+            P, D.earth, G.E.ptr, int(nE), G.C.ptr, int(nrow), lo, G.probs.ptr);
+        OPG_CUDA(cudaGetLastError());
+      }
+
+      /// Copy each device's slab (selected by member pointer) to the host and
+      /// gather its rows into full[2*N*N][nrows][ncols].
+      const R* gather(Slab Device::*which, size_t nrows, size_t ncols,
+                      std::vector<R>& full, bool& valid)
+      {
+        if (valid) return fDev.size() == 1 ? (fDev[0].get()->*which).host.ptr
+                                           : full.data();
+        for (auto& Dp : fDev) {
+          Device& D = *Dp;
+          Slab&   G = D.*which;
+          if (G.probs.n == 0) continue;
+          OPG_CUDA(cudaSetDevice(D.id));
+          OPG_CUDA(cudaMemcpyAsync(G.host.ptr, G.probs.ptr, G.probs.n * sizeof(R),
+                                   cudaMemcpyDeviceToHost, D.stream));
+        }
+        for (auto& Dp : fDev) {
+          Device& D = *Dp;
+          Slab&   G = D.*which;
+          OPG_CUDA(cudaSetDevice(D.id));
+          OPG_CUDA(cudaStreamSynchronize(D.stream));
+          if (fDev.size() == 1) continue;  // pinned buffer is the result
+          const size_t nr = G.rows.size();
+          for (size_t ch = 0; ch < size_t(2 * N * N); ch++)
+            for (size_t r = 0; r < nr; r++)
+              std::copy(G.host.ptr + (ch * nr + r) * ncols,
+                        G.host.ptr + (ch * nr + r + 1) * ncols,
+                        full.begin() + (ch * nrows + G.rows[r]) * ncols);
+        }
+        valid = true;
+        return fDev.size() == 1 ? (fDev[0].get()->*which).host.ptr : full.data();
+      }
 
       /// Copy per-device [a][b][i] chunks into out[a][b][i] (i < n).
       void gather_chunks(const std::vector<size_t>& off,
@@ -392,10 +518,12 @@ namespace opg {
       }
 
       std::vector<std::unique_ptr<Device>> fDev;
-      std::vector<R>                       fProbs;
+      std::vector<R>                       fProbs, fBinned;
+      BinSpec<R>                           fBins;
       size_t                               fNE = 0, fNC = 0;
-      bool                                 fHaveEarth = false;
-      bool                                 fHostValid = false;
+      bool                                 fHaveEarth   = false;
+      bool                                 fHostValid   = false;
+      bool                                 fBinnedValid = false;
   };
 
   //...........................................................................

@@ -373,6 +373,33 @@ void dump_bin_averages(const string& dir, int nsub)
 }
 
 //.............................................................................
+// OscProb AvgProb (1D energy-bin averages, default precision 1e-4) on the
+// test path, for 50 log-spaced bins in 0.1 .. 10 GeV:
+//   avg1d_fast_edges.npy : [51]
+//   avg1d_fast.npy       : [2][50][3][3]
+//.............................................................................
+void dump_avgprob_1d(const string& dir)
+{
+  auto p = new PMNS_Fast();
+  SetNominalPars(p);
+  p->SetUseCache(false);
+  p->SetPath({NuPath(1000, 2), NuPath(1000, 4), NuPath(1000, 2)});
+  vector<double> edges = logspace(0.1, 10, 51);
+  vector<double> out;
+  for (int nb = 0; nb < 2; nb++) {
+    p->SetIsNuBar(nb);
+    for (size_t i = 0; i + 1 < edges.size(); i++) {
+      double E = 0.5 * (edges[i] + edges[i + 1]), dE = edges[i + 1] - edges[i];
+      for (int a = 0; a < 3; a++)
+        for (int b = 0; b < 3; b++) out.push_back(p->AvgProb(a, b, E, dE));
+    }
+  }
+  write_npy(dir + "/avg1d_fast_edges.npy", edges, {edges.size()});
+  write_npy(dir + "/avg1d_fast.npy", out, {2, edges.size() - 1, 3, 3});
+  delete p;
+}
+
+//.............................................................................
 int main(int argc, char** argv)
 {
   string dir  = argc > 1 ? argv[1] : "tests/data";
@@ -428,6 +455,8 @@ int main(int argc, char** argv)
     dump_prem(p, v.N, prem, C, Eprem, dir + "/" + v.tag + "_prem.npy");
     delete p;
   }
+
+  dump_avgprob_1d(dir);
 
   if (nsub > 0) {
     cout << "Dumping brute-force bin averages with " << nsub << "^2 points"

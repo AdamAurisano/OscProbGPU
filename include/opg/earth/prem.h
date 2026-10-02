@@ -15,6 +15,7 @@
 #ifndef OPG_EARTH_PREM_H
 #define OPG_EARTH_PREM_H
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <stdexcept>
@@ -225,6 +226,22 @@ namespace opg {
         if (L > fRadiusMax + fDetRadius) return -1;
         return (fRadiusMax * fRadiusMax - fDetRadius * fDetRadius - L * L) /
                (2 * fDetRadius * L);
+      }
+
+      /// Cosines (< 0) at which a trajectory grazes a layer boundary below
+      /// the detector. The path length in that layer behaves like
+      /// sqrt(cosT - c_k) there, so P(cosT) has a kink. Sorted increasing.
+      std::vector<double> GetGrazingCosines() const
+      {
+        std::vector<double> c;
+        for (auto& l : fLayers)
+          if (l.radius <= fDetRadius && l.radius > 0) {
+            double s = l.radius / fDetRadius;
+            c.push_back(-std::sqrt(std::fmax(0.0, 1 - s * s)));
+          }
+        std::sort(c.begin(), c.end());
+        c.erase(std::unique(c.begin(), c.end()), c.end());
+        return c;
       }
 
       /// Path segments for cosT, computed on the host (for tests/debugging).

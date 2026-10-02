@@ -64,6 +64,55 @@ namespace opg {
 
       void wait() override {}
 
+      void set_bins(const BinSpec<R>& spec) override
+      {
+        fBins = spec;
+        fNodeProbs.assign(2 * N * N * spec.nodesE.size() * spec.nodesC.size(), R(0));
+        fBinned.assign(2 * N * N * spec.nEb * spec.nCb, R(0));
+      }
+
+      void calculate_binned(const Prepared& P, Flavor which) override
+      {
+        require_earth();
+        const EarthView<R> earth = fTable->view();
+        const auto&        B     = fBins;
+        const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size();
+        const size_t npt = nEn * nCn;
+        for (int nb = 0; nb < 2; nb++) {
+          if (!(int(which) & (1 << nb))) continue;
+          R* base = fNodeProbs.data() + nb * N * N * npt;
+          const long long n = (long long)npt;
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+          for (long long k = 0; k < n; k++) {
+            size_t ic = size_t(k) / nEn, ie = size_t(k) % nEn;
+            auto   S  = evolve_prem<Model, R>(P, earth, B.nodesE[ie],
+                                              B.nodesC[ic], nb == 1);
+            store_probs<N, R>(S, base + k, npt);
+          }
+          // Weighted reduction per (channel, C bin, E bin)
+          const long long nout = (long long)(N * N * B.nCb * B.nEb);
+#pragma omp parallel for schedule(static) num_threads(threads())
+          for (long long o = 0; o < nout; o++) {
+            size_t ieb = size_t(o) % B.nEb;
+            size_t icb = (size_t(o) / B.nEb) % B.nCb;
+            size_t ch  = size_t(o) / (B.nEb * B.nCb);
+            const R* pc = base + ch * npt;
+            R        acc = 0;
+            for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) {
+              R rowacc = 0;
+              for (int i = 0; i < B.nglE; i++) {
+                size_t ce = ieb * B.nglE + i;
+                rowacc += B.wE[ce] * pc[rc * nEn + ce];
+              }
+              acc += B.wC[rc] * rowacc;
+            }
+            fBinned[(nb * N * N) * B.nCb * B.nEb + size_t(o)] = acc;
+          }
+        }
+      }
+
+      const R* host_binned() override { return fBinned.data(); }
+
       const R* host_probs() override { return fProbs.data(); }
 
       void prob_points(const Prepared& P, const R* E, const R* cosZ,
@@ -109,6 +158,8 @@ namespace opg {
       int                                          fThreads;
       std::unique_ptr<PremModel::HostTable<R>>     fTable;
       std::vector<R>                               fE, fC, fProbs;
+      BinSpec<R>                                   fBins;
+      std::vector<R>                               fNodeProbs, fBinned;
   };
 
 } // namespace opg
