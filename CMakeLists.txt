@@ -83,3 +83,10 @@ if(OPG_ENABLE_TESTS)
   enable_testing()
   add_subdirectory(tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# Python bindings
+# ---------------------------------------------------------------------------
+if(OPG_ENABLE_PYTHON)
+  add_subdirectory(python)
+endif()

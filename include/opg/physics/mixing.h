@@ -209,6 +209,18 @@ namespace opg {
     return out;
   }
 
+  /// OscProb's default parameters (PMNS_Base::SetStdPars, PDG): applies to
+  /// 3 and 3+N neutrinos; extra angles, phases and splittings are zero.
+  template <int N> void set_std_pars(MixingParams<N>& p)
+  {
+    p = MixingParams<N>();
+    p.SetAngle(1, 2, std::asin(std::sqrt(0.304)));
+    p.SetAngle(1, 3, std::asin(std::sqrt(0.0219)));
+    p.SetAngle(2, 3, std::asin(std::sqrt(0.514)));
+    p.SetDm(2, 7.53e-5);
+    p.SetDm(3, 2.52e-3);
+  }
+
   /// OscProb default/nominal 3-flavour helper (PMNS_Fast::SetMix and
   /// SetDeltaMsqrs conventions).
   template <int N>

@@ -1,0 +1,346 @@
+// Python bindings for OscProbGPU (nanobind).
+//
+// Each model class wraps an opg::Propagator<Model<double>> together with its
+// parameter struct; parameters are pushed to the propagator lazily before
+// the next computation, so setters are cheap.
+
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "opg/propagator.h"
+
+namespace nb = nanobind;
+using namespace nb::literals;
+
+namespace {
+
+  using Arr1  = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+  using Arr2  = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+  using Arr1u = nb::ndarray<const uint8_t, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+
+  std::vector<double> to_vec(const Arr1& a)
+  {
+    return std::vector<double>(a.data(), a.data() + a.shape(0));
+  }
+
+  /// numpy array that owns a copy of the data
+  nb::ndarray<nb::numpy, double> make_array(std::vector<double>&& v,
+                                            std::vector<size_t> shape)
+  {
+    auto* heap = new std::vector<double>(std::move(v));
+    nb::capsule owner(heap, [](void* p) noexcept {
+      delete static_cast<std::vector<double>*>(p);
+    });
+    return nb::ndarray<nb::numpy, double>(heap->data(), shape.size(),
+                                          shape.data(), owner);
+  }
+
+  opg::Flavor parse_flavor(const std::string& s)
+  {
+    if (s == "both") return opg::Flavor::Both;
+    if (s == "nu" || s == "neutrino") return opg::Flavor::Neutrino;
+    if (s == "nubar" || s == "antineutrino") return opg::Flavor::Antineutrino;
+    throw std::invalid_argument("flavor must be 'both', 'nu' or 'nubar'");
+  }
+
+  opg::EMeasure parse_measure(const std::string& s)
+  {
+    if (s == "linear") return opg::EMeasure::Linear;
+    if (s == "log") return opg::EMeasure::Log;
+    if (s == "inv" || s == "invE" || s == "loe") return opg::EMeasure::InvE;
+    throw std::invalid_argument("measure must be 'linear', 'log' or 'invE'");
+  }
+
+  opg::CosZRule parse_rule(const std::string& s)
+  {
+    if (s == "layer" || s == "layer_adapted") return opg::CosZRule::LayerAdapted;
+    if (s == "plain") return opg::CosZRule::Plain;
+    throw std::invalid_argument("cosz_rule must be 'layer' or 'plain'");
+  }
+
+  std::vector<opg::Segment<double>> to_path(const Arr2& seg)
+  {
+    if (seg.shape(1) < 2 || seg.shape(1) > 4)
+      throw std::invalid_argument("path must be (n, 2..4): length [km], "
+                                  "density [g/cm3], zoa (0.5), layer");
+    std::vector<opg::Segment<double>> p;
+    for (size_t i = 0; i < seg.shape(0); i++) {
+      const double* r = seg.data() + i * seg.shape(1);
+      p.push_back({r[0], r[1], seg.shape(1) > 2 ? r[2] : 0.5,
+                   seg.shape(1) > 3 ? int(r[3]) : 0});
+    }
+    return p;
+  }
+
+  //...........................................................................
+  template <class Model> struct PyModel {
+      using Params           = typename Model::Params;
+      static constexpr int N = Model::N;
+
+      opg::Propagator<Model> prop;
+      Params                 params;
+      bool                   dirty = true;
+
+      PyModel(const opg::PremModel& earth, const std::vector<int>& devices,
+              int threads)
+          : prop(earth, devices, threads)
+      {
+        opg::set_std_pars(params.mix);
+      }
+
+      void sync()
+      {
+        if (dirty) {
+          prop.set_params(params);
+          dirty = false;
+        }
+      }
+      auto& mix()
+      {
+        dirty = true;
+        return params.mix;
+      }
+
+      nb::ndarray<nb::numpy, double> probs()
+      {
+        const double* p = prop.probs();
+        size_t        n = 2 * N * N * prop.n_cosines() * prop.n_energies();
+        return make_array(std::vector<double>(p, p + n),
+                          {2, N, N, prop.n_cosines(), prop.n_energies()});
+      }
+
+      nb::ndarray<nb::numpy, double> binned()
+      {
+        const double* p = prop.binned();
+        size_t n = 2 * N * N * prop.n_cosine_bins() * prop.n_energy_bins();
+        return make_array(std::vector<double>(p, p + n),
+                          {2, N, N, prop.n_cosine_bins(), prop.n_energy_bins()});
+      }
+  };
+
+  template <class Model>
+  nb::class_<PyModel<Model>> bind_model(nb::module_& m, const char* name,
+                                        const char* doc)
+  {
+    using W = PyModel<Model>;
+    constexpr int N = Model::N;
+    nb::class_<W> c(m, name, doc);
+    c.def_prop_ro_static("n_flavours", [](nb::handle) { return N; })
+        .def_prop_ro("on_gpu", [](W& w) { return w.prop.on_gpu(); })
+        .def_prop_ro("devices", [](W& w) { return w.prop.devices(); })
+        // mixing parameters (OscProb conventions, 1-based indices)
+        .def("set_angle",
+             [](W& w, int i, int j, double v) {
+               if (i > j) std::swap(i, j);
+               if (i < 1 || j > N || i == j)
+                 throw std::invalid_argument("invalid angle indices");
+               w.mix().SetAngle(i, j, v);
+             },
+             "i"_a, "j"_a, "theta"_a, "Set theta_ij in radians.")
+        .def("set_delta",
+             [](W& w, int i, int j, double v) {
+               if (i > j) std::swap(i, j);
+               if (i < 1 || j > N || j < i + 2)
+                 throw std::invalid_argument("invalid delta indices (i+1 < j)");
+               w.mix().SetDelta(i, j, v);
+             },
+             "i"_a, "j"_a, "delta"_a, "Set the CP phase delta_ij in radians.")
+        .def("set_dm",
+             [](W& w, int j, double v) {
+               if (j < 2 || j > N) throw std::invalid_argument("invalid dm index");
+               w.mix().SetDm(j, v);
+             },
+             "j"_a, "dm"_a, "Set dm^2_j1 in eV^2.")
+        .def("get_angle", [](W& w, int i, int j) { return w.params.mix.th[i - 1][j - 1]; })
+        .def("get_delta", [](W& w, int i, int j) { return w.params.mix.dcp[i - 1][j - 1]; })
+        .def("get_dm", [](W& w, int j) { return w.params.mix.dm[j - 1]; })
+        .def("set_std_pars", [](W& w) { opg::set_std_pars(w.mix()); },
+             "Reset mixing parameters to OscProb's PDG defaults.")
+        // earth
+        .def("set_earth", [](W& w, const opg::PremModel& e) { w.prop.set_earth(e); })
+        // grid mode
+        .def("set_grid",
+             [](W& w, Arr1 E, Arr1 C) { w.prop.set_grid(to_vec(E), to_vec(C)); },
+             "energies"_a, "cosines"_a,
+             "Set the (E [GeV], cosZ) grid; uploads once.")
+        .def("calculate",
+             [](W& w, const std::string& fl) {
+               w.sync();
+               w.prop.calculate(parse_flavor(fl));
+             },
+             "flavor"_a = "both", "Launch the grid computation (asynchronous).")
+        .def("wait", [](W& w) { w.prop.wait(); })
+        .def("probs", &W::probs,
+             "Grid probabilities P[nubar, a, b, iC, iE] = P(a -> b) (copy).")
+        .def("prob",
+             [](W& w, int a, int b, size_t ic, size_t ie, bool nubar) {
+               return w.prop.prob(a, b, ic, ie, nubar);
+             },
+             "a"_a, "b"_a, "ic"_a, "ie"_a, "nubar"_a = false)
+        // bin-averaged mode
+        .def("set_bins",
+             [](W& w, Arr1 Ee, Arr1 Ce, int nE, int nC, const std::string& meas,
+                const std::string& rule) {
+               w.prop.set_bins(to_vec(Ee), to_vec(Ce), nE, nC, parse_measure(meas),
+                               parse_rule(rule));
+             },
+             "energy_edges"_a, "cosine_edges"_a, "n_gl_energy"_a = 8,
+             "n_gl_cosine"_a = 8, "measure"_a = "linear", "cosz_rule"_a = "layer",
+             "Set a 2D binning for Gauss-Legendre bin averages.")
+        .def("calculate_binned",
+             [](W& w, const std::string& fl) {
+               w.sync();
+               w.prop.calculate_binned(parse_flavor(fl));
+             },
+             "flavor"_a = "both")
+        .def("binned", &W::binned,
+             "Bin averages A[nubar, a, b, iCbin, iEbin] (copy).")
+        // one-shot modes
+        .def("prob_points",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_) {
+               w.sync();
+               if (E.shape(0) != C.shape(0) || E.shape(0) != nb_.shape(0))
+                 throw std::invalid_argument("size mismatch");
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               auto out = w.prop.prob_points(to_vec(E), to_vec(C), nbv);
+               return make_array(std::move(out), {N, N, E.shape(0)});
+             },
+             "energies"_a, "cosines"_a, "nubar"_a,
+             "Event list: returns P[a, b, i].")
+        .def("prob_path",
+             [](W& w, Arr1 E, Arr2 seg, bool nubar) {
+               w.sync();
+               auto out = w.prop.prob_path(to_vec(E), to_path(seg), nubar);
+               return make_array(std::move(out), {N, N, E.shape(0)});
+             },
+             "energies"_a, "path"_a, "nubar"_a = false,
+             "Fixed path given as rows (length km, density, [zoa, layer]); "
+             "returns P[a, b, iE].")
+        .def("avg_path",
+             [](W& w, Arr1 Ee, int nE, Arr2 seg, bool nubar, const std::string& meas) {
+               w.sync();
+               auto out = w.prop.avg_path(to_vec(Ee), nE, to_path(seg), nubar,
+                                          parse_measure(meas));
+               return make_array(std::move(out), {N, N, Ee.shape(0) - 1});
+             },
+             "energy_edges"_a, "n_gl"_a, "path"_a, "nubar"_a = false,
+             "measure"_a = "linear", "1D bin averages for a fixed path.");
+    return c;
+  }
+
+  template <class Model>
+  void bind_ctor(nb::class_<PyModel<Model>>& c)
+  {
+    c.def(nb::init<const opg::PremModel&, const std::vector<int>&, int>(),
+          "earth"_a = opg::PremModel(), "devices"_a = std::vector<int>{},
+          "threads"_a = 0,
+          "devices: CUDA device ids (empty list = CPU backend); threads: "
+          "OpenMP threads for the CPU backend (0 = default).");
+  }
+
+} // namespace
+
+NB_MODULE(_oscprobgpu, m)
+{
+  m.doc() = "OscProbGPU: CUDA port of OscProb oscillation calculators";
+  m.def("cuda_device_count", &opg::cuda_device_count);
+#ifdef OPG_HAVE_CUDA
+  m.attr("has_cuda") = true;
+#else
+  m.attr("has_cuda") = false;
+#endif
+
+  nb::class_<opg::PremModel>(m, "PremModel")
+      .def(nb::init<const std::string&>(), "filename"_a = "",
+           "Spherical-shell Earth model (default: PREM 44 layers).")
+      .def("set_det_pos", &opg::PremModel::SetDetPos, "radius_km"_a)
+      .def("set_layer_zoa", &opg::PremModel::SetLayerZoA, "layer"_a, "zoa"_a)
+      .def("get_layer_zoa", &opg::PremModel::GetLayerZoA, "layer"_a)
+      .def("set_top_layer_size", &opg::PremModel::SetTopLayerSize, "thickness_km"_a)
+      .def("get_total_L", &opg::PremModel::GetTotalL, "cosT"_a)
+      .def("get_cosT", &opg::PremModel::GetCosT, "L"_a)
+      .def_prop_ro("det_radius", &opg::PremModel::GetDetRadius)
+      .def("grazing_cosines", &opg::PremModel::GetGrazingCosines)
+      .def("fill_path",
+           [](const opg::PremModel& e, double c) {
+             auto                p = e.FillPath(c);
+             std::vector<double> v;
+             for (auto& s : p) v.insert(v.end(), {s.length, s.density, s.zoa, double(s.layer)});
+             return make_array(std::move(v), {p.size(), 4});
+           },
+           "cosT"_a, "Path segments (length, density, zoa, layer).");
+
+  using Fast    = opg::Fast<double>;
+  using NSI     = opg::NSI<double>;
+  using NUNM    = opg::NUNM<double>;
+  using Sterile = opg::Sterile<double>;
+  using Decay   = opg::Decay<double>;
+
+  auto cf = bind_model<Fast>(m, "Fast", "Standard 3-flavour oscillations (PMNS_Fast).");
+  bind_ctor<Fast>(cf);
+
+  auto cn = bind_model<NSI>(m, "NSI", "3 flavours with vector NSI (PMNS_NSI).");
+  bind_ctor<NSI>(cn);
+  cn.def("set_eps",
+         [](PyModel<NSI>& w, int i, int j, double v, double ph) {
+           w.dirty = true;
+           w.params.SetEps(i, j, v, ph);
+         },
+         "flvi"_a, "flvj"_a, "value"_a, "phase"_a = 0.0,
+         "Set eps_ij (0-based flavours, i <= j).")
+      .def("set_ferm_coup",
+           [](PyModel<NSI>& w, double e, double u, double d) {
+             w.dirty = true;
+             w.params.SetFermCoup(e, u, d);
+           },
+           "e"_a, "u"_a, "d"_a);
+
+  auto cu = bind_model<NUNM>(m, "NUNM", "3 flavours with non-unitary mixing (PMNS_NUNM).");
+  cu.def("__init__",
+         [](PyModel<NUNM>* self, const opg::PremModel& e, const std::vector<int>& d,
+            int t, int scale) {
+           new (self) PyModel<NUNM>(e, d, t);
+           self->params.scale = scale;
+         },
+         "earth"_a = opg::PremModel(), "devices"_a = std::vector<int>{},
+         "threads"_a = 0, "scale"_a = 0,
+         "scale: 0 = low-scale, 1 = high-scale scenario.")
+      .def("set_alpha",
+           [](PyModel<NUNM>& w, int i, int j, double v, double ph) {
+             w.dirty = true;
+             w.params.SetAlpha(i, j, v, ph);
+           },
+           "i"_a, "j"_a, "value"_a, "phase"_a = 0.0,
+           "Set alpha_ij (0-based, i >= j); diagonal entries are 1 + value.")
+      .def("set_frac_vnc",
+           [](PyModel<NUNM>& w, double f) {
+             w.dirty = true;
+             w.params.SetFracVnc(f);
+           },
+           "f"_a);
+
+  auto cs = bind_model<Sterile>(m, "Sterile", "3+1 oscillations (PMNS_Sterile with 4 flavours).");
+  bind_ctor<Sterile>(cs);
+
+  auto cd = bind_model<Decay>(m, "Decay", "3 flavours with invisible decay (PMNS_Decay).");
+  bind_ctor<Decay>(cd);
+  cd.def("set_alpha2",
+         [](PyModel<Decay>& w, double a) {
+           w.dirty = true;
+           w.params.SetAlpha2(a);
+         },
+         "alpha2"_a, "alpha_2 = m_2/tau_2 in eV^2")
+      .def("set_alpha3",
+           [](PyModel<Decay>& w, double a) {
+             w.dirty = true;
+             w.params.SetAlpha3(a);
+           },
+           "alpha3"_a, "alpha_3 = m_3/tau_3 in eV^2");
+}
