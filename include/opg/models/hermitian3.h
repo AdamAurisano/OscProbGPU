@@ -79,6 +79,37 @@ namespace opg {
     c.vfac  = R(constants::matter_prefactor());
   }
 
+  /// Diagonalise a hermitian 3x3 matrix (upper triangle) with zheevh3.
+  ///
+  /// In double precision this is exactly OscProb's call. Hamiltonians in eV
+  /// are O(1e-12), so in single precision the cubic invariants used by
+  /// Cardano's method (~1e-36) underflow; for float we therefore rescale H
+  /// to O(1) before diagonalising and scale the eigenvalues back.
+  template <class R>
+  OPG_HD OPG_INLINE void diagonalize3(Mat<3, R>& H, Mat<3, R>& V, R lam[3])
+  {
+    if constexpr (sizeof(R) < sizeof(double)) {
+      R sc = 0;
+      OPG_UNROLL
+      for (int i = 0; i < 3; i++)
+        OPG_UNROLL
+      for (int j = i; j < 3; j++) sc = std::fmax(sc, abs(H(i, j)));
+      if (sc > 0) {
+        R inv = R(1) / sc;
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+        for (int j = i; j < 3; j++) H(i, j) *= inv;
+      }
+      kopp::zheevh3(H, V, lam);
+      OPG_UNROLL
+      for (int i = 0; i < 3; i++) lam[i] *= sc;
+    }
+    else {
+      kopp::zheevh3(H, V, lam);
+    }
+  }
+
   /// One segment step for a hermitian 3-flavour model. Model must provide
   ///   OPG_HD static void hamiltonian(const Prepared&, R E, bool nubar,
   ///                                  const Segment<R>&, Mat<3,R>& H)
@@ -102,7 +133,7 @@ namespace opg {
     else {
       Mat<3, R> H;
       Model::hamiltonian(P, E, nubar, s, H);
-      kopp::zheevh3(H, V, lam);
+      diagonalize3(H, V, lam);
     }
 
     apply_eigen_step<3, R>(V, lam, length_in_eV(s.length), S);

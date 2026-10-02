@@ -21,7 +21,8 @@ namespace refcmp {
 
   inline void accumulate(Result& r, double a, double b)
   {
-    r.max_abs = std::max(r.max_abs, std::fabs(a - b));
+    double d = std::fabs(a - b);
+    if (!(d <= r.max_abs)) r.max_abs = d;  // NaN-propagating max
     r.n++;
     r.n_exact += (a == b);
   }

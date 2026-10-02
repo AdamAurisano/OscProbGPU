@@ -27,8 +27,9 @@ set_tests_properties(cpu PROPERTIES LABELS "cpu")
 
 # GPU tests
 if(OPG_ENABLE_CUDA)
-  add_executable(opg_tests_gpu test_main.cpp gpu/test_cuda_smoke.cu)
-  target_link_libraries(opg_tests_gpu PRIVATE opg_core opg_doctest
+  add_executable(opg_tests_gpu test_main.cpp gpu/test_cuda_smoke.cu
+                               gpu/test_models_gpu.cpp)
+  target_link_libraries(opg_tests_gpu PRIVATE oscprobgpu opg_doctest
                                               CUDA::cudart)
   target_compile_definitions(
     opg_tests_gpu PRIVATE OPG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
