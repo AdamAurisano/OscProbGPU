@@ -68,3 +68,57 @@ def test_weighted_matches_full(devices):
     ref = np.einsum("nabce,npabce->p", w, G)
     scale = np.einsum("nabce,npabce->p", np.abs(w), np.abs(G))
     assert np.all(np.abs(g - ref) <= 1e-12 * scale)
+
+
+def _nsi(devices, eps_emu=0.1):
+    p = set_nominal(opg.NSI(devices=devices))
+    p.set_eps(0, 1, eps_emu, 0.4)
+    p.set_eps(1, 2, 0.05, -1.0)
+    p.set_ferm_coup(0.5, 1.0, 0.8)
+    return p
+
+
+def _nunm(devices, alpha_mue=0.03):
+    p = set_nominal(opg.NUNM(devices=devices, scale=1))
+    p.set_alpha(1, 0, alpha_mue, 0.4)
+    p.set_alpha(2, 2, -0.02)
+    return p
+
+
+def _sterile(devices, th24=0.15):
+    p = set_nominal(opg.Sterile(devices=devices))
+    p.set_dm(4, 0.5)
+    p.set_angle(2, 4, th24)
+    p.set_angle(1, 4, 0.1)
+    return p
+
+
+@pytest.mark.parametrize("make,name,x0,nflv", [
+    (_nsi, "eps_emu", 0.1, 3),
+    (_nunm, "alpha_mue", 0.03, 3),
+    (_sterile, "th24", 0.15, 4),
+])
+def test_g3_path_grad_vs_fd(make, name, x0, nflv, devices):
+    cls = type(make(devices))
+    if not cls.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    assert name in cls.parameter_names
+    E = np.geomspace(0.2, 10, 50)
+    p = make(devices)
+    p.set_gradient_params([name])
+    P, dP = p.prob_path_grad(E, TEST_PATH, nubar=False)
+    assert dP.shape == (1, nflv, nflv, len(E))
+    h = 1e-6
+    fd = (make(devices, x0 + h).prob_path(E, TEST_PATH) -
+          make(devices, x0 - h).prob_path(E, TEST_PATH)) / (2 * h)
+    scale = max(np.abs(fd).max(), 1e-3)
+    assert np.abs(dP[0] - fd).max() / scale < 1e-6
+
+
+def test_g3_parameter_names():
+    if not opg.NSI.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    assert len(opg.NSI.parameter_names) == 18
+    assert len(opg.NUNM.parameter_names) == 16
+    assert opg.Sterile.parameter_names[-3:] == ["dm21", "dm31", "dm41"]
+    assert len(opg.Sterile.parameter_names) == 12

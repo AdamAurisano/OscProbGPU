@@ -1,5 +1,8 @@
 // Gradients (CPU backend).
 
+#include <cstring>
+#include <type_traits>
+
 #include "gradients.h"
 
 #ifdef OPG_DISABLE_GRADIENTS
@@ -16,7 +19,20 @@ TEST_CASE("Gradient parameter registry")
 {
   auto n = opg::Propagator<gradtest::Fast>::parameter_names();
   CHECK(n == std::vector<std::string>{"th12", "th13", "th23", "d13", "dm21", "dm31"});
-  CHECK(opg::Propagator<opg::Sterile<>>::parameter_names().empty());  // not yet
+  CHECK(opg::Propagator<opg::Sterile<>>::parameter_names() ==
+        std::vector<std::string>{"th12", "th13", "th23", "th14", "th24", "th34", "d13",
+                                 "d14", "d24", "dm21", "dm31", "dm41"});
+  CHECK(opg::Propagator<opg::NSI<>>::parameter_names() ==
+        std::vector<std::string>{"th12", "th13", "th23", "d13", "dm21", "dm31",
+                                 "eps_ee", "eps_emu", "eps_etau", "eps_mumu",
+                                 "eps_mutau", "eps_tautau", "ph_emu", "ph_etau",
+                                 "ph_mutau", "coup_e", "coup_u", "coup_d"});
+  CHECK(opg::Propagator<opg::NUNM<>>::parameter_names() ==
+        std::vector<std::string>{"th12", "th13", "th23", "d13", "dm21", "dm31",
+                                 "alpha_ee", "alpha_mue", "alpha_taue", "alpha_mumu",
+                                 "alpha_taumu", "alpha_tautau", "ph_mue", "ph_taue",
+                                 "ph_taumu", "frac_vnc"});
+  CHECK_FALSE(opg::Propagator<opg::Decay<>>::has_gradients());  // not yet
 
   opg::Propagator<gradtest::Fast> prop;
   gradtest::Fast::Params          p;
@@ -28,15 +44,15 @@ TEST_CASE("Gradient parameter registry")
   CHECK_THROWS_AS(prop.calculate(opg::Flavor::Both, true), std::logic_error);
   prop.calculate();  // probabilities still fine with gradients off
 
-  opg::Propagator<opg::NSI<>> nsi;
-  CHECK_THROWS_AS(nsi.set_gradient_params({"th12"}), std::logic_error);
+  opg::Propagator<opg::Decay<>> decay;
+  CHECK_THROWS_AS(decay.set_gradient_params({"th12"}), std::logic_error);
 }
 
 TEST_CASE("Dual-number preparation has bit-identical value parts")
 {
   using M = gradtest::Fast;
   using D = opg::Dual<double, 3>;
-  for (auto& [label, par] : gradtest::param_points()) {
+  for (auto& [label, par] : gradtest::param_points<M>()) {
     auto P  = M::prepare(par);
     auto pd = M::cast<D>(par);
     for (int k = 0; k < 3; k++) M::param_ref(pd, k).d[k] = 1;
@@ -89,6 +105,61 @@ TEST_CASE("Grid, event-list and weighted gradients are consistent (CPU)")
     g.push_back(p->weighted_gradient(w));
   }
   CHECK(g[0] == g[1]);
+}
+
+TEST_CASE_TEMPLATE("G3 gradients match long-double finite differences (CPU)", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+{
+  opg::Propagator<M> prop;
+  gradtest::check_against_ld(prop, 1e-9);
+}
+
+TEST_CASE_TEMPLATE("G3 probabilities are unchanged when gradients are on (CPU)", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+{
+  opg::Propagator<M> prop;
+  gradtest::check_values_unchanged(prop);
+}
+
+TEST_CASE_TEMPLATE("G3 grid, event-list and weighted gradients are consistent (CPU)", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+{
+  opg::Propagator<M> prop;
+  gradtest::check_grid_and_weighted(prop, 1e-13);
+}
+
+TEST_CASE("NSI/NUNM prepared values do not depend on the derivative seeds")
+{
+  // value parts of the dual preparation equal prepare() bit for bit
+  auto same_bits = [](const auto& PD, const auto& P) {
+    using PDT = std::decay_t<decltype(PD)>;
+    using PT  = std::decay_t<decltype(P)>;
+    using D   = std::decay_t<decltype(PD.common.vfac)>;
+    constexpr size_t nd = sizeof(D) / sizeof(double);
+    static_assert(sizeof(PDT) == nd * sizeof(PT), "layout");
+    const double* a = reinterpret_cast<const double*>(&PD);
+    const double* b = reinterpret_cast<const double*>(&P);
+    for (size_t i = 0; i < sizeof(PT) / sizeof(double); i++)
+      if (std::memcmp(&a[i * nd], &b[i], sizeof(double)) != 0) return false;
+    return true;
+  };
+  using D = opg::Dual<double, 2>;
+  for (auto& [label, par] : gradtest::param_points<gradtest::NSI>()) {
+    using M = gradtest::NSI;
+    auto pd = M::cast<D>(par);
+    M::param_ref(pd, 7).d[0]  = 1;
+    M::param_ref(pd, 13).d[1] = 1;
+    INFO(label);
+    CHECK(same_bits(M::prepare_generic<D>(pd), M::prepare(par)));
+  }
+  for (auto& [label, par] : gradtest::param_points<gradtest::NUNM>()) {
+    using M = gradtest::NUNM;
+    auto pd = M::cast<D>(par);
+    M::param_ref(pd, 7).d[0]  = 1;
+    M::param_ref(pd, 15).d[1] = 1;
+    INFO(label);
+    CHECK(same_bits(M::prepare_generic<D>(pd), M::prepare(par)));
+  }
 }
 
 #endif  // OPG_DISABLE_GRADIENTS

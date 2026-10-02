@@ -23,6 +23,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "opg/models/all.h"
@@ -188,6 +189,19 @@ namespace opg {
     // Gradient kernels (instantiated only for models with gradient support)
     //.........................................................................
 
+    /// How the dual prepared state of a gradient pass reaches the kernels:
+    /// by value (kernel parameter, constant bank) when it fits next to the
+    /// value state, otherwise as a pointer to a per-device copy in global
+    /// memory (CUDA limits kernel arguments to 4 KB).
+    template <class Model> struct GradArg {
+        using PD = typename grad_traits<Model>::Prepared;
+        static constexpr bool by_pointer =
+            sizeof(typename Model::Prepared) + sizeof(PD) > 3500;
+        using type = std::conditional_t<by_pointer, const PD*, PD>;
+        __device__ static const PD& get(const PD& p) { return p; }
+        __device__ static const PD& get(const PD* p) { return *p; }
+    };
+
     /// Block-wide sum of acc[K] (blockDim.x == BS, a power of two); thread 0
     /// writes the result to out[0..K).
     template <class R, int K, int BS>
@@ -207,13 +221,14 @@ namespace opg {
 
     template <class Model, class R, int K>
     __global__ void grid_grad_kernel(const typename Model::Prepared         P,
-                                     const typename grad_traits<Model>::Prepared PD,
+                                     const typename GradArg<Model>::type PDa,
                                      const EarthView<R> earth, const R* __restrict__ E,
                                      int nE, const R* __restrict__ C, int nC,
                                      int nb_first, int npar, int offset, int count,
                                      bool write_probs, R* __restrict__ probs,
                                      R* __restrict__ grad)
     {
+      const auto&   PD = GradArg<Model>::get(PDa);
       constexpr int N  = Model::N;
       const int     nb = nb_first + blockIdx.z;
       const int     ie = blockIdx.x * blockDim.x + threadIdx.x;
@@ -232,12 +247,13 @@ namespace opg {
 
     template <class Model, class R, int K>
     __global__ void grid_wgrad_kernel(const typename Model::Prepared         P,
-                                      const typename grad_traits<Model>::Prepared PD,
+                                      const typename GradArg<Model>::type PDa,
                                       const EarthView<R> earth, const R* __restrict__ E,
                                       int nE, const R* __restrict__ C, int nC,
                                       int nb_first, const R* __restrict__ w,
                                       R* __restrict__ partial)
     {
+      const auto&   PD = GradArg<Model>::get(PDa);
       constexpr int N  = Model::N;
       const int     nb = nb_first + blockIdx.z;
       const int     ie = blockIdx.x * blockDim.x + threadIdx.x;
@@ -260,13 +276,14 @@ namespace opg {
 
     template <class Model, class R, int K>
     __global__ void points_grad_kernel(const typename Model::Prepared         P,
-                                       const typename grad_traits<Model>::Prepared PD,
+                                       const typename GradArg<Model>::type PDa,
                                        const EarthView<R> earth, const R* __restrict__ E,
                                        const R* __restrict__ C,
                                        const uint8_t* __restrict__ nubar, size_t n,
                                        int offset, int count, bool write_probs,
                                        R* __restrict__ probs, R* __restrict__ grad)
     {
+      const auto&   PD = GradArg<Model>::get(PDa);
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
@@ -279,12 +296,13 @@ namespace opg {
 
     template <class Model, class R, int K>
     __global__ void points_wgrad_kernel(const typename Model::Prepared         P,
-                                        const typename grad_traits<Model>::Prepared PD,
+                                        const typename GradArg<Model>::type PDa,
                                         const EarthView<R> earth, const R* __restrict__ E,
                                         const R* __restrict__ C,
                                         const uint8_t* __restrict__ nubar, size_t n,
                                         const R* __restrict__ w, R* __restrict__ partial)
     {
+      const auto&   PD = GradArg<Model>::get(PDa);
       constexpr int N      = Model::N;
       R             acc[K] = {};
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
@@ -300,12 +318,13 @@ namespace opg {
 
     template <class Model, class R, int K>
     __global__ void path_grad_kernel(const typename Model::Prepared         P,
-                                     const typename grad_traits<Model>::Prepared PD,
+                                     const typename GradArg<Model>::type PDa,
                                      const Segment<R>* __restrict__ path, int nseg,
                                      const R* __restrict__ E, size_t nE, bool nubar,
                                      int offset, int count, bool write_probs,
                                      R* __restrict__ probs, R* __restrict__ grad)
     {
+      const auto&   PD = GradArg<Model>::get(PDa);
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < nE;
            i += size_t(gridDim.x) * blockDim.x) {
@@ -569,6 +588,7 @@ namespace opg {
         else {
           if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
           check_param_size();
+          upload_chunks(chunks);
           const int lo = (int(which) & 1) ? 0 : 1;
           const int hi = (int(which) & 2) ? 1 : 0;
           if (hi < lo) return;
@@ -587,7 +607,7 @@ namespace opg {
                       unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
             for (size_t c = 0; c < chunks.size(); c++) {
               grid_grad_kernel<Model, R, GK><<<grid, block, 0, D.stream>>>(
-                  P, chunks[c].P, D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow), lo,
+                  P, pd_arg(D, chunks, c), D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow), lo,
                   npar, chunks[c].offset, chunks[c].count, c == 0, G.probs.ptr,
                   D.gslab.probs.ptr);
               OPG_CUDA(cudaGetLastError());
@@ -621,6 +641,7 @@ namespace opg {
         else {
           if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
           check_param_size();
+          upload_chunks(chunks);
           for (int p = 0; p < npar; p++) g[p] = 0;
           const int lo = (int(which) & 1) ? 0 : 1;
           const int hi = (int(which) & 2) ? 1 : 0;
@@ -645,7 +666,7 @@ namespace opg {
                             D.wtsHost.ptr + (ch * nr + r) * fNE);
             D.wts.upload(D.id, D.wtsHost.ptr, D.wtsHost.n, D.stream);
           }
-          for (const auto& ch : chunks) {
+          for (size_t c = 0; c < chunks.size(); c++) {
             std::vector<dim3> grids(nd);
             for (size_t k = 0; k < nd; k++) {
               Device& D = *fDev[k];
@@ -659,11 +680,11 @@ namespace opg {
               const size_t nblk = size_t(grids[k].x) * grids[k].y * grids[k].z;
               D.partial.resize(D.id, nblk * GK);
               grid_wgrad_kernel<Model, R, GK><<<grids[k], dim3(kBlockE), 0, D.stream>>>(
-                  P, ch.P, D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow), lo,
-                  D.wts.ptr, D.partial.ptr);
+                  P, pd_arg(D, chunks, c), D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow),
+                  lo, D.wts.ptr, D.partial.ptr);
               OPG_CUDA(cudaGetLastError());
             }
-            sum_partials(ch, g);
+            sum_partials(chunks[c], g);
           }
         }
       }
@@ -676,6 +697,7 @@ namespace opg {
         else {
           if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
           check_param_size();
+          upload_chunks(chunks);
           const size_t nd = fDev.size(), chunk = (n + nd - 1) / nd;
           std::vector<size_t> off(nd), cnt(nd);
           for (size_t k = 0; k < nd; k++) {
@@ -692,7 +714,7 @@ namespace opg {
             for (size_t c = 0; c < chunks.size(); c++) {
               points_grad_kernel<Model, R, GK>
                   <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
-                      P, chunks[c].P, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, cnt[k],
+                      P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, cnt[k],
                       chunks[c].offset, chunks[c].count, c == 0, D.pOut.ptr,
                       D.pGrad.ptr);
               OPG_CUDA(cudaGetLastError());
@@ -711,6 +733,7 @@ namespace opg {
         else {
           if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
           check_param_size();
+          upload_chunks(chunks);
           for (int p = 0; p < npar; p++) g[p] = 0;
           const size_t nd = fDev.size(), chunk = (n + nd - 1) / nd;
           std::vector<size_t> off(nd), cnt(nd);
@@ -730,7 +753,7 @@ namespace opg {
             D.wts.upload(D.id, loc.data(), loc.size(), D.stream);
             OPG_CUDA(cudaStreamSynchronize(D.stream));
           }
-          for (const auto& ch : chunks) {
+          for (size_t c = 0; c < chunks.size(); c++) {
             for (size_t k = 0; k < nd; k++) {
               Device& D = *fDev[k];
               if (!cnt[k]) continue;
@@ -738,11 +761,11 @@ namespace opg {
               const unsigned nblk = std::min(blocks_for(cnt[k], 128), 4096u);
               D.partial.resize(D.id, size_t(nblk) * GK);
               points_wgrad_kernel<Model, R, GK><<<nblk, 128, 0, D.stream>>>(
-                  P, ch.P, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, cnt[k], D.wts.ptr,
-                  D.partial.ptr);
+                  P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, cnt[k],
+                  D.wts.ptr, D.partial.ptr);
               OPG_CUDA(cudaGetLastError());
             }
-            sum_partials(ch, g);
+            sum_partials(chunks[c], g);
           }
         }
       }
@@ -754,6 +777,7 @@ namespace opg {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           check_param_size();
+          upload_chunks(chunks);
           const size_t nd = fDev.size(), chunk = (nE + nd - 1) / nd;
           std::vector<size_t> off(nd), cnt(nd);
           for (size_t k = 0; k < nd; k++) {
@@ -769,7 +793,7 @@ namespace opg {
             for (size_t c = 0; c < chunks.size(); c++) {
               path_grad_kernel<Model, R, GK>
                   <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
-                      P, chunks[c].P, D.path.ptr, nseg, D.pE.ptr, cnt[k], nubar,
+                      P, pd_arg(D, chunks, c), D.path.ptr, nseg, D.pE.ptr, cnt[k], nubar,
                       chunks[c].offset, chunks[c].count, c == 0, D.pOut.ptr,
                       D.pGrad.ptr);
               OPG_CUDA(cudaGetLastError());
@@ -799,6 +823,7 @@ namespace opg {
           Slab               binned;    ///< reduced bins (rows = C bins)
           Slab               gslab;     ///< grid gradients (rows as grid)
           DevBuf<R>          wts;       ///< weights for weighted gradients
+          DevBuf<typename grad_traits<Model>::Prepared> pd;  ///< dual states (GradArg)
           PinnedBuf<R>       wtsHost;   ///< pinned staging for wts
           DevBuf<R>          partial;   ///< per-block partial sums
           std::vector<R>     partialHost;
@@ -910,17 +935,47 @@ namespace opg {
         }
       }
 
-      /// Prepared states are kernel arguments (CUDA limit: 4 KB in total).
+      /// The value state is a kernel argument (CUDA limit: 4 KB in total);
+      /// the dual state too unless GradArg passes it by pointer.
       static void check_param_size()
       {
-        static_assert(sizeof(Prepared) + sizeof(typename grad_traits<Model>::Prepared) <
-                          3500,
+        static_assert(sizeof(Prepared) < 3500,
                       "Prepared state too large to pass as kernel argument");
+      }
+
+      /// Copy the dual states of all gradient passes to every device (only
+      /// when they are passed by pointer). The copies are ordered on each
+      /// device's stream, after any kernels still using the previous ones.
+      void upload_chunks(const Chunks& chunks)
+      {
+        if constexpr (GradArg<Model>::by_pointer) {
+          fPDHost.resize(chunks.size());
+          for (size_t c = 0; c < chunks.size(); c++) fPDHost[c] = chunks[c].P;
+          for (auto& Dp : fDev) {
+            OPG_CUDA(cudaSetDevice(Dp->id));
+            Dp->pd.upload(Dp->id, fPDHost.data(), fPDHost.size(), Dp->stream);
+          }
+        }
+      }
+
+      /// Kernel argument for gradient pass c on device D (see GradArg).
+      static typename GradArg<Model>::type pd_arg(Device& D, const Chunks& chunks,
+                                                  size_t c)
+      {
+        if constexpr (GradArg<Model>::by_pointer) {
+          (void)chunks;
+          return D.pd.ptr + c;
+        }
+        else {
+          (void)D;
+          return chunks[c].P;
+        }
       }
 
       std::vector<std::unique_ptr<Device>> fDev;
       PinnedBuf<R>                         fProbs, fBinned;  ///< multi-GPU results
       PinnedBuf<R>                         fGradFull;        ///< multi-GPU gradients
+      std::vector<typename grad_traits<Model>::Prepared> fPDHost;  ///< staging (GradArg)
       int                                  fNpar      = 0;
       bool                                 fGradValid = false;
       BinSpec<R>                           fBins;

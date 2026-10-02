@@ -2,7 +2,8 @@
 //
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
-//   model  : fast (default)
+//   model  : fast (default), nsi, nunm, sterile, decay, binned, grad,
+//            grad_nsi, grad_nunm, grad_sterile, or all
 
 #include <chrono>
 #include <cmath>
@@ -203,6 +204,23 @@ int main(int argc, char** argv)
   }
   if (want("grad")) {
     run_grad<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), nE, nC, dev, reps);
+  }
+  if (want("grad_nsi")) {
+    auto p = nominal_params<opg::NSI<double>>();
+    p.SetEps(0, 1, 0.1, 0.3);
+    p.SetEps(0, 2, 0.1, 0);
+    run_grad<opg::NSI<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad_nunm")) {
+    auto p = nominal_params<opg::NUNM<double>>();
+    p.SetAlpha(1, 0, 0.02, 0.1);
+    run_grad<opg::NUNM<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad_sterile")) {
+    auto p = nominal_params<opg::Sterile<double>>();
+    p.mix.SetDm(4, 1.0);
+    p.mix.SetAngle(2, 4, 0.1);
+    run_grad<opg::Sterile<double>>(p, nE, nC, dev, reps);
   }
   if (want("binned")) {
     run_binned<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 40, 20, 8,

@@ -13,27 +13,70 @@
 #ifndef OPG_MODELS_STERILE_H
 #define OPG_MODELS_STERILE_H
 
+#include <string>
+#include <vector>
+
 #include "opg/core/constants.h"
+#include "opg/core/dual.h"
 #include "opg/linalg/jacobi_herm.h"
+#include "opg/physics/eigen_grad.h"
 #include "opg/physics/mixing.h"
 #include "opg/physics/propagate.h"
 
 namespace opg {
+
+  /// Sterile parameters with scalar type S.
+  template <class S> struct SterileParams {
+      MixingParamsT<4, S> mix;
+  };
+
+  /// Sterile prepared state with scalar type S.
+  template <class S> struct SterilePrepared {
+      Mat<4, S> Hms;   ///< U diag(dm) U^dagger (upper triangle), eV^2
+      S         vfac;  ///< kK2*sqrt(2)*G_F
+  };
 
   template <class R = double> struct Sterile {
       using Real                        = R;
       static constexpr int         N    = 4;
       static constexpr const char* name = "Sterile";
 
-      struct Params {
-          MixingParams<4> mix;
-      };
+      /// Derivative directions per gradient pass (see opg::grad_traits).
+#ifdef OPG_STERILE_GRAD_CHUNK
+      static constexpr int grad_chunk = OPG_STERILE_GRAD_CHUNK;
+#else
+      static constexpr int grad_chunk = 1;  // tuned on V100 (K = 2 spills ~5 KB, 1.35x slower)
+#endif
 
-      struct Prepared {
-          Mat<4, R> Hms;   ///< U diag(dm) U^dagger (upper triangle), eV^2
-          R         vfac;  ///< kK2*sqrt(2)*G_F
-      };
+      template <class S> using ParamsT   = SterileParams<S>;
+      using Params                       = SterileParams<double>;
+      template <class S> using PreparedT = SterilePrepared<S>;
+      using Prepared                     = SterilePrepared<R>;
 
+      /// Names of the differentiable parameters (MixingRegistry<4>):
+      /// th12, th13, th23, th14, th24, th34, d13, d14, d24, dm21, dm31, dm41.
+      static std::vector<std::string> param_names()
+      {
+        return MixingRegistry<4>::names();
+      }
+      template <class S> static S& param_ref(ParamsT<S>& p, int idx)
+      {
+        return MixingRegistry<4>::ref(p.mix, idx);
+      }
+      template <class S> static ParamsT<S> cast(const Params& p)
+      {
+        return ParamsT<S>{cast_mixing<S>(p.mix)};
+      }
+
+      template <class S> static PreparedT<S> prepare_generic(const ParamsT<S>& p)
+      {
+        PreparedT<S> out;
+        out.Hms  = build_hms_generic<4, S>(p.mix);
+        out.vfac = S(constants::matter_prefactor());
+        return out;
+      }
+
+      /// Hms is built in double precision for any R.
       static Prepared prepare(const Params& p)
       {
         Prepared out;
@@ -43,17 +86,26 @@ namespace opg {
       }
 
       /// Port of PMNS_Sterile::UpdateHam, written for the upper triangle
-      /// (OscProb fills the lower triangle with the conjugate).
-      OPG_HD OPG_INLINE static void hamiltonian(const Prepared& P, R E,
+      /// (OscProb fills the lower triangle with the conjugate), for any
+      /// scalar type S of the prepared state.
+      template <class S>
+      OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
                                                 bool nubar, const Segment<R>& s,
-                                                Mat<4, R>& H)
+                                                Mat<4, S>& H)
       {
-        R rho = s.density;
-        R zoa = s.zoa;
-        R lv  = 2 * R(constants::kGeV2eV) * E;  // 2E in eV
+        const R rho = s.density;
+        const R zoa = s.zoa;
+        const S lv  = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
 
-        R kr2GNe = P.vfac * rho * zoa;            // Electron matter potential
-        R kr2GNn = P.vfac * rho * (1 - zoa) / 2;  // Neutron matter potential
+        // Electron matter potential
+        S kr2GNe = P.vfac;
+        kr2GNe *= rho;
+        kr2GNe *= zoa;
+        // Neutron matter potential
+        S kr2GNn = P.vfac;
+        kr2GNn *= rho;
+        kr2GNn *= (1 - zoa);
+        kr2GNn /= R(2);
 
         OPG_UNROLL
         for (int i = 0; i < 4; i++) {
@@ -96,6 +148,43 @@ namespace opg {
       }
 
       OPG_HD OPG_INLINE static void finalize(const Prepared&, bool, Mat<4, R>&) {}
+
+      // --- gradients ---------------------------------------------------------
+      template <int K>
+      OPG_HD OPG_INLINE static void initial_grad(const PreparedT<Dual<R, K>>&,
+                                                 bool, Mat<4, R> (&dS)[K])
+      {
+        OPG_UNROLL
+        for (int k = 0; k < K; k++) dS[k] = Mat<4, R>::zero();
+      }
+
+      /// Value eigensystem from Jacobi (as step()), derivative of H from
+      /// the dual hamiltonian (Daleckii-Krein, opg::eigen_step_grad).
+      template <int K>
+      OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
+                                              const PreparedT<Dual<R, K>>& PD,
+                                              R E, bool nubar,
+                                              const Segment<R>& s, Mat<4, R>& S,
+                                              Mat<4, R> (&dS)[K])
+      {
+        Mat<4, R> H, V;
+        R         lam[4];
+        hamiltonian(P, E, nubar, s, H);
+        jacobi_hermitian<4, R>(H, V, lam);
+
+        Mat<4, Dual<R, K>> HD;
+        hamiltonian(PD, E, nubar, s, HD);
+
+        eigen_step_grad<4, R, K>(V, lam, length_in_eV(s.length), HD, S, dS);
+      }
+
+      template <int K>
+      OPG_HD OPG_INLINE static void finalize_grad(const Prepared&,
+                                                  const PreparedT<Dual<R, K>>&,
+                                                  bool, Mat<4, R>&,
+                                                  Mat<4, R> (&)[K])
+      {
+      }
   };
 
 } // namespace opg

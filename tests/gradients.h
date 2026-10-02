@@ -3,6 +3,7 @@
 #ifndef OPG_TESTS_GRADIENTS_H
 #define OPG_TESTS_GRADIENTS_H
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <string>
@@ -17,10 +18,24 @@ namespace gradtest {
 
   using Fast = opg::Fast<double>;
   using LD   = long double;
-  using FL   = opg::Fast<LD>;
 
-  /// Parameter points to test.
-  inline std::vector<std::pair<std::string, Fast::Params>> param_points()
+  /// The same model in long double (for the finite-difference reference).
+  template <class Model> struct LongDouble;
+  template <template <class> class M, class R> struct LongDouble<M<R>> {
+      using type = M<LD>;
+  };
+
+  /// Number of mixing parameters (they come first in param_names()).
+  template <class Model> size_t MixingCount()
+  {
+    return size_t(opg::MixingRegistry<Model::N>::count());
+  }
+
+  /// Parameter points to test, per model.
+  template <class Model>
+  std::vector<std::pair<std::string, typename Model::Params>> param_points();
+
+  template <> inline std::vector<std::pair<std::string, Fast::Params>> param_points<Fast>()
   {
     std::vector<std::pair<std::string, Fast::Params>> v;
     Fast::Params                                     p;
@@ -41,16 +56,79 @@ namespace gradtest {
     return v;
   }
 
-  /// Relative step for each parameter (angles absolute, dm relative).
+  using NSI = opg::NSI<double>;
+  template <> inline std::vector<std::pair<std::string, NSI::Params>> param_points<NSI>()
+  {
+    std::vector<std::pair<std::string, NSI::Params>> v;
+    v.push_back({"nsi", variants::nsi()});
+    v.push_back({"nsi_phases", variants::nsi_phases()});
+    NSI::Params p;
+    p.mix = variants::nominal_mix<3>();
+    v.push_back({"eps=0", p});
+    p.SetFermCoup(0, 0, 0);
+    v.push_back({"eps=0,coup=0", p});
+    p = variants::nsi_phases();
+    p.SetEps(0, 1, 0.0, 0.7);  // zero magnitude, nonzero phase
+    p.SetEps(1, 2, 0.3, M_PI);
+    v.push_back({"emu=0,mutau@pi", p});
+    return v;
+  }
+
+  using NUNM = opg::NUNM<double>;
+  template <> inline std::vector<std::pair<std::string, NUNM::Params>> param_points<NUNM>()
+  {
+    std::vector<std::pair<std::string, NUNM::Params>> v;
+    v.push_back({"nunm", variants::nunm(0)});
+    v.push_back({"nunm_phases", variants::nunm_phases()});
+    v.push_back({"nunm_high", variants::nunm(1)});
+    auto ph = variants::nunm_phases();
+    ph.scale = 1;
+    v.push_back({"nunm_phases_high", ph});
+    NUNM::Params p;
+    p.mix = variants::nominal_mix<3>();
+    v.push_back({"alpha=0", p});
+    p.scale = 1;
+    v.push_back({"alpha=0,high", p});
+    return v;
+  }
+
+  using Sterile = opg::Sterile<double>;
+  template <>
+  inline std::vector<std::pair<std::string, Sterile::Params>> param_points<Sterile>()
+  {
+    std::vector<std::pair<std::string, Sterile::Params>> v;
+    Sterile::Params p;
+    p.mix = variants::sterile_mix();
+    v.push_back({"sterile", p});
+    p.mix = variants::sterile_phases_mix();
+    v.push_back({"sterile_phases", p});
+    p.mix = variants::sterile_mix();
+    p.mix.SetAngle(1, 4, 0);
+    p.mix.SetAngle(2, 4, 0);
+    p.mix.SetAngle(3, 4, 0);
+    v.push_back({"th14=th24=th34=0", p});
+    p.mix = variants::sterile_phases_mix();
+    p.mix.SetDm(4, 2.0e-3);  // near the atmospheric splitting
+    v.push_back({"dm41~dm31", p});
+    return v;
+  }
+
+  /// Step for each parameter: 1e-4 absolute for angles, phases and
+  /// couplings (smaller steps amplify the long-double round-off of the
+  /// O(1e5) rad phases at dm41 ~ 1 eV^2); relative 1e-5 for mass
+  /// splittings, capped at 3e-8 eV^2 so that the oscillation phase changes
+  /// by at most ~1e-3 rad over the Earth even for dm41 ~ 1 eV^2.
   inline LD step(const std::string& name, LD value)
   {
-    if (name.rfind("dm", 0) == 0) return std::fabs(value) * 1e-5L;
-    return 1e-5L;
+    if (name.rfind("dm", 0) == 0) return std::min(std::fabs(value) * 1e-5L, 3e-8L);
+    return 1e-4L;
   }
 
   /// P[a][b] for a list of points through either the PREM model or a
   /// fixed path, computed in long double.
-  struct LDEval {
+  template <class Model> struct LDEval {
+      using FL               = typename LongDouble<Model>::type;
+      static constexpr int N = Model::N;
       opg::PremModel::HostTable<LD>   table;
       std::vector<opg::Segment<LD>>   path;
       bool                            use_path;
@@ -62,7 +140,7 @@ namespace gradtest {
         for (auto& s : p) path.push_back({s.length, s.density, s.zoa, s.layer});
       }
 
-      std::vector<LD> probs(const FL::Prepared& P, const std::vector<double>& E,
+      std::vector<LD> probs(const typename FL::Prepared& P, const std::vector<double>& E,
                             const std::vector<double>& C, const std::vector<int>& nb) const
       {
         std::vector<LD> out;
@@ -72,60 +150,73 @@ namespace gradtest {
                                                        LD(E[i]), nb[i] != 0)
                             : opg::evolve_prem<FL, LD>(P, ev, LD(E[i]), LD(C[i]),
                                                        nb[i] != 0);
-          for (int a = 0; a < 3; a++)
-            for (int b = 0; b < 3; b++) out.push_back(opg::norm(S(b, a)));
+          for (int a = 0; a < N; a++)
+            for (int b = 0; b < N; b++) out.push_back(opg::norm(S(b, a)));
         }
         return out;
       }
 
-      /// dP/dp by 4-point central differences: ref[p][i][a][b]
-      std::vector<std::vector<LD>> grads(const Fast::Params& p0,
+      /// dP/dp by 6-point central differences (error O(h^6)): ref[p][i][a][b]
+      std::vector<std::vector<LD>> grads(const typename Model::Params& p0,
                                          const std::vector<std::string>& names,
                                          const std::vector<double>& E,
                                          const std::vector<double>& C,
                                          const std::vector<int>& nb) const
       {
-        auto                         all = Fast::param_names();
+        auto                         all = Model::param_names();
         std::vector<std::vector<LD>> out;
         for (auto& n : names) {
           int  idx = int(std::find(all.begin(), all.end(), n) - all.begin());
-          auto base = Fast::cast<LD>(p0);
+          auto base = Model::template cast<LD>(p0);
           LD   x0   = FL::param_ref(base, idx);
           LD   h    = step(n, x0);
           auto at   = [&](LD dx) {
             auto q                 = base;
             FL::param_ref(q, idx)  = x0 + dx;
-            return probs(FL::prepare_generic<LD>(q), E, C, nb);
+            return probs(FL::template prepare_generic<LD>(q), E, C, nb);
           };
           auto p1 = at(h), m1 = at(-h), p2 = at(2 * h), m2 = at(-2 * h);
+          auto p3 = at(3 * h), m3 = at(-3 * h);
           std::vector<LD> g(p1.size());
           for (size_t i = 0; i < g.size(); i++)
-            g[i] = (8 * (p1[i] - m1[i]) - (p2[i] - m2[i])) / (12 * h);
+            g[i] = (45 * (p1[i] - m1[i]) - 9 * (p2[i] - m2[i]) + (p3[i] - m3[i])) /
+                   (60 * h);
           out.push_back(g);
         }
         return out;
       }
   };
 
-  /// max_i |g - ref| / max(max_i |ref|, 1e-3), per parameter, maximised over
-  /// parameters. The floor handles derivatives that vanish identically
-  /// (e.g. d/d delta at theta12 = 0), where both sides are round-off noise
-  /// (~1e-13 absolute, against typical derivatives of O(1e-2..1)).
+  /// max_i |g - ref| / max(max_i |ref|, floor), per parameter, maximised
+  /// over parameters. The floor handles derivatives that vanish identically
+  /// (e.g. d/d delta at theta12 = 0, or d/d dm41 of P(s -> s) = 1 at zero
+  /// sterile mixing), where both sides are round-off noise. It is 1e-3 for
+  /// angles, phases and couplings (typical derivatives O(1e-2..1)) and 10
+  /// eV^-2 for mass splittings, whose derivatives scale with L/E (up to
+  /// ~5e4 eV^-2 through the Earth at 0.3 GeV).
+  inline double grad_floor(const std::string& name)
+  {
+    return name.rfind("dm", 0) == 0 ? 10.0 : 1e-3;
+  }
+
   inline double rel_err(const std::vector<double>& g /*[p][a][b][i]*/,
                         const std::vector<std::vector<LD>>& ref /*[p][i][a][b]*/,
-                        size_t n)
+                        size_t n, int NN, const std::vector<std::string>& names,
+                        size_t* which = nullptr)
   {
     double worst = 0;
     for (size_t p = 0; p < ref.size(); p++) {
       double m = 0, r = 0;
       for (size_t i = 0; i < n; i++)
-        for (int ab = 0; ab < 9; ab++) {
-          double gr = double(ref[p][i * 9 + ab]);
-          double gg = g[(p * 9 + ab) * n + i];
+        for (int ab = 0; ab < NN; ab++) {
+          double gr = double(ref[p][i * NN + ab]);
+          double gg = g[(p * NN + ab) * n + i];
           m         = std::max(m, std::fabs(gg - gr));
           r         = std::max(r, std::fabs(gr));
         }
-      worst = std::max(worst, m / std::max(r, 1e-3));
+      const double e = m / std::max(r, grad_floor(names[p]));
+      if (e > worst && which) *which = p;
+      worst = std::max(worst, e);
     }
     return worst;
   }
@@ -149,51 +240,71 @@ namespace gradtest {
       }
   };
 
-  /// Full gradient checks for one propagator (CPU or GPU).
-  inline void check_against_ld(opg::Propagator<Fast>& prop, double tol)
+  /// Full gradient checks for one propagator (CPU or GPU): all parameters
+  /// at every point of param_points<Model>().
+  template <class Model>
+  void check_against_ld(opg::Propagator<Model>& prop, double tol)
   {
-    auto names = Fast::param_names();
+    constexpr int NN    = Model::N * Model::N;
+    auto          names = Model::param_names();
     prop.set_gradient_params(names);
     opg::PremModel prem;
-    LDEval         ldprem(prem);
-    LDEval         ldpath(prem, refcmp::test_path());
-    LDEval         ldvac(prem, refcmp::vacuum_path());
+    LDEval<Model>  ldprem(prem);
+    LDEval<Model>  ldpath(prem, refcmp::test_path());
+    LDEval<Model>  ldvac(prem, refcmp::vacuum_path());
     Points         pts;
     std::vector<double> Ep;
     for (int i = 0; i < 60; i++) Ep.push_back(std::pow(10.0, -1 + 2.0 * i / 59));
 
-    for (auto& [label, par] : param_points()) {
+    for (auto& [label, par] : param_points<Model>()) {
       prop.set_params(par);
       // PREM event list
       std::vector<double> P, dP;
       prop.prob_points_grad(pts.E, pts.C, pts.nb, P, dP);
       auto   ref = ldprem.grads(par, names, pts.E, pts.C, pts.nbi);
-      double e1  = rel_err(dP, ref, pts.E.size());
+      size_t w1 = 0;
+      double e1  = rel_err(dP, ref, pts.E.size(), NN, names, &w1);
       // fixed paths (test path, vacuum), nu and nubar
       double e2 = 0, e3 = 0;
       for (int b = 0; b < 2; b++) {
         std::vector<int> nbv(Ep.size(), b);
         std::vector<double> Cdummy(Ep.size(), 0.0);
         prop.prob_path_grad(Ep, refcmp::test_path(), b, P, dP);
-        e2 = std::max(e2, rel_err(dP, ldpath.grads(par, names, Ep, Cdummy, nbv), Ep.size()));
+        e2 = std::max(e2, rel_err(dP, ldpath.grads(par, names, Ep, Cdummy, nbv),
+                                  Ep.size(), NN, names));
         prop.prob_path_grad(Ep, refcmp::vacuum_path(), b, P, dP);
-        e3 = std::max(e3, rel_err(dP, ldvac.grads(par, names, Ep, Cdummy, nbv), Ep.size()));
+        e3 = std::max(e3, rel_err(dP, ldvac.grads(par, names, Ep, Cdummy, nbv),
+                                  Ep.size(), NN, names));
       }
-      MESSAGE("Fast gradients [" << label << "] vs long-double FD: PREM "
-                                 << e1 << ", test path " << e2 << ", vacuum " << e3);
+      MESSAGE(std::string(Model::name)
+              << " gradients [" << label << "] vs long-double FD: PREM " << e1 << " ("
+              << names[w1] << "), test path " << e2 << ", vacuum " << e3);
       CHECK(e1 < tol);
       CHECK(e2 < tol);
       CHECK(e3 < tol);
     }
   }
 
-  /// Gradients on must not change probabilities.
-  inline void check_values_unchanged(opg::Propagator<Fast>& prop)
+  /// A few parameters to differentiate in the consistency checks (all
+  /// kinds, more than one gradient pass).
+  template <class Model> std::vector<std::string> some_params()
   {
-    Fast::Params par;
-    par.mix = variants::nominal_mix<3>();
+    auto all = Model::param_names();
+    std::vector<std::string> v = {"dm31", "th23", "d13", "th13", "dm21"};
+    for (size_t i = MixingCount<Model>(); i < all.size(); i += 2) v.push_back(all[i]);
+    if (all.size() > MixingCount<Model>()) v.push_back(all.back());
+    return v;
+  }
+
+  /// Gradients on must not change probabilities.
+  template <class Model> void check_values_unchanged(opg::Propagator<Model>& prop)
+  {
+    constexpr int NN  = Model::N * Model::N;
+    auto          par = param_points<Model>()[0].second;
     prop.set_params(par);
-    prop.set_gradient_params({"th23", "dm31"});
+    std::vector<std::string> sel = {"th23", "dm31"};
+    if (Model::param_names().back() != "dm31") sel.push_back(Model::param_names().back());
+    prop.set_gradient_params(sel);
     Points pts;
     auto   P0 = prop.prob_points(pts.E, pts.C, pts.nb);
     std::vector<double> P1, dP;
@@ -205,7 +316,7 @@ namespace gradtest {
     for (int i = 0; i < 23; i++) C.push_back(-1 + 2.0 * i / 22);
     prop.set_grid(E, C);
     prop.calculate();
-    std::vector<double> g0(prop.probs(), prop.probs() + 2 * 9 * E.size() * C.size());
+    std::vector<double> g0(prop.probs(), prop.probs() + 2 * NN * E.size() * C.size());
     prop.calculate(opg::Flavor::Both, true);
     std::vector<double> g1(prop.probs(), prop.probs() + g0.size());
     CHECK(g0 == g1);
@@ -213,13 +324,14 @@ namespace gradtest {
 
   /// Grid gradients equal the event-list gradients at the same points, and
   /// the weighted mode equals the explicit contraction of full gradients.
-  inline void check_grid_and_weighted(opg::Propagator<Fast>& prop, double tol_w,
-                                      double tol_same = 0)
+  template <class Model>
+  void check_grid_and_weighted(opg::Propagator<Model>& prop, double tol_w,
+                               double tol_same = 0)
   {
-    Fast::Params par;
-    par.mix = variants::nominal_mix<3>();
+    constexpr int NN  = Model::N * Model::N;
+    auto          par = param_points<Model>()[0].second;
     prop.set_params(par);
-    std::vector<std::string> names = {"dm31", "th23", "d13", "th13", "dm21"};
+    std::vector<std::string> names = some_params<Model>();
     prop.set_gradient_params(names);
     const size_t        np = names.size();
     std::vector<double> E, C;
@@ -228,7 +340,7 @@ namespace gradtest {
     const size_t nE = E.size(), nC = C.size(), npt = nE * nC;
     prop.set_grid(E, C);
     prop.calculate(opg::Flavor::Both, true);
-    std::vector<double> G(prop.grad(), prop.grad() + 2 * np * 9 * npt);
+    std::vector<double> G(prop.grad(), prop.grad() + 2 * np * NN * npt);
 
     // event list at the same points
     std::vector<double>  e, c;
@@ -245,33 +357,34 @@ namespace gradtest {
     double d = 0;
     for (int b = 0; b < 2; b++)
       for (size_t p = 0; p < np; p++)
-        for (int ab = 0; ab < 9; ab++)
+        for (int ab = 0; ab < NN; ab++)
           for (size_t k = 0; k < npt; k++) {
-            double gg = G[((b * np + p) * 9 + ab) * npt + k];
-            double gp = dP[(p * 9 + ab) * (2 * npt) + b * npt + k];
+            double gg = G[((b * np + p) * NN + ab) * npt + k];
+            double gp = dP[(p * NN + ab) * (2 * npt) + b * npt + k];
             d         = std::max(d, std::fabs(gg - gp));
           }
-    MESSAGE("grid vs event-list gradients: max diff " << d);
+    MESSAGE(std::string(Model::name) << " grid vs event-list gradients: max diff " << d);
     CHECK(d <= tol_same);
 
     // weighted mode (grid)
     std::mt19937_64                        rng(3);
     std::uniform_real_distribution<double> u(-1, 1);
-    std::vector<double>                    w(2 * 9 * npt);
+    std::vector<double>                    w(2 * NN * npt);
     for (auto& x : w) x = u(rng);
     auto           gw = prop.weighted_gradient(w);
     std::vector<double> ge(np, 0), scale(np, 0);
     for (int b = 0; b < 2; b++)
       for (size_t p = 0; p < np; p++)
-        for (int ab = 0; ab < 9; ab++)
+        for (int ab = 0; ab < NN; ab++)
           for (size_t k = 0; k < npt; k++) {
-            double t = w[(b * 9 + ab) * npt + k] * G[((b * np + p) * 9 + ab) * npt + k];
+            double t = w[(b * NN + ab) * npt + k] * G[((b * np + p) * NN + ab) * npt + k];
             ge[p] += t;
             scale[p] += std::fabs(t);
           }
     double rw = 0;
-    for (size_t p = 0; p < np; p++) rw = std::max(rw, std::fabs(gw[p] - ge[p]) / scale[p]);
-    MESSAGE("weighted grid gradient vs explicit contraction: " << rw);
+    for (size_t p = 0; p < np; p++)
+      rw = std::max(rw, std::fabs(gw[p] - ge[p]) / std::max(scale[p], 1e-300));
+    MESSAGE(std::string(Model::name) << " weighted grid gradient vs explicit contraction: " << rw);
     CHECK(rw < tol_w);
     CHECK(prop.weighted_gradient(w) == gw);  // deterministic
 
@@ -279,21 +392,21 @@ namespace gradtest {
     auto gnb = prop.weighted_gradient(w, opg::Flavor::Antineutrino);
     std::vector<double> gnbe(np, 0);
     for (size_t p = 0; p < np; p++)
-      for (int ab = 0; ab < 9; ab++)
+      for (int ab = 0; ab < NN; ab++)
         for (size_t k = 0; k < npt; k++)
-          gnbe[p] += w[(9 + ab) * npt + k] * G[((np + p) * 9 + ab) * npt + k];
+          gnbe[p] += w[(NN + ab) * npt + k] * G[((np + p) * NN + ab) * npt + k];
     for (size_t p = 0; p < np; p++)
       CHECK(std::fabs(gnb[p] - gnbe[p]) <= tol_w * scale[p]);
 
     // weighted mode (event list)
-    std::vector<double> wp(9 * e.size());
+    std::vector<double> wp(NN * e.size());
     for (auto& x : wp) x = u(rng);
     auto gwp = prop.weighted_gradient_points(e, c, nb, wp);
     for (size_t p = 0; p < np; p++) {
       double s = 0, sc = 0;
-      for (int ab = 0; ab < 9; ab++)
+      for (int ab = 0; ab < NN; ab++)
         for (size_t i = 0; i < e.size(); i++) {
-          double t = wp[ab * e.size() + i] * dP[(p * 9 + ab) * e.size() + i];
+          double t = wp[ab * e.size() + i] * dP[(p * NN + ab) * e.size() + i];
           s += t;
           sc += std::fabs(t);
         }

@@ -168,9 +168,20 @@ oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 ## Gradients
 
 Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
-**Status:** available for `Fast` (θ12, θ13, θ23, δ13, Δm²21, Δm²31); NSI, NUNM,
-Sterile and Decay, bin-averaged gradients and Earth Z/A parameters are planned
-(see [docs/ROADMAP.md](docs/ROADMAP.md)).
+**Status:** available for `Fast`, `NSI`, `NUNM` and `Sterile`; Decay,
+bin-averaged gradients and Earth Z/A parameters are planned (see
+[docs/ROADMAP.md](docs/ROADMAP.md)). Parameters (`parameter_names`):
+
+| Model | Parameters |
+|-------|------------|
+| Fast    | `th12 th13 th23 d13 dm21 dm31` |
+| NSI     | mixing, `eps_ee eps_emu eps_etau eps_mumu eps_mutau eps_tautau` (magnitudes as in `set_eps`), `ph_emu ph_etau ph_mutau`, `coup_e coup_u coup_d` |
+| NUNM    | mixing, `alpha_ee alpha_mue alpha_taue alpha_mumu alpha_taumu alpha_tautau` (values as in `set_alpha`, diagonal = 1 + value), `ph_mue ph_taue ph_taumu`, `frac_vnc` |
+| Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41` |
+
+Phases are differentiated at fixed magnitude, so derivatives are well defined
+at zero couplings. In the NUNM high-scale scenario the derivatives include the
+row normalisation of α.
 
 Gradients are **off unless requested**: probability-only calls run the same
 code as before and are unaffected, and gradient buffers are only allocated when
@@ -211,22 +222,36 @@ eigensystem is the usual one, and the derivative of U = exp(−iHL) follows from
 the Daleckii–Krein formula dU = V[(V†dH V) ∘ Γ]V†, with divided differences
 Γ evaluated stably for any eigenvalue separation. Derivatives are therefore
 exact (no step sizes) and well behaved at zero mixing angles and near
-degeneracies. Parameters are processed in passes of K = 2 directions.
+degeneracies. Parameters are processed in passes of K directions (K = 2;
+K = 1 for Sterile, whose 4x4 kernels would otherwise spill registers).
 
 **Validation** (`tests/test_gradients.cpp`, `tests/gpu/test_gradients_gpu.cpp`,
-`python/tests/test_gradients.py`): against 4-point central differences
-computed entirely in long double, the maximum error relative to the largest
-derivative of each parameter is ≤ 6e-12 for generic parameters and ≤ 2.4e-10
-at θ13 = 0 or θ12 = 0 (PREM event lists, test path and vacuum, ν and ν̄; GPU
-and CPU). Probabilities are bit-identical with gradients on or off; GPU and CPU
-gradients agree to 4e-14; grid, event-list and weighted modes are consistent;
-multi-GPU results equal single-GPU results.
+`python/tests/test_gradients.py`): against 6-point central differences
+computed entirely in long double, for every parameter of every model, the
+maximum error relative to the largest derivative of each parameter is
+≤ 1e-11 for generic parameters and ≤ 2.4e-10 at degenerate points (θ13 = 0,
+θ12 = 0, α = 0, zero sterile mixing) and for Sterile at Δm²41 = 1.3 eV², where
+the long-double reference itself is limited by phases of ~1e5 rad (PREM event
+lists, test path and vacuum, ν and ν̄; GPU and CPU; test points include zero
+NSI couplings and phases at π, unitary α in both NUNM scenarios, and
+Δm²41 ≈ Δm²31). Probabilities are bit-identical with gradients on or off; GPU
+and CPU gradients agree to 1e-13; grid, event-list and weighted modes are
+consistent; multi-GPU results equal single-GPU results.
 
-**Cost** (1000 × 1000 grid, ν and ν̄, all 6 parameters, relative to a
-probability-only evaluation): ~10.5x on one V100 (0.25 s; 0.13 s on two),
-weighted mode ~12.6x including the upload of the weights (0.31 s; 0.19 s on two);
-~5.7x on the CPU. This is about 1.6 probability evaluations per parameter,
-cheaper than central finite differences (2 per parameter) and exact.
+**Cost** (1000 × 1000 grid, ν and ν̄, all parameters, one V100, relative to
+a probability-only evaluation of the same model; two GPUs halve the times):
+
+| Model | Parameters | P + full gradients | Weighted mode | per parameter |
+|-------|-----------:|-------------------:|--------------:|--------------:|
+| Fast    | 6  | 10.5x (0.26 s) | 12.6x (0.31 s) | 1.8 |
+| NSI     | 18 | 33x (0.81 s)   | 38x (0.93 s)   | 1.8 |
+| NUNM    | 16 | 32x (0.85 s)   | 36x (0.95 s)   | 2.0 |
+| Sterile | 12 | 18x (3.0 s)    | 20x (3.2 s)    | 1.5 |
+
+The weighted times include uploading the weights. On the CPU the factors are
+similar (9x, 28x, 28x, 17x). This is about 1.5–2 probability evaluations per
+parameter: comparable to central finite differences (2 per parameter), but
+exact.
 
 ## Validation
 
