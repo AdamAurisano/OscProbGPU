@@ -6,6 +6,7 @@
 
 #include <cmath>
 
+#include "opg/models/all.h"
 #include "opg/physics/mixing.h"
 
 namespace variants {
@@ -50,6 +51,62 @@ namespace variants {
     p.SetAngle(3, 4, 0.3);
     p.SetDelta(1, 4, 0.9);
     p.SetDelta(2, 4, -1.7);
+    return p;
+  }
+
+  //...........................................................................
+  inline opg::NSI<>::Params nsi()
+  {
+    opg::NSI<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetEps(0, 0, 0.1, 0);
+    p.SetEps(0, 1, 0.2, 0);
+    p.SetEps(0, 2, 0.3, 0);
+    p.SetEps(1, 1, 0.4, 0);
+    p.SetEps(1, 2, 0.5, 0);
+    p.SetEps(2, 2, 0.6, 0);
+    return p;
+  }
+
+  inline opg::NSI<>::Params nsi_phases()
+  {
+    opg::NSI<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetEps(0, 0, -0.2, 0);
+    p.SetEps(0, 1, 0.05, 0.7);
+    p.SetEps(0, 2, 0.15, -1.3);
+    p.SetEps(1, 1, 0.02, 0);
+    p.SetEps(1, 2, 0.03, 2.1);
+    p.SetEps(2, 2, 0.1, 0);
+    p.SetFermCoup(0.5, 1.0, 0.8);
+    return p;
+  }
+
+  inline opg::NUNM<>::Params nunm(int scale = 0)
+  {
+    opg::NUNM<>::Params p;
+    p.mix   = nominal_mix<3>();
+    p.scale = scale;
+    p.SetAlpha(0, 0, 0.05, 0);
+    p.SetAlpha(1, 0, 0.06, 0);
+    p.SetAlpha(2, 0, 0.07, 0);
+    p.SetAlpha(1, 1, 0.08, 0);
+    p.SetAlpha(2, 1, 0.09, 0);
+    p.SetAlpha(2, 2, 0.1, 0);
+    return p;
+  }
+
+  inline opg::NUNM<>::Params nunm_phases()
+  {
+    opg::NUNM<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetAlpha(0, 0, -0.03, 0);
+    p.SetAlpha(1, 0, 0.02, 0.4);
+    p.SetAlpha(2, 0, 0.04, -2.0);
+    p.SetAlpha(1, 1, -0.01, 0);
+    p.SetAlpha(2, 1, 0.05, 1.2);
+    p.SetAlpha(2, 2, -0.02, 0);
+    p.SetFracVnc(0.7);
     return p;
   }
 

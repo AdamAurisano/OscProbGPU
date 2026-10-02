@@ -87,13 +87,19 @@ namespace opg {
     for (int b = 0; b < N; b++) out[(a * N + b) * stride] = norm(S(b, a));
   }
 
+  // Every model provides
+  //   initial(P, nubar)        -> starting matrix (identity, or e.g. alpha^dagger)
+  //   step(P, E, nubar, seg, S) -> S <- U_seg S
+  //   finalize(P, nubar, S)    -> e.g. S <- alpha S
+  // and the probability is P(a -> b) = |S(b, a)|^2.
+
   /// Evolution matrix through a PREM path for direction cosZ.
   template <class Model, class R>
   OPG_HD inline Mat<Model::N, R>
   evolve_prem(const typename Model::Prepared& P, const EarthView<R>& earth,
               R E, R cosZ, bool nubar)
   {
-    auto S = Mat<Model::N, R>::identity();
+    auto S = Model::initial(P, nubar);
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
       Model::step(P, E, nubar, s, S);
     });
@@ -107,7 +113,7 @@ namespace opg {
   evolve_path(const typename Model::Prepared& P, const Segment<R>* path,
               int nseg, R E, bool nubar)
   {
-    auto S = Mat<Model::N, R>::identity();
+    auto S = Model::initial(P, nubar);
     for (int k = 0; k < nseg; k++) Model::step(P, E, nubar, path[k], S);
     Model::finalize(P, nubar, S);
     return S;

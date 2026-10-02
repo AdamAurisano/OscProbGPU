@@ -87,6 +87,19 @@ TEST_CASE("GPU Fast matches OscProb and the CPU backend")
   check_model<opg::Fast<double>>(p, "fast_io");
 }
 
+TEST_CASE("GPU NSI matches OscProb and the CPU backend")
+{
+  check_model<opg::NSI<>>(variants::nsi(), "nsi");
+  check_model<opg::NSI<>>(variants::nsi_phases(), "nsi_phases");
+}
+
+TEST_CASE("GPU NUNM matches OscProb and the CPU backend")
+{
+  check_model<opg::NUNM<>>(variants::nunm(0), "nunm");
+  check_model<opg::NUNM<>>(variants::nunm_phases(), "nunm_phases");
+  check_model<opg::NUNM<>>(variants::nunm(1), "nunm_high");
+}
+
 TEST_CASE("GPU Fast<float> is close to double precision")
 {
   opg::Fast<float>::Params p;

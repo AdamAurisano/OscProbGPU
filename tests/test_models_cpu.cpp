@@ -5,7 +5,7 @@
 #include "ref_compare.h"
 #include "variants.h"
 
-#include "opg/models/fast.h"
+#include "opg/models/all.h"
 
 namespace {
 
@@ -44,4 +44,24 @@ TEST_CASE("Fast (CPU) matches OscProb PMNS_Fast")
   p.mix = variants::fast_io_mix();
   prop.set_params(p);
   check_all(prop, "fast_io");
+}
+
+TEST_CASE("NSI (CPU) matches OscProb PMNS_NSI")
+{
+  opg::Propagator<opg::NSI<>> prop;
+  prop.set_params(variants::nsi());
+  check_all(prop, "nsi");
+  prop.set_params(variants::nsi_phases());
+  check_all(prop, "nsi_phases");
+}
+
+TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
+{
+  opg::Propagator<opg::NUNM<>> prop;
+  prop.set_params(variants::nunm(0));
+  check_all(prop, "nunm");
+  prop.set_params(variants::nunm_phases());
+  check_all(prop, "nunm_phases");
+  prop.set_params(variants::nunm(1));
+  check_all(prop, "nunm_high");
 }

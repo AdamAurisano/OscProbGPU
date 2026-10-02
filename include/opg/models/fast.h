@@ -59,6 +59,11 @@ namespace opg {
           H(0, 0).re -= kr2GNe;
       }
 
+      OPG_HD OPG_INLINE static Mat<3, R> initial(const Prepared&, bool)
+      {
+        return Mat<3, R>::identity();
+      }
+
       OPG_HD OPG_INLINE static void step(const Prepared& P, R E, bool nubar,
                                          const Segment<R>& s, Mat<3, R>& S)
       {
