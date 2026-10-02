@@ -1,0 +1,7 @@
+build*/
+__pycache__/
+*.pyc
+*.egg-info/
+/tests/data/*.npy
+/tests/data/*.bin
+/wheelhouse/
