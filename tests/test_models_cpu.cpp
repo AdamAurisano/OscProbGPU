@@ -114,3 +114,14 @@ TEST_CASE("Sterile 3+1 (CPU) is accurate against a long-double calculation")
     }
   }
 }
+
+TEST_CASE("Decay (CPU) matches OscProb PMNS_Decay")
+{
+  // Our expm follows Eigen's algorithm, but not its exact operation order.
+  const double tol = 1e-10;
+  opg::Propagator<opg::Decay<>> prop;
+  prop.set_params(variants::decay());
+  check_all(prop, "decay", tol);
+  prop.set_params(variants::decay_both());
+  check_all(prop, "decay_both", tol);
+}

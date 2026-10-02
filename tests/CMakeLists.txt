@@ -20,6 +20,14 @@ if(EXISTS ${_kopp}/zheevh3.cxx)
   target_include_directories(opg_tests_cpu PRIVATE ${_kopp})
   target_compile_definitions(opg_tests_cpu PRIVATE OPG_HAVE_KOPP_ORIG)
 endif()
+# Eigen (optional) to cross-check the matrix exponential against OscProb's
+set(OPG_EIGEN_INCLUDE "${PROJECT_SOURCE_DIR}/build-ref/oscprob-install/include/eigen3"
+    CACHE PATH "Eigen3 include directory (optional, for tests)")
+if(EXISTS ${OPG_EIGEN_INCLUDE}/unsupported/Eigen/MatrixFunctions)
+  message(STATUS "Using Eigen from ${OPG_EIGEN_INCLUDE} in tests")
+  target_include_directories(opg_tests_cpu SYSTEM PRIVATE ${OPG_EIGEN_INCLUDE})
+  target_compile_definitions(opg_tests_cpu PRIVATE OPG_HAVE_EIGEN)
+endif()
 target_compile_definitions(
   opg_tests_cpu PRIVATE OPG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
 add_test(NAME cpu COMMAND opg_tests_cpu)

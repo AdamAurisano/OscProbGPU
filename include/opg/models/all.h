@@ -10,6 +10,7 @@
 
 #include <type_traits>
 
+#include "opg/models/decay.h"
 #include "opg/models/fast.h"
 #include "opg/models/nsi.h"
 #include "opg/models/nunm.h"
@@ -22,7 +23,8 @@
   X(opg::Fast<float>)         \
   X(opg::NSI<double>)         \
   X(opg::NUNM<double>)        \
-  X(opg::Sterile<double>)
+  X(opg::Sterile<double>)     \
+  X(opg::Decay<double>)
 
 namespace opg {
   template <class Model> struct has_cuda_engine : std::false_type {};

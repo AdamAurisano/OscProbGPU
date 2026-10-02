@@ -112,6 +112,12 @@ TEST_CASE("GPU Sterile matches OscProb and the CPU backend")
   check_model<opg::Sterile<>>(p, "sterile_phases", 1e-10, 1e-10);
 }
 
+TEST_CASE("GPU Decay matches OscProb and the CPU backend")
+{
+  check_model<opg::Decay<>>(variants::decay(), "decay", 1e-10, 1e-10);
+  check_model<opg::Decay<>>(variants::decay_both(), "decay_both", 1e-10, 1e-10);
+}
+
 TEST_CASE("GPU Fast<float> is close to double precision")
 {
   opg::Fast<float>::Params p;

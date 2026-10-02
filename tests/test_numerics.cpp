@@ -10,9 +10,15 @@
 
 #include "opg/avg/gauss_legendre.h"
 #include "opg/earth/prem.h"
+#include "opg/linalg/expm.h"
 #include "opg/linalg/jacobi_herm.h"
+#include "opg/models/decay.h"
 #include "opg/linalg/kopp/zheevh3.h"
 #include "opg/physics/mixing.h"
+
+#ifdef OPG_HAVE_EIGEN
+#include <unsupported/Eigen/MatrixFunctions>
+#endif
 
 #ifdef OPG_HAVE_KOPP_ORIG
 #include "zheevc3.h"
@@ -153,6 +159,22 @@ void check_hms(const std::string& tag, const opg::MixingParams<N>& p)
     }
 }
 
+TEST_CASE("Decay effective mass matrix matches OscProb PMNS_Decay fHms")
+{
+  for (auto tag : {"decay", "decay_both"}) {
+    auto ref = npy::load<double>(std::string(tag) + "_hms.npy");
+    auto P   = opg::Decay<>::prepare(std::string(tag) == "decay"
+                                         ? variants::decay()
+                                         : variants::decay_both());
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        INFO(tag << " Heff(" << i << "," << j << ")");
+        CHECK(P.Heff[0](i, j).re == ref[(i * 3 + j) * 2 + 0]);
+        CHECK(P.Heff[0](i, j).im == ref[(i * 3 + j) * 2 + 1]);
+      }
+  }
+}
+
 TEST_CASE("build_hms is bit-identical to OscProb fHms")
 {
   check_hms<3>("fast", variants::nominal_mix<3>());
@@ -271,3 +293,94 @@ TEST_CASE("Jacobi 4x4 hermitian eigensolver")
   }
   MESSAGE("Jacobi: max sweeps used = " << maxsweeps);
 }
+
+//.............................................................................
+namespace {
+  // exp(A) by Taylor series in long double with scaling and squaring
+  opg::Mat<3, long double> expm_reference(const opg::Mat<3, double>& A)
+  {
+    using ML = opg::Mat<3, long double>;
+    using CL = opg::Complex<long double>;
+    ML   B;
+    long double nrm = 0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        B(i, j) = CL(A(i, j).re, A(i, j).im);
+        nrm     = std::max(nrm, (long double)opg::abs(A(i, j)));
+      }
+    int s = 0;
+    while (nrm > 0.05L) { nrm /= 2; s++; }
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) B(i, j) = B(i, j) * std::ldexp(1.0L, -s);
+    ML sum = ML::identity(), term = ML::identity();
+    for (int k = 1; k < 40; k++) {
+      term = opg::matmul(term, B);
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) term(i, j) = term(i, j) / (long double)k;
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) sum(i, j) += term(i, j);
+    }
+    for (int k = 0; k < s; k++) sum = opg::matmul(sum, sum);
+    return sum;
+  }
+} // namespace
+
+TEST_CASE("expm (Pade scaling and squaring) is accurate")
+{
+  std::mt19937_64                        rng(5);
+  std::uniform_real_distribution<double> u(-1, 1);
+  for (int t = 0; t < 3000; t++) {
+    // norms spanning all Pade branches, up to ~1e3 (long baselines)
+    double scale = std::pow(10.0, -3 + 6.0 * (t % 13) / 12.0);
+    M3     A;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) A(i, j) = C(scale * u(rng), scale * u(rng));
+    // decay-like: anti-hermitian (oscillation) plus small damping
+    M3 B;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        C h  = (A(i, j) + opg::conj(A(j, i))) * 0.5;  // hermitian part
+        C d  = C(i == j ? -0.01 * scale * std::fabs(u(rng)) : 0, 0);
+        B(i, j) = C(h.im, -h.re) + d;                 // -i h + d
+      }
+    M3   X   = opg::expm<3, double>(B);
+    auto Xr  = expm_reference(B);
+    double err = 0, xmax = 0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        err  = std::max(err, (double)opg::abs(opg::Complex<long double>(X(i, j).re, X(i, j).im) - Xr(i, j)));
+        xmax = std::max(xmax, (double)opg::abs(Xr(i, j)));
+      }
+    INFO("scale = " << scale);
+    // relative accuracy degrades ~linearly with the norm (squarings)
+    CHECK(err <= 1e-14 * std::max(1.0, scale) * 10 * xmax);
+  }
+}
+
+#ifdef OPG_HAVE_EIGEN
+TEST_CASE("expm agrees with Eigen MatrixExponential")
+{
+  std::mt19937_64                        rng(6);
+  std::uniform_real_distribution<double> u(-1, 1);
+  double                                 worst = 0;
+  for (int t = 0; t < 3000; t++) {
+    double            scale = std::pow(10.0, -3 + 6.0 * (t % 13) / 12.0);
+    M3                A;
+    Eigen::Matrix3cd  Ae;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        A(i, j)  = C(scale * u(rng), scale * u(rng));
+        Ae(i, j) = {A(i, j).re, A(i, j).im};
+      }
+    M3               X  = opg::expm<3, double>(A);
+    Eigen::Matrix3cd Xe = Ae.exp();
+    double           nrm = Xe.cwiseAbs().maxCoeff(), err = 0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++)
+        err = std::max(err, std::abs(std::complex<double>(X(i, j).re, X(i, j).im) - Xe(i, j)));
+    worst = std::max(worst, err / nrm / std::max(1.0, scale));
+  }
+  MESSAGE("expm vs Eigen: worst relative difference / max(1, norm) = " << worst);
+  CHECK(worst < 1e-13);
+}
+#endif

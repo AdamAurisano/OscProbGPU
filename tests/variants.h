@@ -110,6 +110,23 @@ namespace variants {
     return p;
   }
 
+  inline opg::Decay<>::Params decay()
+  {
+    opg::Decay<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetAlpha3(1e-4);
+    return p;
+  }
+
+  inline opg::Decay<>::Params decay_both()
+  {
+    opg::Decay<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetAlpha2(3e-5);
+    p.SetAlpha3(2e-4);
+    return p;
+  }
+
 } // namespace variants
 
 #endif
