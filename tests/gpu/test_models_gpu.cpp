@@ -53,7 +53,8 @@ namespace {
   }
 
   template <class Model>
-  void check_model(const typename Model::Params& p, const std::string& tag)
+  void check_model(const typename Model::Params& p, const std::string& tag,
+                   double tol_ref = kTolRef, double tol_cpu = kTolCPU)
   {
     opg::Propagator<Model> gpu(opg::PremModel(), test_devices());
     opg::Propagator<Model> cpu(opg::PremModel(), {});
@@ -69,11 +70,11 @@ namespace {
                 << rv.max_abs << ", prem " << rp.max_abs << " ("
                 << rp.n_exact << "/" << rp.n << " exact), points "
                 << re.max_abs << ", GPU-CPU " << dc);
-    CHECK(rt.max_abs < kTolRef);
-    CHECK(rv.max_abs < kTolRef);
-    CHECK(rp.max_abs < kTolRef);
-    CHECK(re.max_abs < kTolRef);
-    CHECK(dc < kTolCPU);
+    CHECK(rt.max_abs < tol_ref);
+    CHECK(rv.max_abs < tol_ref);
+    CHECK(rp.max_abs < tol_ref);
+    CHECK(re.max_abs < tol_ref);
+    CHECK(dc < tol_cpu);
   }
 
 } // namespace
@@ -98,6 +99,17 @@ TEST_CASE("GPU NUNM matches OscProb and the CPU backend")
   check_model<opg::NUNM<>>(variants::nunm(0), "nunm");
   check_model<opg::NUNM<>>(variants::nunm_phases(), "nunm_phases");
   check_model<opg::NUNM<>>(variants::nunm(1), "nunm_high");
+}
+
+TEST_CASE("GPU Sterile matches OscProb and the CPU backend")
+{
+  opg::Sterile<>::Params p;
+  // Phases reach ~1e4 rad for Dm41 ~ 1 eV^2, so round-off (FMA on the GPU)
+  // is amplified to ~1e-11; see the long-double CPU test.
+  p.mix = variants::sterile_mix();
+  check_model<opg::Sterile<>>(p, "sterile", 1e-10, 1e-10);
+  p.mix = variants::sterile_phases_mix();
+  check_model<opg::Sterile<>>(p, "sterile_phases", 1e-10, 1e-10);
 }
 
 TEST_CASE("GPU Fast<float> is close to double precision")

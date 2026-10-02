@@ -25,6 +25,7 @@
 
 #include "opg/engine.h"
 #include "opg/engine_cpu.h"
+#include "opg/models/all.h"
 
 namespace opg {
 
@@ -54,7 +55,12 @@ namespace opg {
         if (devices.empty()) { fEngine.reset(new CpuEngine<Model>(cpu_threads)); }
         else {
 #ifdef OPG_HAVE_CUDA
-          fEngine = make_cuda_engine<Model>(devices);
+          if constexpr (has_cuda_engine<Model>::value)
+            fEngine = make_cuda_engine<Model>(devices);
+          else
+            throw std::runtime_error(
+                "opg::Propagator: this model/precision is not compiled into "
+                "the CUDA backend (see OPG_FOR_EACH_MODEL)");
 #else
           throw std::runtime_error(
               "opg::Propagator: GPU devices requested but OscProbGPU was "

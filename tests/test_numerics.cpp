@@ -10,6 +10,7 @@
 
 #include "opg/avg/gauss_legendre.h"
 #include "opg/earth/prem.h"
+#include "opg/linalg/jacobi_herm.h"
 #include "opg/linalg/kopp/zheevh3.h"
 #include "opg/physics/mixing.h"
 
@@ -223,4 +224,50 @@ TEST_CASE("Gauss-Legendre is exact up to degree 2n-1")
   double s = 0;
   for (int i = 0; i < 5; i++) s += w[i] * x[i] * x[i];
   CHECK(s == doctest::Approx((125.0 - 8.0) / 3));
+}
+
+//.............................................................................
+TEST_CASE("Jacobi 4x4 hermitian eigensolver")
+{
+  using M4 = opg::Mat<4, double>;
+  std::mt19937_64                        rng(99);
+  std::uniform_real_distribution<double> u(-1, 1);
+  int                                    maxsweeps = 0;
+  for (int t = 0; t < 3000; t++) {
+    double scale = std::pow(10.0, -14 + 2 * (t % 8));
+    M4     A     = M4::zero();
+    for (int i = 0; i < 4; i++) {
+      A(i, i) = C(scale * u(rng));
+      for (int j = i + 1; j < 4; j++) A(i, j) = C(scale * u(rng), scale * u(rng));
+    }
+    if (t % 3 == 0) {  // near-degenerate pair
+      A(2, 2) = A(1, 1);
+      A(1, 2) = C(scale * 1e-9, 0);
+    }
+    if (t % 5 == 0) A(0, 3) = C(0, 0);  // some exact zeros
+    M4     V;
+    double w[4];
+    int    ns = opg::jacobi_hermitian<4, double>(A, V, w);
+    REQUIRE(ns >= 0);
+    maxsweeps = std::max(maxsweeps, ns);
+    M4 Af = A;
+    opg::hermitize_from_upper(Af);
+    double amax = 0, res = 0, orth = 0;
+    for (int i = 0; i < 4; i++)
+      for (int j = 0; j < 4; j++) amax = std::max(amax, opg::abs(Af(i, j)));
+    for (int i = 0; i < 4; i++)
+      for (int k = 0; k < 4; k++) {
+        C s(0, 0), o(0, 0);
+        for (int j = 0; j < 4; j++) {
+          s += Af(i, j) * V(j, k);
+          o += opg::conj(V(j, i)) * V(j, k);
+        }
+        s -= V(i, k) * w[k];
+        res  = std::max(res, opg::abs(s));
+        orth = std::max(orth, opg::abs(o - C(i == k ? 1 : 0)));
+      }
+    CHECK(res <= 2e-15 * amax * 4);
+    CHECK(orth <= 2e-15 * 4);
+  }
+  MESSAGE("Jacobi: max sweeps used = " << maxsweeps);
 }

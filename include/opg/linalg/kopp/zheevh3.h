@@ -47,6 +47,9 @@ namespace opg {
     template <> struct Eps<float> {
         static constexpr float value = 1.19209290e-07f;
     };
+    template <> struct Eps<long double> {
+        static constexpr long double value = 1.0842021724855044340e-19L;
+    };
 
     template <class R> OPG_HD OPG_INLINE R sqr(R x) { return x * x; }
     template <class R> OPG_HD OPG_INLINE R sqr_abs(const Complex<R>& x)
