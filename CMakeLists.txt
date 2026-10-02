@@ -49,6 +49,26 @@ target_include_directories(
 target_compile_features(opg_core INTERFACE cxx_std_17)
 target_compile_definitions(
   opg_core INTERFACE OPG_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(opg_core INTERFACE OpenMP::OpenMP_CXX)
+endif()
+
+# ---------------------------------------------------------------------------
+# Compiled library: runtime helpers and (optionally) the CUDA backend
+# ---------------------------------------------------------------------------
+add_library(oscprobgpu src/runtime.cpp)
+add_library(OscProbGPU::oscprobgpu ALIAS oscprobgpu)
+set_target_properties(oscprobgpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(oscprobgpu PUBLIC opg_core)
+if(OPG_ENABLE_CUDA)
+  target_sources(oscprobgpu PRIVATE src/engine_cuda.cu)
+  target_compile_definitions(oscprobgpu PUBLIC OPG_HAVE_CUDA)
+  target_link_libraries(oscprobgpu PUBLIC CUDA::cudart)
+  set_target_properties(oscprobgpu PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+  target_compile_options(
+    oscprobgpu PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr
+                       -Xptxas=-warn-spills>)
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests

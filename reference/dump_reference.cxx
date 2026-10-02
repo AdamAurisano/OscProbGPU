@@ -20,6 +20,7 @@
 //                      padded with zeros; prem_npaths.npy : [nC] counts
 //   avg_*.npy        : brute-force 2D bin averages for Fast (see below)
 //
+// The eigensystem cache is disabled (OscProbGPU has none).
 // Parameter sets follow OscProb/test/Utils.h (NuFIT 5.2 NO), plus some
 // extra variants with complex phases.
 //
@@ -333,6 +334,7 @@ void dump_bin_averages(const string& dir, int nsub)
 {
   auto p = new PMNS_Fast();
   SetNominalPars(p);
+  p->SetUseCache(false);
   PremModel prem;
 
   // bins: {Elo, Ehi} x {Clo, Chi}
@@ -417,6 +419,8 @@ int main(int argc, char** argv)
   for (auto& v : GetVariants()) {
     cout << "Dumping " << v.tag << endl;
     PMNS_Base* p = v.make();
+    // OscProbGPU has no eigensystem cache; compare against uncached values.
+    p->SetUseCache(false);
     if (v.warmup) p->ProbMatrix(v.N, v.N, 1.0);
     dump_hms(v.hms(p), v.N, dir + "/" + v.tag + "_hms.npy");
     dump_fixed_path(p, v.N, testpath, Etest, dir + "/" + v.tag + "_testpath.npy");

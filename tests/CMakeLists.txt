@@ -6,8 +6,9 @@ target_include_directories(opg_doctest
 set(OPG_OSCPROB_DIR "${PROJECT_SOURCE_DIR}/../OscProb"
     CACHE PATH "Original OscProb sources (optional, for bitwise tests)")
 
-add_executable(opg_tests_cpu test_main.cpp test_core.cpp test_numerics.cpp)
-target_link_libraries(opg_tests_cpu PRIVATE opg_core opg_doctest)
+add_executable(opg_tests_cpu test_main.cpp test_core.cpp test_numerics.cpp
+                             test_models_cpu.cpp)
+target_link_libraries(opg_tests_cpu PRIVATE oscprobgpu opg_doctest)
 
 # Compile the original Kopp eigensolvers (LGPL) into the test, if available,
 # to check that our port is bit-identical.
