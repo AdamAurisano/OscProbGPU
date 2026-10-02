@@ -169,7 +169,8 @@ oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 
 Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
 **Status:** available for `Fast` (θ12, θ13, θ23, δ13, Δm²21, Δm²31); NSI, NUNM,
-Sterile and Decay, bin-averaged gradients and Earth Z/A parameters are planned.
+Sterile and Decay, bin-averaged gradients and Earth Z/A parameters are planned
+(see [docs/ROADMAP.md](docs/ROADMAP.md)).
 
 Gradients are **off unless requested**: probability-only calls run the same
 code as before and are unaffected, and gradient buffers are only allocated when
