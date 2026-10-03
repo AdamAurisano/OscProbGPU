@@ -2,8 +2,8 @@
 
 Status as of 2026-10-02: all five models (Fast, NSI, NUNM, Sterile 3+1, Decay)
 validated against OscProb on CPU and GPU; bin averaging; multi-GPU; Python
-bindings. Gradients (G0–G3 + weighted mode) are done for Fast, NSI, NUNM and
-Sterile; Decay (G4) is next.
+bindings. Gradients (G0–G4 + weighted mode) are done for all five models;
+G5 (binned / Earth) is next.
 
 ## Gradient plan (remaining)
 
@@ -39,10 +39,16 @@ bit-identical to OscProb under `OPG_OSCPROB_BITWISE`. NUNM's dual state goes to
 the kernels by pointer (4 KB limit). `grad_chunk`: NSI/NUNM K = 2, Sterile
 K = 1 (K = 2 spills ~5 KB on V100).
 
-### G4 — Decay
-Dual numbers through `expm` (Padé + LU; pivoting/scaling decisions use values).
-Parameters: mixing + `alpha2`, `alpha3`. Test at α = 0 (one-sided domain).
-Decay kernels already spill registers; tune `grad_chunk`.
+### G4 — Decay (done)
+`expm` is generic over the scalar type (degree, squarings and pivots from the
+values); `step_grad` uses the plain `expm` for values and the dual one for
+derivatives only, so values stay bit-identical even under FMA contraction
+differences. A long-double `ExpmTraits` (Padé 13, norm ≤ 1) serves the FD
+reference. Parameters: mixing + `alpha2`, `alpha3` (8), tested at α = 0.
+Cost: 44x a probability evaluation on V100 (5.4 per parameter, K = 2): the
+dual expm spills ~19 KB. Options: reuse the dual values instead of a second
+plain expm (~15%, check GPU bit-identity); Daleckii–Krein with a complex
+non-hermitian eigensystem and fall back to dual Padé when ill-conditioned.
 
 ### G5 — Binned / Earth
 * Gradients of `set_bins`/`calculate_binned` and `avg_path` (linear in P: reuse
@@ -55,7 +61,8 @@ Decay kernels already spill registers; tune `grad_chunk`.
 
 ## Other improvements
 * Weighted mode: accept weights as a device pointer (avoid the 144 MB upload).
-* Decay register spills (also affect probability-only speed).
+* Decay register spills (also affect probability-only speed and Decay
+  gradients).
 * Exercise `pip install .` (pyproject/scikit-build-core) on a machine with pip.
 * Publish `tests/data` (OscProb references, ~22 MB) as a release asset.
 

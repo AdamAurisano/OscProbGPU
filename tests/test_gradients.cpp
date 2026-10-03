@@ -32,7 +32,9 @@ TEST_CASE("Gradient parameter registry")
                                  "alpha_ee", "alpha_mue", "alpha_taue", "alpha_mumu",
                                  "alpha_taumu", "alpha_tautau", "ph_mue", "ph_taue",
                                  "ph_taumu", "frac_vnc"});
-  CHECK_FALSE(opg::Propagator<opg::Decay<>>::has_gradients());  // not yet
+  CHECK(opg::Propagator<opg::Decay<>>::parameter_names() ==
+        std::vector<std::string>{"th12", "th13", "th23", "d13", "dm21", "dm31", "alpha2",
+                                 "alpha3"});
 
   opg::Propagator<gradtest::Fast> prop;
   gradtest::Fast::Params          p;
@@ -44,8 +46,6 @@ TEST_CASE("Gradient parameter registry")
   CHECK_THROWS_AS(prop.calculate(opg::Flavor::Both, true), std::logic_error);
   prop.calculate();  // probabilities still fine with gradients off
 
-  opg::Propagator<opg::Decay<>> decay;
-  CHECK_THROWS_AS(decay.set_gradient_params({"th12"}), std::logic_error);
 }
 
 TEST_CASE("Dual-number preparation has bit-identical value parts")
@@ -107,22 +107,25 @@ TEST_CASE("Grid, event-list and weighted gradients are consistent (CPU)")
   CHECK(g[0] == g[1]);
 }
 
-TEST_CASE_TEMPLATE("G3 gradients match long-double finite differences (CPU)", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("G3/G4 gradients match long-double finite differences (CPU)", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   opg::Propagator<M> prop;
   gradtest::check_against_ld(prop, 1e-9);
 }
 
-TEST_CASE_TEMPLATE("G3 probabilities are unchanged when gradients are on (CPU)", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU)", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   opg::Propagator<M> prop;
   gradtest::check_values_unchanged(prop);
 }
 
-TEST_CASE_TEMPLATE("G3 grid, event-list and weighted gradients are consistent (CPU)", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("G3/G4 grid, event-list and weighted gradients are consistent (CPU)", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   opg::Propagator<M> prop;
   gradtest::check_grid_and_weighted(prop, 1e-13);

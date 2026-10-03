@@ -3,7 +3,7 @@
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
 //   model  : fast (default), nsi, nunm, sterile, decay, binned, grad,
-//            grad_nsi, grad_nunm, grad_sterile, or all
+//            grad_nsi, grad_nunm, grad_sterile, grad_decay, or all
 
 #include <chrono>
 #include <cmath>
@@ -221,6 +221,11 @@ int main(int argc, char** argv)
     p.mix.SetDm(4, 1.0);
     p.mix.SetAngle(2, 4, 0.1);
     run_grad<opg::Sterile<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad_decay")) {
+    auto p = nominal_params<opg::Decay<double>>();
+    p.SetAlpha3(1e-4);
+    run_grad<opg::Decay<double>>(p, nE, nC, dev, reps);
   }
   if (want("binned")) {
     run_binned<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 40, 20, 8,

@@ -93,7 +93,15 @@ def _sterile(devices, th24=0.15):
     return p
 
 
+def _decay(devices, alpha3=2e-4):
+    p = set_nominal(opg.Decay(devices=devices))
+    p.set_alpha2(3e-5)
+    p.set_alpha3(alpha3)
+    return p
+
+
 @pytest.mark.parametrize("make,name,x0,nflv", [
+    (_decay, "alpha3", 2e-4, 3),
     (_nsi, "eps_emu", 0.1, 3),
     (_nunm, "alpha_mue", 0.03, 3),
     (_sterile, "th24", 0.15, 4),
@@ -108,7 +116,7 @@ def test_g3_path_grad_vs_fd(make, name, x0, nflv, devices):
     p.set_gradient_params([name])
     P, dP = p.prob_path_grad(E, TEST_PATH, nubar=False)
     assert dP.shape == (1, nflv, nflv, len(E))
-    h = 1e-6
+    h = 1e-6 * (x0 if make is _decay else 1.0)  # alpha in eV^2: relative step
     fd = (make(devices, x0 + h).prob_path(E, TEST_PATH) -
           make(devices, x0 - h).prob_path(E, TEST_PATH)) / (2 * h)
     scale = max(np.abs(fd).max(), 1e-3)
@@ -122,3 +130,4 @@ def test_g3_parameter_names():
     assert len(opg.NUNM.parameter_names) == 16
     assert opg.Sterile.parameter_names[-3:] == ["dm21", "dm31", "dm41"]
     assert len(opg.Sterile.parameter_names) == 12
+    assert opg.Decay.parameter_names[-2:] == ["alpha2", "alpha3"]

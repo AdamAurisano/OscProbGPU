@@ -258,6 +258,27 @@ namespace opg {
     return true;
   }
 
+  /// Value type of a scalar type (T for Dual<T, K>, identity otherwise).
+  template <class T> struct value_type { using type = T; };
+  template <class T, int K> struct value_type<Dual<T, K>> { using type = T; };
+  template <class T> using value_type_t = typename value_type<T>::type;
+
+  /// x * 2^e (exact; applied to the value and all derivatives).
+  template <class T> OPG_HD OPG_INLINE T ldexp_s(T x, int e)
+  {
+    using std::ldexp;
+    return ldexp(x, e);
+  }
+  template <class T, int K>
+  OPG_HD OPG_INLINE Dual<T, K> ldexp_s(Dual<T, K> x, int e)
+  {
+    using std::ldexp;
+    x.v = ldexp(x.v, e);
+    OPG_UNROLL
+    for (int k = 0; k < K; k++) x.d[k] = ldexp(x.d[k], e);
+    return x;
+  }
+
   /// Number of derivative directions of a scalar type (0 for plain numbers).
   template <class T> struct dual_size { static constexpr int value = 0; };
   template <class T, int K> struct dual_size<Dual<T, K>> {

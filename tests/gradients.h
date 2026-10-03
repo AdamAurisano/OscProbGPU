@@ -113,14 +113,40 @@ namespace gradtest {
     return v;
   }
 
+  using Decay = opg::Decay<double>;
+  template <> inline std::vector<std::pair<std::string, Decay::Params>> param_points<Decay>()
+  {
+    std::vector<std::pair<std::string, Decay::Params>> v;
+    v.push_back({"decay", variants::decay()});
+    v.push_back({"decay_both", variants::decay_both()});
+    Decay::Params p;
+    p.mix = variants::nominal_mix<3>();
+    v.push_back({"alpha=0", p});
+    p.mix = variants::fast_io_mix();
+    p.SetAlpha2(5e-5);
+    v.push_back({"IO,alpha2", p});
+    p = variants::decay_both();
+    p.mix.SetAngle(1, 3, 0);
+    v.push_back({"decay_both,th13=0", p});
+    return v;
+  }
+
+  /// Parameters in eV^2 (mass splittings, Decay's alpha_j).
+  inline bool is_ev2(const std::string& name)
+  {
+    return name.rfind("dm", 0) == 0 || name == "alpha2" || name == "alpha3";
+  }
+
   /// Step for each parameter: 1e-4 absolute for angles, phases and
   /// couplings (smaller steps amplify the long-double round-off of the
   /// O(1e5) rad phases at dm41 ~ 1 eV^2); relative 1e-5 for mass
   /// splittings, capped at 3e-8 eV^2 so that the oscillation phase changes
-  /// by at most ~1e-3 rad over the Earth even for dm41 ~ 1 eV^2.
+  /// by at most ~1e-3 rad over the Earth even for dm41 ~ 1 eV^2; 3e-8 eV^2
+  /// absolute for decay constants.
   inline LD step(const std::string& name, LD value)
   {
     if (name.rfind("dm", 0) == 0) return std::min(std::fabs(value) * 1e-5L, 3e-8L);
+    if (is_ev2(name)) return 3e-8L;  // decay constants (may be 0)
     return 1e-4L;
   }
 
@@ -193,10 +219,10 @@ namespace gradtest {
   /// sterile mixing), where both sides are round-off noise. It is 1e-3 for
   /// angles, phases and couplings (typical derivatives O(1e-2..1)) and 10
   /// eV^-2 for mass splittings, whose derivatives scale with L/E (up to
-  /// ~5e4 eV^-2 through the Earth at 0.3 GeV).
+  /// ~5e4 eV^-2 through the Earth at 0.3 GeV); likewise for decay constants.
   inline double grad_floor(const std::string& name)
   {
-    return name.rfind("dm", 0) == 0 ? 10.0 : 1e-3;
+    return is_ev2(name) ? 10.0 : 1e-3;
   }
 
   inline double rel_err(const std::vector<double>& g /*[p][a][b][i]*/,

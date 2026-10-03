@@ -357,6 +357,106 @@ TEST_CASE("expm (Pade scaling and squaring) is accurate")
   }
 }
 
+TEST_CASE("long-double expm matches the Taylor reference")
+{
+  std::mt19937_64                        rng(7);
+  std::uniform_real_distribution<double> u(-1, 1);
+  for (int t = 0; t < 200; t++) {
+    double scale = std::pow(10.0, -3 + 6.0 * (t % 13) / 12.0);
+    M3     A;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) A(i, j) = C(scale * u(rng), -scale * std::fabs(u(rng)));
+    opg::Mat<3, long double> AL;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) AL(i, j) = {A(i, j).re, A(i, j).im};
+    auto X = opg::expm<3, long double>(AL), Xr = expm_reference(A);
+    long double err = 0, xmax = 0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        err  = std::max(err, opg::abs(X(i, j) - Xr(i, j)));
+        xmax = std::max(xmax, opg::abs(Xr(i, j)));
+      }
+    INFO("scale = " << scale);
+    CHECK(double(err / xmax) < 1e-16 * std::max(1.0, scale));
+  }
+}
+
+TEST_CASE("expm in dual arithmetic: unchanged values, exact Frechet derivative")
+{
+  using D  = opg::Dual<double, 2>;
+  using MD = opg::Mat<3, D>;
+  using ML = opg::Mat<3, long double>;
+  std::mt19937_64                        rng(8);
+  std::uniform_real_distribution<double> u(-1, 1);
+  double                                 worst = 0;
+  for (int t = 0; t < 600; t++) {
+    // norms spanning all Pade branches and squarings
+    double scale = std::pow(10.0, -3 + 6.0 * (t % 13) / 12.0);
+    // decay-like exponents -i (h - i g) with h, g hermitian, g >= 0 small
+    M3 A, B, E0, E1;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) A(i, j) = C(scale * u(rng), scale * u(rng));
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        C h      = (A(i, j) + opg::conj(A(j, i))) * 0.5;
+        C d      = C(i == j ? -0.01 * scale * std::fabs(u(rng)) : 0, 0);
+        B(i, j)  = C(h.im, -h.re) + d;
+        E0(i, j) = C(u(rng), u(rng));            // generic direction
+        E1(i, j) = C(i == j ? -std::fabs(u(rng)) : 0.0, 0.0);  // damping
+      }
+    MD BD;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        D re(B(i, j).re), im(B(i, j).im);
+        re.d[0] = E0(i, j).re;
+        im.d[0] = E0(i, j).im;
+        re.d[1] = E1(i, j).re;
+        im.d[1] = E1(i, j).im;
+        BD(i, j) = opg::Complex<D>(re, im);
+      }
+    MD XD = opg::expm<3, D>(BD);
+    M3 X  = opg::expm<3, double>(B);
+    bool same = true;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++)
+        same = same && XD(i, j).re.v == X(i, j).re && XD(i, j).im.v == X(i, j).im;
+    CHECK(same);
+
+    // long-double 6-point central differences along E0 and E1
+    for (int k = 0; k < 2; k++) {
+      const M3&   Ek = k ? E1 : E0;
+      long double h  = 1e-4L / std::max(1.0, scale);
+      auto at = [&](long double x) {
+        ML A;
+        for (int i = 0; i < 3; i++)
+          for (int j = 0; j < 3; j++)
+            A(i, j) = opg::Complex<long double>(B(i, j).re + x * Ek(i, j).re,
+                                                B(i, j).im + x * Ek(i, j).im);
+        return opg::expm<3, long double>(A);
+      };
+      ML p1 = at(h), m1 = at(-h), p2 = at(2 * h), m2 = at(-2 * h), p3 = at(3 * h),
+         m3 = at(-3 * h);
+      long double err = 0, xmax = 0, fmax = 0;
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+          auto fd = ((p1(i, j) - m1(i, j)) * 45.0L - (p2(i, j) - m2(i, j)) * 9.0L +
+                     (p3(i, j) - m3(i, j))) /
+                    (60 * h);
+          opg::Complex<long double> g(XD(i, j).re.d[k], XD(i, j).im.d[k]);
+          err  = std::max(err, opg::abs(g - fd));
+          fmax = std::max(fmax, opg::abs(fd));
+          xmax = std::max(xmax, opg::abs(p1(i, j)));
+        }
+      // relative to |exp(B)| (the derivative scales like it, times the norm)
+      double e = double(err / (xmax * std::max(1.0, scale)));
+      worst    = std::max(worst, e);
+      INFO("scale = " << scale << ", direction " << k << ", |dX| = " << double(fmax));
+      CHECK(e < 1e-13 * std::max(1.0, scale));
+    }
+  }
+  MESSAGE("dual expm derivative vs long-double FD: worst " << worst);
+}
+
 #ifdef OPG_HAVE_EIGEN
 TEST_CASE("expm agrees with Eigen MatrixExponential")
 {

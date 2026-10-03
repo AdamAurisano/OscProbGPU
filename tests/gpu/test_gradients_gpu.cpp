@@ -99,29 +99,33 @@ TEST_CASE("GPU gradients agree with the CPU backend; multi-GPU identical")
   check_gpu_vs_cpu<gradtest::Fast>();
 }
 
-TEST_CASE_TEMPLATE("GPU G3 gradients match long-double finite differences", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("GPU G3/G4 gradients match long-double finite differences", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   opg::Propagator<M> gpu(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
   gradtest::check_against_ld(gpu, 1e-9);
 }
 
-TEST_CASE_TEMPLATE("GPU G3 probabilities unchanged with gradients on", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("GPU G3/G4 probabilities unchanged with gradients on", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   opg::Propagator<M> gpu(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
   gradtest::check_values_unchanged(gpu);
 }
 
-TEST_CASE_TEMPLATE("GPU G3 grid / event-list / weighted gradients are consistent", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("GPU G3/G4 grid / event-list / weighted gradients are consistent", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   opg::Propagator<M> gpu(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
   gradtest::check_grid_and_weighted(gpu, 1e-13, 1e-13);
 }
 
-TEST_CASE_TEMPLATE("GPU G3 gradients agree with the CPU backend; multi-GPU identical", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile)
+TEST_CASE_TEMPLATE("GPU G3/G4 gradients agree with the CPU backend; multi-GPU identical", M,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::Decay)
 {
   check_gpu_vs_cpu<M>();
 }

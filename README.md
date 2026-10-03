@@ -168,8 +168,8 @@ oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 ## Gradients
 
 Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
-**Status:** available for `Fast`, `NSI`, `NUNM` and `Sterile`; Decay,
-bin-averaged gradients and Earth Z/A parameters are planned (see
+**Status:** available for all models (`Fast`, `NSI`, `NUNM`, `Sterile`,
+`Decay`); bin-averaged gradients and Earth Z/A parameters are planned (see
 [docs/ROADMAP.md](docs/ROADMAP.md)). Parameters (`parameter_names`):
 
 | Model | Parameters |
@@ -178,6 +178,7 @@ bin-averaged gradients and Earth Z/A parameters are planned (see
 | NSI     | mixing, `eps_ee eps_emu eps_etau eps_mumu eps_mutau eps_tautau` (magnitudes as in `set_eps`), `ph_emu ph_etau ph_mutau`, `coup_e coup_u coup_d` |
 | NUNM    | mixing, `alpha_ee alpha_mue alpha_taue alpha_mumu alpha_taumu alpha_tautau` (values as in `set_alpha`, diagonal = 1 + value), `ph_mue ph_taue ph_taumu`, `frac_vnc` |
 | Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41` |
+| Decay   | mixing, `alpha2 alpha3` (eV²; at α = 0 the derivative is the one-sided one from α > 0) |
 
 Phases are differentiated at fixed magnitude, so derivatives are well defined
 at zero couplings. In the NUNM high-scale scenario the derivatives include the
@@ -222,7 +223,11 @@ eigensystem is the usual one, and the derivative of U = exp(−iHL) follows from
 the Daleckii–Krein formula dU = V[(V†dH V) ∘ Γ]V†, with divided differences
 Γ evaluated stably for any eigenvalue separation. Derivatives are therefore
 exact (no step sizes) and well behaved at zero mixing angles and near
-degeneracies. Parameters are processed in passes of K directions (K = 2;
+degeneracies. For Decay (non-hermitian H) the segment operator is the Padé
+scaling-and-squaring exp evaluated in dual arithmetic, with the degree,
+squarings and pivots taken from the values; its derivative is the Fréchet
+derivative of exp to the accuracy of exp itself, and the values are those of
+the probability-only code. Parameters are processed in passes of K directions (K = 2;
 K = 1 for Sterile, whose 4x4 kernels would otherwise spill registers).
 
 **Validation** (`tests/test_gradients.cpp`, `tests/gpu/test_gradients_gpu.cpp`,
@@ -247,11 +252,14 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | NSI     | 18 | 33x (0.81 s)   | 38x (0.93 s)   | 1.8 |
 | NUNM    | 16 | 32x (0.85 s)   | 36x (0.95 s)   | 2.0 |
 | Sterile | 12 | 18x (3.0 s)    | 20x (3.2 s)    | 1.5 |
+| Decay   | 8  | 44x (2.9 s)    | 48x (3.2 s)    | 5.4 |
 
 The weighted times include uploading the weights. On the CPU the factors are
-similar (9x, 28x, 28x, 17x). This is about 1.5–2 probability evaluations per
-parameter: comparable to central finite differences (2 per parameter), but
-exact.
+similar (9x, 28x, 28x, 17x, 22x). For the hermitian models this is about
+1.5–2 probability evaluations per parameter: comparable to central finite
+differences (2 per parameter), but exact. Decay's derivative runs the matrix
+exponential in dual arithmetic, whose GPU kernels spill registers; it is
+currently ~2.7x the cost of finite differences on the GPU (see the roadmap).
 
 ## Validation
 
