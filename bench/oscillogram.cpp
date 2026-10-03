@@ -3,12 +3,14 @@
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
 //   model  : fast (default), nsi, nunm, sterile, decay, binned, grad,
-//            grad_nsi, grad_nunm, grad_sterile, grad_decay, or all
+//            grad_nsi, grad_nunm, grad_sterile, grad_decay, grad_binned,
+//            grad_points, or all
 
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -107,6 +109,90 @@ namespace {
     std::printf("%-8s binned backend=%-5s %dx%d bins, %d GL nodes/dir/piece (layer-adapted): "
                 "%.4fs per evaluation (incl. D2H)\n",
                 Model::name, dev.empty() ? "cpu" : "cuda", nEb, nCb, ngl, t);
+  }
+
+  /// Binned gradients (default parameters): binned averages only, with all
+  /// binned gradients, and weighted binned gradient.
+  template <class Model>
+  void run_grad_binned(typename Model::Params p, int nEb, int nCb, int ngl,
+                       const std::vector<int>& dev, int reps)
+  {
+    std::vector<double> Ee(nEb + 1), Ce(nCb + 1);
+    for (int i = 0; i <= nEb; i++) Ee[i] = std::pow(10.0, -0.5 + 2.5 * i / nEb);
+    for (int i = 0; i <= nCb; i++) Ce[i] = -1 + 1.0 * i / nCb;
+    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    prop.set_params(p);
+    prop.set_bins(Ee, Ce, ngl, ngl, opg::EMeasure::Log);
+    prop.set_gradient_params();
+    const size_t np = prop.n_gradient_params();
+    std::vector<double> w(2 * Model::N * Model::N * size_t(nEb) * nCb, 1e-3);
+    prop.calculate_binned(opg::Flavor::Both, true);
+    prop.binned_grad();
+    prop.weighted_gradient_binned(w);
+    using clk = std::chrono::steady_clock;
+    double tp = 1e30, tg = 1e30, tw = 1e30;
+    for (int r = 0; r < reps; r++) {
+      p.mix.th[1][2] *= 1.0 + 1e-6;
+      prop.set_params(p);
+      auto a = clk::now();
+      prop.calculate_binned();
+      prop.binned();
+      auto b = clk::now();
+      prop.calculate_binned(opg::Flavor::Both, true);
+      prop.binned_grad();
+      auto c = clk::now();
+      prop.weighted_gradient_binned(w);
+      auto d = clk::now();
+      tp = std::min(tp, std::chrono::duration<double>(b - a).count());
+      tg = std::min(tg, std::chrono::duration<double>(c - b).count());
+      tw = std::min(tw, std::chrono::duration<double>(d - c).count());
+    }
+    std::printf("%-8s binned grad backend=%-5s %dx%d bins, %d GL/dir/piece, %zu params: "
+                "averages %.4fs, + all gradients %.4fs (%.1fx), weighted %.4fs (%.1fx)\n",
+                Model::name, dev.empty() ? "cpu" : "cuda", nEb, nCb, ngl, np, tp, tg,
+                tg / tp, tw, tw / tp);
+  }
+
+  /// Event-list gradients: probabilities only, weighted sum, and one
+  /// gradient vector per analysis bin.
+  template <class Model>
+  void run_grad_points(typename Model::Params p, size_t n, int nbins,
+                       const std::vector<int>& dev, int reps)
+  {
+    std::vector<double>  E(n), C(n), w(Model::N * Model::N * n);
+    std::vector<uint8_t> nb(n);
+    std::vector<int>     bin(n);
+    std::mt19937_64      rng(1);
+    std::uniform_real_distribution<double> u(0, 1);
+    for (size_t i = 0; i < n; i++) {
+      E[i]   = std::pow(10.0, -0.5 + 2.5 * u(rng));
+      C[i]   = -u(rng);
+      nb[i]  = uint8_t(i & 1);
+      bin[i] = int(u(rng) * nbins);
+    }
+    for (auto& x : w) x = u(rng);
+    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    prop.set_params(p);
+    prop.set_gradient_params();
+    prop.weighted_gradient_points_binned(E, C, nb, w, bin, nbins);
+    using clk = std::chrono::steady_clock;
+    double tp = 1e30, tw = 1e30, tb = 1e30;
+    for (int r = 0; r < reps; r++) {
+      auto a = clk::now();
+      prop.prob_points(E, C, nb);
+      auto b = clk::now();
+      prop.weighted_gradient_points(E, C, nb, w);
+      auto c = clk::now();
+      prop.weighted_gradient_points_binned(E, C, nb, w, bin, nbins);
+      auto d = clk::now();
+      tp = std::min(tp, std::chrono::duration<double>(b - a).count());
+      tw = std::min(tw, std::chrono::duration<double>(c - b).count());
+      tb = std::min(tb, std::chrono::duration<double>(d - c).count());
+    }
+    std::printf("%-8s points grad backend=%-5s %zu events, %zu params: P %.4fs, "
+                "weighted %.4fs (%.1fx), per-bin weighted (%d bins) %.4fs (%.1fx)\n",
+                Model::name, dev.empty() ? "cpu" : "cuda", n, prop.n_gradient_params(),
+                tp, tw, tw / tp, nbins, tb, tb / tp);
   }
 
   /// Gradient throughput: full grid gradients and weighted gradient.
@@ -226,6 +312,14 @@ int main(int argc, char** argv)
     auto p = nominal_params<opg::Decay<double>>();
     p.SetAlpha3(1e-4);
     run_grad<opg::Decay<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad_binned")) {
+    run_grad_binned<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 40, 20, 8,
+                                       dev, reps);
+  }
+  if (want("grad_points")) {
+    run_grad_points<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 1000000,
+                                       800, dev, reps);
   }
   if (want("binned")) {
     run_binned<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), 40, 20, 8,

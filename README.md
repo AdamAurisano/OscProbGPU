@@ -49,7 +49,11 @@ avg = p.avg_path(edges, 8, np.array([[1285.0, 2.84, 0.5]]))
 Model-specific setters: `NSI.set_eps(i, j, value, phase)`,
 `NSI.set_ferm_coup(e, u, d)`, `NUNM(scale=0|1)`, `NUNM.set_alpha(i, j, value,
 phase)`, `NUNM.set_frac_vnc(f)`, `Decay.set_alpha2/3(a)`. All models start
-from OscProb's PDG defaults (`set_std_pars()`). See `python/examples/`.
+from OscProb's PDG defaults (`set_std_pars()`). See `python/examples/`:
+`oscillogram.py`, `lbl_spectrum.py`, and `gradient_fit.py` (a binned
+atmospheric likelihood fit with exact Jacobians from `binned_grad()`,
+optionally including the outer-core Z/A). Gradients: see
+[Gradients](#gradients).
 
 ### C++
 
@@ -360,18 +364,32 @@ uploads) and the device-to-host copy of the 144 MB result (~12 ms).
 Binned: 40 x 20 bins with 8 nodes per direction (and per layer piece):
 5.4 ms per evaluation on 1 V100, 3.4 ms on 2 (4.3 s single-thread CPU).
 
+Gradients (Fast, 6 parameters, 1 V100; 2 V100 in brackets; `opg_bench ... grad*`):
+
+| Mode | Probabilities | + gradients | Weighted |
+|------|------:|------:|------:|
+| Grid 1000 x 1000, ν and ν̄ | 24 ms | 0.26 s (10.5x) | 0.29 s |
+| Binned 40 x 20, 8 GL nodes | 5.4 ms (3.4) | 56 ms (35) | 56 ms (35) |
+| Event list, 10⁶ events | 0.12 s (0.09) | — | 0.46 s (0.28); per analysis bin (800 bins) 0.48 s (0.31) |
+
+Event-list times include uploading the events. Other models: see
+[Gradients](#gradients). The `gradient_fit.py` example (1200 bins, 4 GL nodes
+per direction, 4 parameters including the outer-core Z/A) converges in 6
+Levenberg–Marquardt iterations in 0.06 s on one V100.
+
 ## Repository layout
 
 ```
 include/opg/core      Complex, Mat/Vec, constants, macros
-include/opg/linalg    zheevh3 (Kopp, LGPL), Jacobi, expm
-include/opg/physics   mixing (BuildHms port), propagation
+include/opg/linalg    zheevh3 (Kopp, LGPL), Jacobi, expm, general 3x3 eigensystem
+include/opg/physics   mixing (BuildHms port), propagation, gradients
 include/opg/models    fast, nsi, nunm, sterile, decay
 include/opg/earth     PremModel and on-device path walker
 include/opg/avg       Gauss-Legendre
 include/opg/propagator.h, engine*.h   user API and CPU backend
 src/                  CUDA backend
 python/               nanobind module, tests, examples
+docs/ROADMAP.md       status and plans
 reference/            OscProb reference generator and benchmark
 tests/                doctest suites (cpu, gpu) and reference data
 ```

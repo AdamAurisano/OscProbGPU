@@ -2,13 +2,13 @@
 
 Status as of 2026-10-02: all five models (Fast, NSI, NUNM, Sterile 3+1, Decay)
 validated against OscProb on CPU and GPU; bin averaging; multi-GPU; Python
-bindings. Gradients (G0–G5) are done for all five models, including bin
-averages, Earth Z/A and per-analysis-bin weighted modes; G6 (Python docs and
-benchmarks) is next.
+bindings. Gradients (G0–G6) are done for all five models, including bin
+averages, Earth Z/A and per-analysis-bin weighted modes, with Python bindings,
+tests, an example fit (`python/examples/gradient_fit.py`) and benchmarks.
 
-## Gradient plan (remaining)
+## Gradient phases (all done)
 
-Design (already implemented for Fast, reuse it):
+Design (shared by all models; reuse it for new ones):
 
 * Parameters/prepared state are templated on the scalar type at namespace
   scope (`FastParams<S>`, `FastPrepared<S>`); the model aliases
@@ -61,7 +61,10 @@ V100: 17x a probability evaluation with K = 8 (dual-expm only: 44x).
 * `weighted_gradient_points_binned()`: G[bin][p] for event lists, summed per
   bin in a fixed order (per-event contractions, then one block per bin).
 
-### G6 — Python, docs, benchmarks for the new models.
+### G6 — Python, docs, benchmarks (done)
+Python tests for every model (grid, event list, weighted, binned, default
+selection), `gradient_fit.py` (binned likelihood fit with exact Jacobians,
+optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
 
 ## Other improvements
 * Weighted mode: accept weights as a device pointer (avoid the 144 MB upload).

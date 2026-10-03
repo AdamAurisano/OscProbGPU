@@ -190,3 +190,55 @@ def test_weighted_points_binned(devices):
         ref = np.einsum("abi,pabi->p", w[:, :, m], dP[:, :, :, m])
         sc = np.einsum("abi,pabi->p", np.abs(w[:, :, m]), np.abs(dP[:, :, :, m]))
         assert np.all(np.abs(G[b] - ref) <= 1e-12 * sc + 1e-300)
+
+
+def _model(cls, devices):
+    """Each model at a non-trivial point of its extra parameters."""
+    if cls is opg.NUNM:
+        p = set_nominal(cls(devices=devices, scale=0))
+        p.set_alpha(1, 0, 0.03, 0.4)
+        return p
+    p = set_nominal(cls(devices=devices))
+    if cls is opg.NSI:
+        p.set_eps(0, 1, 0.1, 0.4)
+    elif cls is opg.Sterile:
+        p.set_dm(4, 0.5)
+        p.set_angle(2, 4, 0.15)
+    elif cls is opg.Decay:
+        p.set_alpha3(2e-4)
+    return p
+
+
+@pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Decay],
+                         ids=lambda c: c.__name__)
+def test_all_models_grid_points_weighted_binned(cls, devices):
+    if not cls.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    p = _model(cls, devices)
+    p.set_gradient_params()                       # model defaults
+    names = p.gradient_params
+    assert names == cls.default_gradient_params
+    n = 4 if cls is opg.Sterile else 3
+    E, C = np.geomspace(0.5, 30, 17), np.linspace(-1, 0.4, 11)
+    p.set_grid(E, C)
+    p.calculate_gradient()
+    G = p.grad()
+    assert G.shape == (2, len(names), n, n, C.size, E.size)
+    # event list at the grid points gives the same gradients
+    EE, CC = np.meshgrid(E, C)
+    nb_ = np.zeros(EE.size, np.uint8)
+    _, dP = p.prob_points_grad(EE.ravel(), CC.ravel(), nb_)
+    assert np.max(np.abs(dP.reshape(G[0].shape) - G[0])) <= 1e-13 * np.max(np.abs(G[0]))
+    # weighted grid mode
+    w = np.random.default_rng(5).normal(size=p.probs().shape)
+    ref = np.einsum("nabce,npabce->p", w, G)
+    sc = np.einsum("nabce,npabce->p", np.abs(w), np.abs(G))
+    assert np.all(np.abs(p.weighted_gradient(w) - ref) <= 1e-12 * sc)
+    # binned mode
+    p.set_bins(np.geomspace(0.5, 30, 6), np.linspace(-1, 0.4, 4), 3, 3)
+    p.calculate_binned_gradient()
+    GB = p.binned_grad()
+    wb = np.random.default_rng(6).normal(size=p.binned().shape)
+    refb = np.einsum("nabce,npabce->p", wb, GB)
+    scb = np.einsum("nabce,npabce->p", np.abs(wb), np.abs(GB))
+    assert np.all(np.abs(p.weighted_gradient_binned(wb) - refb) <= 1e-12 * scb)
