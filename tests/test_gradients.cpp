@@ -51,6 +51,13 @@ TEST_CASE("Gradient parameter registry")
     CHECK(nsi.n_gradient_params() == 1);
   }
 
+  {
+    opg::Propagator<gradtest::Fast> cpu;
+    cpu.set_params(gradtest::param_points<gradtest::Fast>()[0].second);
+    cpu.set_gradient_params();
+    CHECK_THROWS_AS(cpu.weighted_gradient_device({nullptr}), std::logic_error);
+  }
+
   opg::Propagator<gradtest::Fast> prop;
   gradtest::Fast::Params          p;
   p.mix = variants::nominal_mix<3>();

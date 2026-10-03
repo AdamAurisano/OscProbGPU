@@ -82,6 +82,28 @@ namespace {
   }
 
   //...........................................................................
+  using AnyArr = nb::ndarray<const double, nb::c_contig>;
+
+  /// DLPack capsule for device memory (owner kept alive by the capsule).
+  inline nb::ndarray<const double, nb::device::cuda>
+  dlpack_capsule(uintptr_t ptr, const std::vector<size_t>& shape, int device,
+                 nb::handle owner)
+  {
+    return nb::ndarray<const double, nb::device::cuda>(
+        reinterpret_cast<const double*>(ptr), shape.size(), shape.data(), owner,
+        nullptr, nb::dtype<double>(), nb::device::cuda::value, device);
+  }
+
+  /// Single-GPU propagator check for the device-array API.
+  template <class Prop> int single_device(const Prop& prop, const char* what)
+  {
+    if (prop.devices().size() != 1)
+      throw std::invalid_argument(std::string(what) +
+                                  ": CUDA arrays need a propagator on exactly one "
+                                  "GPU (use the C++ API for several)");
+    return prop.devices()[0];
+  }
+
   template <class Model> struct PyModel {
       using Params           = typename Model::Params;
       static constexpr int N = Model::N;
@@ -265,16 +287,54 @@ namespace {
              },
              "Grid gradients G[nubar, p, a, b, iC, iE] = dP(a -> b)/dp (copy).")
         .def("weighted_gradient",
-             [](W& w, nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
-                const std::string& fl) {
+             [](W& w, AnyArr wt, const std::string& fl) {
                w.sync();
-               std::vector<double> v(wt.data(), wt.data() + wt.size());
-               auto g = w.prop.weighted_gradient(v, parse_flavor(fl));
+               std::vector<double> g;
+               if (wt.device_type() == nb::device::cuda::value) {
+                 const int dev = single_device(w.prop, "weighted_gradient");
+                 if (wt.device_id() != dev)
+                   throw std::invalid_argument("weighted_gradient: weights on another GPU");
+                 if (wt.size() != 2 * size_t(N) * N * w.prop.n_cosines() * w.prop.n_energies())
+                   throw std::invalid_argument("weighted_gradient: weights must have "
+                                               "the shape of probs()");
+                 g = w.prop.weighted_gradient_device({wt.data()}, parse_flavor(fl));
+               }
+               else {
+                 if (wt.device_type() != nb::device::cpu::value)
+                   throw std::invalid_argument("weighted_gradient: weights must be a "
+                                               "host or CUDA array");
+                 std::vector<double> v(wt.data(), wt.data() + wt.size());
+                 g = w.prop.weighted_gradient(v, parse_flavor(fl));
+               }
                return make_array(std::move(g), {g.size()});
              },
              "weights"_a, "flavor"_a = "both",
              "sum of weights * dP/dp over the grid; weights have the shape of "
-             "probs(). Returns one value per gradient parameter.")
+             "probs() and may be a CUDA array (DLPack, e.g. CuPy or PyTorch) on "
+             "the propagator's GPU, which avoids uploading them. Returns one "
+             "value per gradient parameter.")
+        .def("_device_view",
+             [](W& w, const std::string& what) {
+               const int dev = single_device(w.prop, ("device_" + what).c_str());
+               const double* p;
+               std::vector<size_t> shape = {2, size_t(N), size_t(N)};
+               if (what == "probs") {
+                 p = w.prop.device_probs(0);
+                 shape.push_back(w.prop.n_cosines());
+                 shape.push_back(w.prop.n_energies());
+               }
+               else if (what == "binned") {
+                 p = w.prop.device_binned(0);
+                 shape.push_back(w.prop.n_cosine_bins());
+                 shape.push_back(w.prop.n_energy_bins());
+               }
+               else
+                 throw std::invalid_argument("_device_view: probs or binned");
+               if (!p) throw std::logic_error("device_" + what + ": nothing computed yet");
+               return nb::make_tuple(uintptr_t(p), nb::tuple(nb::cast(shape)), dev);
+             },
+             "what"_a, "(pointer, shape, device) of device-resident results "
+             "(see device_probs()/device_binned()).")
         .def("prob_points_grad",
              [](W& w, Arr1 E, Arr1 C, Arr1u nb_) {
                w.sync();
@@ -351,16 +411,33 @@ namespace {
              },
              "Binned gradients G[nubar, p, a, b, iCbin, iEbin] (copy).")
         .def("weighted_gradient_binned",
-             [](W& w, nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
-                const std::string& fl) {
+             [](W& w, AnyArr wt, const std::string& fl) {
                w.sync();
-               std::vector<double> v(wt.data(), wt.data() + wt.size());
-               auto g = w.prop.weighted_gradient_binned(v, parse_flavor(fl));
+               std::vector<double> g;
+               if (wt.device_type() == nb::device::cuda::value) {
+                 const int dev = single_device(w.prop, "weighted_gradient_binned");
+                 if (wt.device_id() != dev)
+                   throw std::invalid_argument("weighted_gradient_binned: weights on "
+                                               "another GPU");
+                 if (wt.size() !=
+                     2 * size_t(N) * N * w.prop.n_cosine_bins() * w.prop.n_energy_bins())
+                   throw std::invalid_argument("weighted_gradient_binned: weights must "
+                                               "have the shape of binned()");
+                 g = w.prop.weighted_gradient_binned_device({wt.data()}, parse_flavor(fl));
+               }
+               else {
+                 if (wt.device_type() != nb::device::cpu::value)
+                   throw std::invalid_argument("weighted_gradient_binned: weights must "
+                                               "be a host or CUDA array");
+                 std::vector<double> v(wt.data(), wt.data() + wt.size());
+                 g = w.prop.weighted_gradient_binned(v, parse_flavor(fl));
+               }
                return make_array(std::move(g), {g.size()});
              },
              "weights"_a, "flavor"_a = "both",
              "sum of weights * d(bin average)/dp; weights have the shape of "
-             "binned(). Returns one value per gradient parameter.")
+             "binned() (host or CUDA array, see weighted_gradient). Returns one "
+             "value per gradient parameter.")
         .def("avg_path_grad",
              [](W& w, Arr1 Ee, int nE, Arr2 seg, bool nubar, const std::string& meas) {
                w.sync();
@@ -403,6 +480,7 @@ NB_MODULE(_oscprobgpu, m)
 {
   m.doc() = "OscProbGPU: CUDA port of OscProb oscillation calculators";
   m.def("cuda_device_count", &opg::cuda_device_count);
+  m.def("_dlpack", &dlpack_capsule, "ptr"_a, "shape"_a, "device"_a, "owner"_a);
 #ifdef OPG_HAVE_CUDA
   m.attr("has_cuda") = true;
 #else

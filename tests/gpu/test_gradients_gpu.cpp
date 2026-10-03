@@ -146,3 +146,36 @@ TEST_CASE_TEMPLATE("GPU Earth Z/A gradients", M, gradtest::Fast, gradtest::NSI, 
 }
 
 #endif
+
+TEST_CASE("GPU weighted gradients from device-resident weights")
+{
+  // the device probabilities serve as weights already on the GPU(s)
+  for (auto d : {devs("OPG_TEST_DEVICES", "0"), devs("OPG_TEST_MULTI_DEVICES", "0,1")}) {
+    if (opg::cuda_device_count() < int(d.size())) continue;
+    opg::Propagator<gradtest::NSI> prop(opg::PremModel(), d);
+    prop.set_params(gradtest::param_points<gradtest::NSI>()[1].second);
+    prop.set_gradient_params();
+    std::vector<double> E, C;
+    for (int i = 0; i < 53; i++) E.push_back(std::pow(10.0, -0.3 + 2.0 * i / 52));
+    for (int i = 0; i < 31; i++) C.push_back(-1 + 2.0 * i / 30);
+    prop.set_grid(E, C);
+    prop.calculate();
+    std::vector<double>       wh(prop.probs(), prop.probs() + 2 * 9 * E.size() * C.size());
+    std::vector<const double*> wd;
+    for (size_t k = 0; k < d.size(); k++) wd.push_back(prop.device_probs(int(k)));
+    auto gh = prop.weighted_gradient(wh);
+    auto gd = prop.weighted_gradient_device(wd);
+    CHECK(gd == gh);
+    CHECK(prop.weighted_gradient_device(wd, opg::Flavor::Neutrino) ==
+          prop.weighted_gradient(wh, opg::Flavor::Neutrino));
+
+    prop.set_bins({0.5, 1, 2, 5, 10, 20}, {-1, -0.6, -0.2, 0.3}, 3, 3);
+    prop.calculate_binned();
+    std::vector<double>       bh(prop.binned(), prop.binned() + 2 * 9 * 5 * 3);
+    std::vector<const double*> bd;
+    for (size_t k = 0; k < d.size(); k++) bd.push_back(prop.device_binned(int(k)));
+    CHECK(prop.weighted_gradient_binned_device(bd) == prop.weighted_gradient_binned(bh));
+    CHECK_THROWS_AS(prop.weighted_gradient_device({}), std::invalid_argument);
+  }
+}
+

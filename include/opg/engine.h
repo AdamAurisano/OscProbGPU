@@ -125,6 +125,20 @@ namespace opg {
       {
         no_grad();
       }
+      /// Weighted modes with the weights already on the GPU: w[k] is device
+      /// memory on the k-th device, in the layout of device_probs(k) (grid)
+      /// or device_binned(k) (binned). GPU backend only.
+      virtual void weighted_grad_device(const Prepared&, const Chunks&, int, Flavor,
+                                        const std::vector<const R*>&, R*)
+      {
+        throw std::logic_error("weighted_gradient_device: needs the CUDA backend");
+      }
+      virtual void weighted_grad_binned_device(const Prepared&, const Chunks&, int,
+                                               Flavor, const std::vector<const R*>&, R*)
+      {
+        throw std::logic_error("weighted_gradient_binned_device: needs the CUDA "
+                               "backend");
+      }
       virtual void prob_points_grad(const Prepared&, const Chunks&, int,
                                     const R*, const R*, const uint8_t*, size_t,
                                     R* /*P*/, R* /*G*/)

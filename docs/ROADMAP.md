@@ -67,10 +67,17 @@ selection), `gradient_fit.py` (binned likelihood fit with exact Jacobians,
 optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
 
 ## Other improvements
-* Weighted mode: accept weights as a device pointer (avoid the 144 MB upload).
-* Decay register spills (probability-only kernels; the gradient kernels spill
-  ~1 KB).
-* Exercise `pip install .` (pyproject/scikit-build-core) on a machine with pip.
+* Done: weighted modes accept device-resident weights
+  (`weighted_gradient_device`, `weighted_gradient_binned_device`; Python:
+  CUDA arrays via DLPack, `device_probs()`/`device_binned()` views); saves the
+  144 MB upload (1000 x 1000 grid: 0.29 → 0.26 s on 1 V100, 0.17 → 0.13 s on 2).
+* Done: `pip install .` tested (CPU backend, Python 3.12, numpy 2.5; CUDA via
+  pip untested: no pip on the GPU host).
+* Investigated, no change: Decay probability kernels spill ≤ 300 bytes; their
+  cost is the Padé exponential itself. Exponentials from the complex
+  eigensystem (with Padé fallback) were less accurate near degeneracies
+  (5e-9 vs 1e-11 in the gradient tests, 1e-13 vs 1e-14 against OscProb) and
+  1.8x slower on the CPU, so Decay keeps Padé for values.
 * Publish `tests/data` (OscProb references, ~22 MB) as a release asset.
 
 ## Working notes

@@ -240,6 +240,34 @@ namespace opg {
       }
 
       const Prepared& prepared() const { return fPrepared; }
+      /// weighted_gradient() with the weights already on the GPU (e.g.
+      /// computed there by the caller), avoiding their upload: w[k] points to
+      /// device memory on devices()[k] holding that device's share of the
+      /// weights, in the layout of device_probs(k) (with one device: the
+      /// layout of probs()). The weights must be ready (computed on, or
+      /// synchronised with, the device before the call). GPU backend only.
+      std::vector<R> weighted_gradient_device(const std::vector<const R*>& w,
+                                              Flavor which = Flavor::Both)
+      {
+        require_params();
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad_device(fPrepared, chunks(), int(fGradIdx.size()), which,
+                                      w, g.data());
+        return g;
+      }
+
+      /// weighted_gradient_binned() with device-resident weights in the
+      /// layout of device_binned(k) (see weighted_gradient_device()).
+      std::vector<R> weighted_gradient_binned_device(const std::vector<const R*>& w,
+                                                     Flavor which = Flavor::Both)
+      {
+        require_params();
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad_binned_device(fPrepared, chunks(), int(fGradIdx.size()),
+                                             which, w, g.data());
+        return g;
+      }
+
 
       /// Launch the grid computation (asynchronous on GPU).
       void calculate(Flavor which = Flavor::Both)

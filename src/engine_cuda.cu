@@ -743,6 +743,39 @@ namespace opg {
                             D.wtsHost.ptr + (ch * nr + r) * fNE);
             D.wts.upload(D.id, D.wtsHost.ptr, D.wtsHost.n, D.stream);
           }
+          std::vector<const R*> wp(nd);
+          for (size_t k = 0; k < nd; k++) wp[k] = fDev[k]->wts.ptr;
+          run_grid_wgrad(P, chunks, lo, hi, wp, g);
+        }
+      }
+
+      void weighted_grad_device(const Prepared& P, const Chunks& chunks, int npar,
+                                Flavor which, const std::vector<const R*>& w,
+                                R* g) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          if (w.size() != fDev.size())
+            throw std::invalid_argument("weighted_gradient_device: need one weight "
+                                        "pointer per device");
+          check_param_size();
+          upload_chunks(chunks);
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          const int lo = (int(which) & 1) ? 0 : 1;
+          const int hi = (int(which) & 2) ? 1 : 0;
+          if (hi < lo) return;
+          run_grid_wgrad(P, chunks, lo, hi, w, g);
+        }
+      }
+
+      /// Weighted grid gradient with weights w[k] (device k, layout of
+      /// device_probs(k)).
+      void run_grid_wgrad(const Prepared& P, const Chunks& chunks, int lo, int hi,
+                          const std::vector<const R*>& w, R* g)
+      {
+        if constexpr (GT::enabled) {
+          const size_t nd = fDev.size();
           for (size_t c = 0; c < chunks.size(); c++) {
             std::vector<dim3> grids(nd);
             for (size_t k = 0; k < nd; k++) {
@@ -758,7 +791,7 @@ namespace opg {
               D.partial.resize(D.id, nblk * GK);
               grid_wgrad_kernel<Model, R, GK><<<grids[k], dim3(kBlockE), 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow),
-                  lo, D.wts.ptr, D.partial.ptr);
+                  lo, w[k], D.partial.ptr);
               OPG_CUDA(cudaGetLastError());
             }
             sum_partials(chunks[c], g);
@@ -963,8 +996,7 @@ namespace opg {
           if (hi < lo) return;
           const size_t nd = fDev.size(), nEn = fBins.nodesE.size();
           const size_t nCb = fBins.nCb, nEb = fBins.nEb;
-          // bin weights of each device's C bins, [2][N][N][ncb][nEb], and the
-          // local C bin of each local node row
+          // bin weights of each device's C bins, [2][N][N][ncb][nEb]
           for (size_t k = 0; k < nd; k++) {
             Device& D = *fDev[k];
             if (D.binned.rows.empty()) continue;
@@ -976,15 +1008,54 @@ namespace opg {
                 std::copy(w + (ch * nCb + D.binned.rows[r]) * nEb,
                           w + (ch * nCb + D.binned.rows[r] + 1) * nEb,
                           wl.begin() + (ch * ncb + r) * nEb);
+            D.wts.upload(D.id, wl.data(), wl.size(), D.stream);
+            OPG_CUDA(cudaStreamSynchronize(D.stream));
+          }
+          std::vector<const R*> wp(nd);
+          for (size_t k = 0; k < nd; k++) wp[k] = fDev[k]->wts.ptr;
+          run_binned_wgrad(P, chunks, lo, hi, wp, g);
+        }
+      }
+
+      void weighted_grad_binned_device(const Prepared& P, const Chunks& chunks,
+                                       int npar, Flavor which,
+                                       const std::vector<const R*>& w, R* g) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          if (w.size() != fDev.size())
+            throw std::invalid_argument("weighted_gradient_binned_device: need one "
+                                        "weight pointer per device");
+          check_param_size();
+          upload_chunks(chunks);
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          const int lo = (int(which) & 1) ? 0 : 1;
+          const int hi = (int(which) & 2) ? 1 : 0;
+          if (hi < lo) return;
+          run_binned_wgrad(P, chunks, lo, hi, w, g);
+        }
+      }
+
+      /// Weighted binned gradient with bin weights w[k] (device k, layout of
+      /// device_binned(k)).
+      void run_binned_wgrad(const Prepared& P, const Chunks& chunks, int lo, int hi,
+                            const std::vector<const R*>& w, R* g)
+      {
+        if constexpr (GT::enabled) {
+          const size_t nd = fDev.size(), nEn = fBins.nodesE.size(), nEb = fBins.nEb;
+          // local C bin of each local node row
+          for (size_t k = 0; k < nd; k++) {
+            Device& D = *fDev[k];
+            if (D.binned.rows.empty()) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
             std::vector<int> bor;
-            for (size_t r = 0; r < ncb; r++) {
+            for (size_t r = 0; r < D.binned.rows.size(); r++) {
               const size_t icb = D.binned.rows[r];
               for (size_t rc = fBins.offC[icb]; rc < fBins.offC[icb + 1]; rc++)
                 bor.push_back(int(r));
             }
-            D.wts.upload(D.id, wl.data(), wl.size(), D.stream);
             D.binOfRow.upload(D.id, bor.data(), bor.size(), D.stream);
-            OPG_CUDA(cudaStreamSynchronize(D.stream));
           }
           for (size_t c = 0; c < chunks.size(); c++) {
             for (size_t k = 0; k < nd; k++) {
@@ -999,7 +1070,7 @@ namespace opg {
               nodes_wgrad_kernel<Model, R, GK><<<grid, dim3(kBlockE), 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, D.nodes.E.ptr, int(nEn),
                   D.nodes.C.ptr, int(nrow), D.wE.ptr, D.wC.ptr, D.binOfRow.ptr,
-                  fBins.nglE, int(D.binned.rows.size()), int(nEb), lo, D.wts.ptr,
+                  fBins.nglE, int(D.binned.rows.size()), int(nEb), lo, w[k],
                   D.partial.ptr);
               OPG_CUDA(cudaGetLastError());
             }

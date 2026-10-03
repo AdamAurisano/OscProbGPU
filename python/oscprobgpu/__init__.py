@@ -38,12 +38,68 @@ from ._oscprobgpu import (  # noqa: F401
     Fast,
     PremModel,
     Sterile,
+    _dlpack,
     cuda_device_count,
     has_cuda,
 )
 
 __all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "PremModel",
-           "cuda_device_count", "has_cuda", "default_devices"]
+           "DeviceArray", "cuda_device_count", "has_cuda", "default_devices"]
+
+
+class DeviceArray:
+    """Zero-copy view of a result in GPU memory (float64, C order).
+
+    Exposes ``__dlpack__`` / ``__dlpack_device__`` and
+    ``__cuda_array_interface__``, so ``cupy.asarray(a)``,
+    ``torch.from_dlpack(a)`` or ``numba.cuda.as_cuda_array(a)`` use the memory
+    without copying, and the propagators' weighted_gradient* methods accept it
+    as weights. Valid until the propagator recomputes or is destroyed (the
+    view keeps the propagator alive).
+    """
+
+    def __init__(self, owner, ptr, shape, device):
+        self._owner, self._ptr = owner, ptr
+        self.shape, self.device = tuple(shape), device
+        self.dtype = "float64"
+
+    @property
+    def size(self):
+        n = 1
+        for s in self.shape:
+            n *= s
+        return n
+
+    def __dlpack__(self, stream=None, **kwargs):
+        return _dlpack(self._ptr, list(self.shape), self.device, self._owner)
+
+    def __dlpack_device__(self):
+        return (2, self.device)  # kDLCUDA
+
+    @property
+    def __cuda_array_interface__(self):
+        return {"shape": self.shape, "typestr": "<f8", "data": (self._ptr, True),
+                "version": 3, "strides": None}
+
+    def __repr__(self):
+        return f"DeviceArray(shape={self.shape}, device={self.device})"
+
+
+def _device_probs(self):
+    """Grid probabilities on the GPU (shape of probs()) as a DeviceArray.
+    Single-GPU propagators."""
+    return DeviceArray(self, *self._device_view("probs"))
+
+
+def _device_binned(self):
+    """Bin averages on the GPU (shape of binned()) as a DeviceArray.
+    Single-GPU propagators."""
+    return DeviceArray(self, *self._device_view("binned"))
+
+
+for _cls in (Fast, NSI, NUNM, Sterile, Decay):
+    _cls.device_probs = _device_probs
+    _cls.device_binned = _device_binned
 
 
 def default_devices():

@@ -89,9 +89,17 @@ ctest --test-dir build                               # labels: cpu, gpu, python
 Requirements: CMake ≥ 3.18, C++17, optionally CUDA ≥ 11 (tested with 11.8 on
 V100) and Python ≥ 3.8 with numpy. nanobind (BSD) and doctest (MIT) are
 vendored in `third_party/`. With the module built, use
-`PYTHONPATH=build/python`. A `pyproject.toml` (scikit-build-core) is provided
-for `pip install .` (not yet exercised: the development machines had no pip;
-the CMake build of the module is what the test suite uses).
+`PYTHONPATH=build/python`, or install the package with pip
+(scikit-build-core; CUDA is used when `nvcc` is found):
+
+```sh
+pip install ".[test]"
+pip install . --config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=70
+OPG_TEST_DATA_DIR=$PWD/tests/data pytest python/tests
+```
+
+The pip build has been tested with the CPU backend (Python 3.12, numpy 2.5);
+the CUDA module is tested through the CMake build.
 
 On pre-Ampere GPUs with old drivers (no PTX JIT), set
 `CMAKE_CUDA_ARCHITECTURES` to the exact SM of the card.
@@ -237,7 +245,13 @@ C++: `set_gradient_params()`, `calculate(Flavor, /*gradient=*/true)`, `grad()`,
 `weighted_gradient()`, `prob_points_grad()`, `weighted_gradient_points()`,
 `weighted_gradient_points_binned()`, `prob_path_grad()`,
 `calculate_binned(Flavor, true)`, `binned_grad()`, `weighted_gradient_binned()`,
-`avg_path_grad()`, `earth_parameter_names()` on `opg::Propagator`.
+`avg_path_grad()`, `earth_parameter_names()`, and
+`weighted_gradient_device()` / `weighted_gradient_binned_device()` (weights in
+GPU memory, one pointer per device in the layout of `device_probs(k)` /
+`device_binned(k)`) on `opg::Propagator`.
+                                  # w may be a CUDA array (CuPy, PyTorch, ...)
+                                  # on the propagator's GPU: no upload
+d = p.device_probs()              # zero-copy DeviceArray of the GPU results
 
 **Weighted mode.** A fit needs the gradient of a scalar such as χ², not every
 dP/dp: dχ²/dp = Σ w · dP/dp with w = ∂χ²/∂P (e.g. flux × cross-section ×
@@ -372,7 +386,9 @@ Gradients (Fast, 6 parameters, 1 V100; 2 V100 in brackets; `opg_bench ... grad*`
 | Binned 40 x 20, 8 GL nodes | 5.4 ms (3.4) | 56 ms (35) | 56 ms (35) |
 | Event list, 10⁶ events | 0.12 s (0.09) | — | 0.46 s (0.28); per analysis bin (800 bins) 0.48 s (0.31) |
 
-Event-list times include uploading the events. Other models: see
+Event-list times include uploading the events. With weights already on the
+GPU (`weighted_gradient_device`, or CUDA arrays from Python) the grid weighted
+gradient takes 0.26 s on 1 V100 (0.13 s on 2) instead of 0.29 s (0.17 s). Other models: see
 [Gradients](#gradients). The `gradient_fit.py` example (1200 bins, 4 GL nodes
 per direction, 4 parameters including the outer-core Z/A) converges in 6
 Levenberg–Marquardt iterations in 0.06 s on one V100.

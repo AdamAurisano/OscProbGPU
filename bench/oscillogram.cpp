@@ -235,6 +235,22 @@ namespace {
                 "P+full grad %.4fs (%.1fx), weighted grad %.4fs (%.1fx)\n",
                 Model::name, dev.empty() ? "cpu" : "cuda", nE, nC, names.size(),
                 opg::grad_traits<Model>::K, tp, tfull, tfull / tp, tw, tw / tp);
+    if (!dev.empty()) {
+      // weights already on the GPU (here: the device probabilities)
+      prop.calculate();
+      prop.wait();
+      std::vector<const R*> wd;
+      for (size_t k = 0; k < dev.size(); k++) wd.push_back(prop.device_probs(int(k)));
+      prop.weighted_gradient_device(wd);
+      double td = 1e30;
+      for (int r = 0; r < reps; r++) {
+        auto a = clk::now();
+        prop.weighted_gradient_device(wd);
+        td = std::min(td, std::chrono::duration<double>(clk::now() - a).count());
+      }
+      std::printf("%-8s grad   weighted grad with device-resident weights %.4fs (%.1fx)\n",
+                  Model::name, td, td / tp);
+    }
   }
 
   template <class Model> typename Model::Params nominal_params()

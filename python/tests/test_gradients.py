@@ -242,3 +242,26 @@ def test_all_models_grid_points_weighted_binned(cls, devices):
     refb = np.einsum("nabce,npabce->p", wb, GB)
     scb = np.einsum("nabce,npabce->p", np.abs(wb), np.abs(GB))
     assert np.all(np.abs(p.weighted_gradient_binned(wb) - refb) <= 1e-12 * scb)
+
+
+def test_device_weights(devices):
+    if not opg.NSI.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    p = _model(opg.NSI, devices)
+    p.set_gradient_params()
+    p.set_grid(np.geomspace(0.5, 30, 23), np.linspace(-1, 0.4, 13))
+    p.calculate()
+    if not devices:
+        with pytest.raises(ValueError):
+            p.device_probs()
+        return
+    dw = p.device_probs()                 # CUDA array (DLPack), no copy
+    assert dw.shape == p.probs().shape
+    assert dw.__dlpack_device__() == (2, devices[0])
+    assert dw.__cuda_array_interface__["shape"] == dw.shape
+    assert np.array_equal(p.weighted_gradient(dw), p.weighted_gradient(p.probs()))
+    p.set_bins(np.geomspace(0.5, 30, 6), np.linspace(-1, 0.4, 4), 3, 3)
+    p.calculate_binned()
+    db = p.device_binned()
+    assert np.array_equal(p.weighted_gradient_binned(db),
+                          p.weighted_gradient_binned(p.binned()))
