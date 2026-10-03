@@ -11,7 +11,7 @@
 # reference/make_reference.sh (needs ROOT and the OscProb sources).
 set -euo pipefail
 
-TAG=${1:-testdata-v1}
+TAG=${1:-testdata-v2}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 DEST=${2:-$HERE/tests/data}
 URL=${OPG_TESTDATA_URL:-https://github.com/AdamAurisano/OscProbGPU/releases/download/$TAG/oscprobgpu-testdata.tar.gz}
