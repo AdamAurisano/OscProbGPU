@@ -2,9 +2,10 @@
 //
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
-//   model  : fast (default), nsi, nunm, sterile, decay, liv, snsi, binned, grad,
+//   model  : fast (default), nsi, nunm, sterile, decay, liv, snsi, deco,
+//            sidereal, binned, grad,
 //            grad_nsi, grad_nunm, grad_sterile, grad_decay, grad_liv,
-//            grad_snsi, grad_binned,
+//            grad_snsi, grad_deco, grad_sidereal, grad_binned,
 //            grad_points, or all
 
 #include <chrono>
@@ -261,6 +262,26 @@ namespace {
     return p;
   }
 
+  opg::Deco<double>::Params deco_params()
+  {
+    auto p = nominal_params<opg::Deco<double>>();
+    p.SetGamma(2, 2e-21);
+    p.SetGamma(3, 5e-21);
+    p.SetDecoAngle(0.3);
+    return p;
+  }
+
+  opg::SiderealLIV<double>::Params sidereal_params()
+  {
+    auto p = nominal_params<opg::SiderealLIV<double>>();
+    p.SetA(0, 1, 1, 2e-22);
+    p.SetC(1, 2, 0, 2, 3e-14);
+    p.SetColatitude(43.5);
+    p.SetAzimuth(30.0);
+    p.SetTimeHours(3.0);
+    return p;
+  }
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -329,6 +350,11 @@ int main(int argc, char** argv)
     p.SetEps(0, 1, 0.3, 0.4);
     run_grad<opg::SNSI<double>>(p, nE, nC, dev, reps);
   }
+  if (want("deco")) run<opg::Deco<double>>(deco_params(), nE, nC, dev, reps);
+  if (want("sidereal")) run<opg::SiderealLIV<double>>(sidereal_params(), nE, nC, dev, reps);
+  if (want("grad_deco")) run_grad<opg::Deco<double>>(deco_params(), nE, nC, dev, reps);
+  if (want("grad_sidereal"))
+    run_grad<opg::SiderealLIV<double>>(sidereal_params(), nE, nC, dev, reps);
   if (want("grad")) {
     run_grad<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), nE, nC, dev, reps);
   }

@@ -336,6 +336,10 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | NUNM    | 16 | 32x (0.85 s)   | 36x (0.95 s)   | 2.0 |
 | Sterile | 12 | 18x (3.0 s)    | 20x (3.2 s)    | 1.5 |
 | Decay   | 8  | 17x (1.15 s)   | 18x (1.24 s)   | 2.1 |
+| LIV     | 60 | 123x (3.5 s)   | 131x (3.7 s)   | 2.1 |
+| SNSI    | 19 | 42x (1.1 s)    | 47x (1.2 s)    | 2.2 |
+| SiderealLIV | 54 | 104x (2.9 s) | 109x (3.0 s)  | 1.9 |
+| Deco    | 10 | 70x (3.7 s)    | 73x (3.8 s)    | 7.0 |
 
 The weighted times include uploading the weights. On the CPU the factors are
 9x, 28x, 28x, 17x and 6x. This is about 1.5–2 probability evaluations per
@@ -361,8 +365,8 @@ Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and 
 | Decay | 1e-14 | 1.6e-14 | |
 | LIV | 7.9e-12 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
 | SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
-| Deco | 9e-14 (**0** with `OPG_OSCPROB_BITWISE`) | | |
-| SiderealLIV | 1.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
+| Deco | 9e-14 (**0** with `OPG_OSCPROB_BITWISE`) | 9e-14 | |
+| SiderealLIV | 1.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.8e-13 | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
 
 Other checks: the ported Kopp eigensolver is bit-identical to OscProb's
 `MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;
@@ -408,6 +412,10 @@ and `reference/bench_oscprob.cxx`.
 | NUNM    | 4.9e4 /s | 9.0e4 /s | 7.6e7 /s | 1.5e8 /s | ~1500x |
 | Sterile | 3.2e4 /s | 1.9e4 /s | 1.2e7 /s | 2.4e7 /s | ~390x |
 | Decay   | 1.4e4 /s | 6.8e4 /s | 2.9e7 /s | 5.8e7 /s | ~2100x |
+| LIV     | | | 7.2e7 /s | | |
+| SNSI    | | | 7.6e7 /s | | |
+| SiderealLIV | | | 7.2e7 /s | | |
+| Deco    | | | 3.8e7 /s | | |
 
 ¹ Intel Core Ultra 5 225H (a different machine from the GPU host), so the last
 column is indicative. GPU times exclude the one-off set-up (context creation,

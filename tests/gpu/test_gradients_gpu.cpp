@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <sstream>
+#include <type_traits>
 
 #include "../gradients.h"
 
@@ -37,6 +38,17 @@ TEST_CASE("GPU grid / event-list / weighted gradients are consistent")
   gradtest::check_grid_and_weighted(gpu, 1e-13, 1e-13);
 }
 
+/// GPU vs CPU tolerance for grid gradients: round-off amplified by the
+/// oscillation phases; the LIV test points have phases up to ~1e4 rad, where
+/// both backends agree with the long-double reference to ~1e-11.
+template <class Model> double gpu_cpu_tol()
+{
+  if constexpr (std::is_same_v<Model, opg::LIV<double>> ||
+                std::is_same_v<Model, opg::SiderealLIV<double>>)
+    return 2e-11;
+  return 1e-12;
+}
+
 template <class Model> void check_gpu_vs_cpu()
 {
   auto one   = devs("OPG_TEST_DEVICES", "0");
@@ -69,7 +81,7 @@ template <class Model> void check_gpu_vs_cpu()
     scale = std::max(scale, std::fabs(gc[i]));
   }
   MESSAGE(std::string(Model::name) << " grid gradients GPU vs CPU: max |diff| / max |grad| = " << d / scale);
-  CHECK(d / scale < 1e-12);
+  CHECK(d / scale < gpu_cpu_tol<Model>());
   // weighted sums have cancellations: compare relative to sum |w * dP|
   const size_t npt = E.size() * C.size(), np = gwc.size();
   std::vector<double> sabs(np, 0);
