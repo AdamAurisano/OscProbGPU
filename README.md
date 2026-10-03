@@ -13,6 +13,7 @@ neutrino oscillation calculators, with a batched C++ API and Python bindings.
 | `opg::LIV`       | `PMNS_LIV`               | Lorentz invariance violation (SME, d = 3..8) |
 | `opg::SNSI`      | `PMNS_SNSI`              | scalar non-standard interactions          |
 | `opg::Deco`      | `PMNS_Deco`              | decoherence (density matrices)            |
+| `opg::SiderealLIV` | `PMNS_SiderealLIV`     | direction/sidereal-time dependent SME LIV |
 
 Every model runs on the GPU (one or more devices) or on a multi-threaded CPU
 backend that executes the *same* `__host__ __device__` physics code. Results
@@ -56,7 +57,12 @@ phase)`, `NUNM.set_frac_vnc(f)`, `Decay.set_alpha2/3(a)`,
 value, phase)` (dim 4, 6, 8), `SNSI.set_eps(i, j, value, phase)` (MeV⁻²),
 `SNSI.set_ferm_coup(e, u, d)`, `SNSI.set_lowest_mass(m)` (eV),
 `Deco.set_gamma(j, value)` (Γ_j1 in GeV), `Deco.set_gamma32(value)`,
-`Deco.set_deco_angle(theta)`, `Deco.set_power(n)`. All models start
+`Deco.set_deco_angle(theta)`, `Deco.set_power(n)`,
+`SiderealLIV.set_a(i, j, coord, v)`, `set_c(i, j, c1, c2, v)`,
+`set_colatitude(chi)` / `set_latitude(deg, min, sec)`,
+`set_neutrino_direction(zenith, azimuth)` (fixed direction; set the latitude
+first), `set_azimuth(azimuth)` (Earth paths then use their own zenith,
+arccos cos θ_z), `set_time_hours(t)`. All models start
 from OscProb's PDG defaults (`set_std_pars()`). See `python/examples/`:
 `oscillogram.py`, `lbl_spectrum.py`, and `gradient_fit.py` (a binned
 atmospheric likelihood fit with exact Jacobians from `binned_grad()`,
@@ -219,6 +225,7 @@ the model parameters and the Earth model's Z/A per layer type (see
 | Decay   | mixing, `alpha2 alpha3` (eV²; at α = 0 the derivative is the one-sided one from α > 0) |
 | LIV     | mixing, `aT<d>_<ab>` / `cT<d>_<ab>` magnitudes and `ph_aT<d>_<ab>` / `ph_cT<d>_<ab>` phases for d = 3..8 (60 in total; default: mixing, aT3, cT4) |
 | SNSI    | NSI's, plus `mlight` (lightest mass, eV; one-sided at 0); default as NSI |
+| SiderealLIV | mixing and, per flavour pair `<ab>`, `aX aY aZ cXX cYY cXY cXZ cYZ` (`aX_emu`, ...) |
 | Deco    | mixing, `gamma21 gamma31` (GeV), `deco_angle`, `deco_power` (default: all but `deco_power`). Where the Γ₃₂ square-root argument vanishes (e.g. Γ₂₁ = 0) its derivative is taken as 0, so gradients stay finite at Γ = 0 |
 
 Earth parameters (`earth_parameter_names`, per propagator): `zoa_<t>` for each
@@ -355,6 +362,7 @@ Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and 
 | LIV | 7.9e-12 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
 | SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
 | Deco | 9e-14 (**0** with `OPG_OSCPROB_BITWISE`) | | |
+| SiderealLIV | 1.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
 
 Other checks: the ported Kopp eigensolver is bit-identical to OscProb's
 `MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;

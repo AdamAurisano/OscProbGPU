@@ -153,6 +153,15 @@ namespace gradtest {
   {
     return param_scale(name);
   }
+  /// SiderealLIV: P varies on scales of aT ~ 1e-22 GeV and (as cT enters
+  /// as E[GeV] cT, without the GeV -> eV factor, as OscProb) cT ~ 1e-14.
+  template <> inline double model_scale<opg::SiderealLIV<double>>(const std::string& name)
+  {
+    if (name.size() > 2 && name[0] == 'a' && name[2] == '_') return 1e-22;
+    if (name.size() > 3 && name[0] == 'c' && name[3] == '_') return 1e-14;
+    return param_scale(name);
+  }
+
   /// Deco: Gamma_ij of order 1e-21 GeV (power 0) to 1e-24 GeV (power 2).
   template <> inline double model_scale<opg::Deco<double>>(const std::string& name)
   {
@@ -211,6 +220,28 @@ namespace gradtest {
     Deco::Params p;
     p.mix = variants::nominal_mix<3>();
     v.push_back({"Gamma=0", p});
+    return v;
+  }
+
+  using SiderealLIV = opg::SiderealLIV<double>;
+  template <>
+  inline std::vector<std::pair<std::string, SiderealLIV::Params>> param_points<SiderealLIV>()
+  {
+    std::vector<std::pair<std::string, SiderealLIV::Params>> v;
+    auto p = variants::sidereal();
+    // sizes with visible effects (see model_scale)
+    p.SetA(0, 1, 1, 2e-20);
+    p.SetA(1, 2, 0, -1e-20);
+    p.SetC(0, 1, 0, 2, 3e-12);
+    p.SetC(1, 1, 1, 2, -2e-12);
+    v.push_back({"sidereal (path zenith)", p});
+    v.push_back({"sidereal_fixed", variants::sidereal_fixed()});
+    SiderealLIV::Params q;
+    q.mix = variants::nominal_mix<3>();
+    q.SetColatitude(43.5);
+    q.SetAzimuth(30.0);
+    q.SetTimeHours(3.0);
+    v.push_back({"no LIV", q});
     return v;
   }
 

@@ -209,6 +209,11 @@ def _model(cls, devices):
     elif cls is opg.LIV:
         p.set_aT(0, 1, 3, 1.5e-21, 0.7)
         p.set_cT(1, 2, 4, 1e-22, 2.3)
+    elif cls is opg.SiderealLIV:
+        p.set_a(0, 1, 1, 2e-22)
+        p.set_c(1, 2, 0, 2, 3e-14)
+        p.set_azimuth(30.0)
+        p.set_time_hours(3.0)
     elif cls is opg.Deco:
         p.set_gamma(2, 2e-21)
         p.set_gamma(3, 5e-21)
@@ -220,7 +225,7 @@ def _model(cls, devices):
 
 
 @pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Decay,
-                                 opg.LIV, opg.SNSI, opg.Deco],
+                                 opg.LIV, opg.SNSI, opg.Deco, opg.SiderealLIV],
                          ids=lambda c: c.__name__)
 def test_all_models_grid_points_weighted_binned(cls, devices):
     if not cls.has_gradients:

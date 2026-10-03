@@ -205,6 +205,47 @@ namespace variants {
     return p;
   }
 
+  inline opg::SiderealLIV<>::Params sidereal()
+  {
+    opg::SiderealLIV<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetA(0, 0, 0, 0.1e-22);
+    p.SetA(0, 1, 1, 0.2e-22);
+    p.SetA(0, 2, 2, 0.3e-22);
+    p.SetA(1, 1, 0, 0.4e-22);
+    p.SetA(1, 2, 1, 0.5e-22);
+    p.SetA(2, 2, 2, 0.6e-22);
+    p.SetC(0, 0, 0, 0, 0.1e-22);
+    p.SetC(0, 1, 1, 1, 0.2e-22);
+    p.SetC(0, 2, 2, 2, 0.3e-22);
+    p.SetC(1, 1, 0, 1, 0.4e-22);
+    p.SetC(1, 2, 1, 2, 0.5e-22);
+    p.SetC(2, 2, 0, 2, 0.6e-22);
+    p.SetColatitude(-89, -59, -24);
+    p.SetNeutrinoDirection(57.3, 28.6);  // fixed paths
+    p.SetAzimuth(28.6);                  // Earth paths: zenith of the path
+    p.SetTimeHours(6.0);
+    return p;
+  }
+
+  inline opg::SiderealLIV<>::Params sidereal_fixed()
+  {
+    opg::SiderealLIV<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetA(0, 1, 0, 3e-22);
+    p.SetA(1, 2, 2, -2e-22);
+    p.SetA(2, 2, 1, 1e-22);
+    p.SetC(0, 0, 1, 1, 2e-23);
+    p.SetC(0, 1, 0, 1, -1e-23);
+    p.SetC(1, 2, 0, 2, 3e-23);
+    p.SetC(0, 2, 1, 2, 1.5e-23);
+    p.SetC(1, 1, 0, 0, -2.5e-23);
+    p.SetColatitude(43.5);
+    p.SetNeutrinoDirection(120.0, 250.0);
+    p.SetTimeHours(17.3);
+    return p;
+  }
+
 } // namespace variants
 
 #endif

@@ -101,6 +101,29 @@ def make(tag, devices):
             p.set_deco_angle(2.0)
             p.set_gamma32(3e-24)
             p.set_power(2)
+    elif tag.startswith("sidereal"):
+        p = set_nominal(opg.SiderealLIV(devices=devices))
+        if tag == "sidereal":
+            for (i, j, c), v in {(0, 0, 0): .1e-22, (0, 1, 1): .2e-22, (0, 2, 2): .3e-22,
+                                 (1, 1, 0): .4e-22, (1, 2, 1): .5e-22,
+                                 (2, 2, 2): .6e-22}.items():
+                p.set_a(i, j, c, v)
+            for (i, j, c1, c2), v in {(0, 0, 0, 0): .1e-22, (0, 1, 1, 1): .2e-22,
+                                      (0, 2, 2, 2): .3e-22, (1, 1, 0, 1): .4e-22,
+                                      (1, 2, 1, 2): .5e-22, (2, 2, 0, 2): .6e-22}.items():
+                p.set_c(i, j, c1, c2, v)
+            p.set_latitude(-89, -59, -24)
+            p.set_neutrino_direction(57.3, 28.6)   # fixed paths
+            p.set_azimuth(28.6)                     # Earth paths: path zenith
+            p.set_time_hours(6.0)
+        else:
+            p.set_a(0, 1, 0, 3e-22); p.set_a(1, 2, 2, -2e-22); p.set_a(2, 2, 1, 1e-22)
+            p.set_c(0, 0, 1, 1, 2e-23); p.set_c(0, 1, 0, 1, -1e-23)
+            p.set_c(1, 2, 0, 2, 3e-23); p.set_c(0, 2, 1, 2, 1.5e-23)
+            p.set_c(1, 1, 0, 0, -2.5e-23)
+            p.set_colatitude(43.5)
+            p.set_neutrino_direction(120.0, 250.0)
+            p.set_time_hours(17.3)
     else:
         raise ValueError(tag)
     return p
@@ -108,7 +131,8 @@ def make(tag, devices):
 
 TAGS = ["fast", "fast_io", "nsi", "nsi_phases", "nunm", "nunm_phases",
         "nunm_high", "sterile", "sterile_phases", "decay", "decay_both",
-        "liv", "liv_phases", "snsi", "snsi_io", "deco", "deco_power"]
+        "liv", "liv_phases", "snsi", "snsi_io", "deco", "deco_power",
+        "sidereal", "sidereal_fixed"]
 
 
 @pytest.mark.parametrize("tag", TAGS)

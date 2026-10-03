@@ -112,6 +112,12 @@ TEST_CASE("GPU Deco matches OscProb and the CPU backend")
   check_model<opg::Deco<>>(variants::deco_power(), "deco_power");
 }
 
+TEST_CASE("GPU SiderealLIV matches OscProb and the CPU backend")
+{
+  check_model<opg::SiderealLIV<>>(variants::sidereal(), "sidereal");
+  check_model<opg::SiderealLIV<>>(variants::sidereal_fixed(), "sidereal_fixed");
+}
+
 TEST_CASE("GPU NUNM matches OscProb and the CPU backend")
 {
   check_model<opg::NUNM<>>(variants::nunm(0), "nunm");

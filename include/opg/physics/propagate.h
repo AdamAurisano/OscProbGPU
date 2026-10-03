@@ -113,6 +113,27 @@ namespace opg {
   /// State evolved by a model (amplitude matrix unless the model defines one).
   template <class Model> using StateOf = typename detail::state_of<Model>::type;
 
+  namespace detail {
+    template <class Model, class = void> struct path_aware : std::false_type {};
+    template <class Model>
+    struct path_aware<Model, std::void_t<decltype(Model::initial(
+                                 std::declval<const typename Model::Prepared&>(), bool(),
+                                 typename Model::Real()))>> : std::true_type {};
+  } // namespace detail
+
+  /// Initial state for a path through the Earth with direction cosZ (models
+  /// whose Hamiltonian depends on the direction, e.g. sidereal LIV, provide
+  /// initial(P, nubar, cosZ)).
+  template <class Model, class R>
+  OPG_HD OPG_INLINE StateOf<Model> initial_state(const typename Model::Prepared& P,
+                                                 bool nubar, R cosZ)
+  {
+    if constexpr (detail::path_aware<Model>::value)
+      return Model::initial(P, nubar, cosZ);
+    else
+      return Model::initial(P, nubar);
+  }
+
   /// Write P(a -> b) for a model state to out[(a*N + b) * stride].
   template <class Model, class R>
   OPG_HD OPG_INLINE void store_model_probs(const StateOf<Model>& S, R* out, size_t stride)
@@ -129,7 +150,7 @@ namespace opg {
   evolve_prem(const typename Model::Prepared& P, const EarthView<R>& earth,
               R E, R cosZ, bool nubar)
   {
-    auto S = Model::initial(P, nubar);
+    auto S = initial_state<Model, R>(P, nubar, cosZ);
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
       Model::step(P, E, nubar, s, S);
     });

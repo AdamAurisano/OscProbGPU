@@ -92,7 +92,12 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   three density matrices, bit-identical to OscProb with
   `OPG_OSCPROB_BITWISE`; gradients from first-order perturbation theory of
   the eigensystem in dual arithmetic.
-* Next: PMNS_SiderealLIV (direction and sidereal-time dependent SME).
+* Done: SiderealLIV (`PMNS_SiderealLIV`): per-path direction in a custom
+  state (Earth paths: zenith from cosZ unless a fixed direction is set),
+  bit-identical to OscProb with `OPG_OSCPROB_BITWISE`, with gradients. Note
+  (OscProb behaviour, ported as is): the cT terms lack the GeV -> eV factor of
+  the aT terms, and the sidereal terms are dropped in vacuum.
+* Open: per-event azimuth / sidereal time (currently per propagator).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast),
   PMNS_Maltoni (alternative bin averaging); PMNS_OQS and EarthModelBinned on
   request.

@@ -94,6 +94,15 @@ TEST_CASE("Deco (CPU) matches OscProb PMNS_Deco")
   check_all(prop, "deco_power", kTolCPU, true);
 }
 
+TEST_CASE("SiderealLIV (CPU) matches OscProb PMNS_SiderealLIV")
+{
+  opg::Propagator<opg::SiderealLIV<>> prop;
+  prop.set_params(variants::sidereal());
+  check_all(prop, "sidereal", kTolCPU, true);
+  prop.set_params(variants::sidereal_fixed());
+  check_all(prop, "sidereal_fixed", kTolCPU, true);
+}
+
 TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
 {
   opg::Propagator<opg::NUNM<>> prop;

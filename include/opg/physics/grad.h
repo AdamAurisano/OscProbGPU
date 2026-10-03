@@ -70,7 +70,7 @@ namespace opg {
                                       const EarthView<R>& earth, R E, R cosZ, bool nubar,
                                       StateOf<Model>& S, StateOf<Model> (&dS)[K])
   {
-    S = Model::initial(P, nubar);
+    S = initial_state<Model, R>(P, nubar, cosZ);
     Model::template initial_grad<K>(G.P, nubar, dS);
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
       Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, s), S, dS);

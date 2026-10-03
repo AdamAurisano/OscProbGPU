@@ -635,6 +635,55 @@ NB_MODULE(_oscprobgpu, m)
            },
            "m"_a, "Lightest neutrino mass in eV.");
 
+  using SLIV = opg::SiderealLIV<double>;
+  auto csl  = bind_model<SLIV>(m, "SiderealLIV",
+                              "3 flavours with sidereal SME LIV (PMNS_SiderealLIV).");
+  bind_ctor<SLIV>(csl);
+  csl.def("set_a",
+          [](PyModel<SLIV>& w, int i, int j, int coord, double v) {
+            w.dirty = true;
+            w.params.SetA(i, j, coord, v);
+          },
+          "flvi"_a, "flvj"_a, "coord"_a, "value"_a, "aT_ij^coord in GeV (coord 0, 1, 2 = X, Y, Z).")
+      .def("set_c",
+           [](PyModel<SLIV>& w, int i, int j, int c1, int c2, double v) {
+             w.dirty = true;
+             w.params.SetC(i, j, c1, c2, v);
+           },
+           "flvi"_a, "flvj"_a, "coord1"_a, "coord2"_a, "value"_a)
+      .def("set_colatitude",
+           [](PyModel<SLIV>& w, double chi) {
+             w.dirty = true;
+             w.params.SetColatitude(chi);
+           },
+           "chi"_a, "Detector colatitude in degrees (90 - latitude).")
+      .def("set_latitude",
+           [](PyModel<SLIV>& w, double deg, double min, double sec) {
+             w.dirty = true;
+             w.params.SetColatitude(deg, min, sec);
+           },
+           "deg"_a, "min"_a = 0.0, "sec"_a = 0.0,
+           "As SetColatitude(deg, min, sec): signed latitude (negative south).")
+      .def("set_neutrino_direction",
+           [](PyModel<SLIV>& w, double zen, double azi) {
+             w.dirty = true;
+             w.params.SetNeutrinoDirection(zen, azi);
+           },
+           "zenith"_a, "azimuth"_a,
+           "Fixed direction (degrees) for all paths (set the colatitude first).")
+      .def("set_azimuth",
+           [](PyModel<SLIV>& w, double azi) {
+             w.dirty = true;
+             w.params.SetAzimuth(azi);
+           },
+           "azimuth"_a, "Azimuth (degrees); Earth paths use their own zenith.")
+      .def("set_time_hours",
+           [](PyModel<SLIV>& w, double h) {
+             w.dirty = true;
+             w.params.SetTimeHours(h);
+           },
+           "hours"_a, "Local sidereal time.");
+
   using Deco = opg::Deco<double>;
   auto ce = bind_model<Deco>(m, "Deco", "3 flavours with decoherence (PMNS_Deco).");
   bind_ctor<Deco>(ce);

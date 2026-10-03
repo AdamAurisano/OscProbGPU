@@ -46,6 +46,7 @@
 #include "PMNS_NSI.h"
 #include "PMNS_NUNM.h"
 #include "PMNS_SNSI.h"
+#include "PMNS_SiderealLIV.h"
 #include "PMNS_Sterile.h"
 #include "PremModel.h"
 
@@ -131,6 +132,8 @@ struct Variant {
     function<PMNS_Base*()>          make;
     function<matrixC(PMNS_Base*)>   hms;
     bool                            warmup = false;
+    /// called before each PREM path with its cosZ (direction-dependent models)
+    function<void(PMNS_Base*, double)> per_path = nullptr;
 };
 
 template <class T> matrixC get_hms(PMNS_Base* p)
@@ -370,6 +373,58 @@ vector<Variant> GetVariants()
                },
                get_hms<PMNS_Deco>});
 
+  // Sidereal LIV with OscProb's test coefficients (test/Utils.h); fixed
+  // paths use the set direction, PREM paths their own zenith
+  auto sidereal_pars = [](PMNS_SiderealLIV* p) {
+    SetNominalPars(p);
+    p->SetA(0, 0, 0, 0.1e-22);
+    p->SetA(0, 1, 1, 0.2e-22);
+    p->SetA(0, 2, 2, 0.3e-22);
+    p->SetA(1, 1, 0, 0.4e-22);
+    p->SetA(1, 2, 1, 0.5e-22);
+    p->SetA(2, 2, 2, 0.6e-22);
+    p->SetC(0, 0, 0, 0, 0.1e-22);
+    p->SetC(0, 1, 1, 1, 0.2e-22);
+    p->SetC(0, 2, 2, 2, 0.3e-22);
+    p->SetC(1, 1, 0, 1, 0.4e-22);
+    p->SetC(1, 2, 1, 2, 0.5e-22);
+    p->SetC(2, 2, 0, 2, 0.6e-22);
+    p->SetColatitude(-89, -59, -24);  // IceCube (South Pole)
+    p->SetNeutrinoDirection(57.3, 28.6);
+    p->SetTimeHours(6.0);
+  };
+  v.push_back({"sidereal", 3,
+               [sidereal_pars] {
+                 auto p = new HmsPeek<PMNS_SiderealLIV>();
+                 sidereal_pars(p);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_SiderealLIV>, false,
+               [](PMNS_Base* p, double c) {
+                 static_cast<PMNS_SiderealLIV*>(p)->SetNeutrinoDirection(
+                     acos(c) * 180.0 / M_PI, 28.6);
+               }});
+
+  // Sidereal LIV, all coefficient types, fixed direction everywhere
+  v.push_back({"sidereal_fixed", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_SiderealLIV>();
+                 SetNominalPars(p);
+                 p->SetA(0, 1, 0, 3e-22);
+                 p->SetA(1, 2, 2, -2e-22);
+                 p->SetA(2, 2, 1, 1e-22);
+                 p->SetC(0, 0, 1, 1, 2e-23);
+                 p->SetC(0, 1, 0, 1, -1e-23);
+                 p->SetC(1, 2, 0, 2, 3e-23);
+                 p->SetC(0, 2, 1, 2, 1.5e-23);
+                 p->SetC(1, 1, 0, 0, -2.5e-23);
+                 p->SetColatitude(43.5);
+                 p->SetNeutrinoDirection(120.0, 250.0);
+                 p->SetTimeHours(17.3);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_SiderealLIV>});
+
   return v;
 }
 
@@ -393,12 +448,14 @@ void dump_fixed_path(PMNS_Base* p, int N, const vector<NuPath>& path,
 }
 
 void dump_prem(PMNS_Base* p, int N, PremModel& prem, const vector<double>& C,
-               const vector<double>& E, const string& fname)
+               const vector<double>& E, const string& fname,
+               const function<void(PMNS_Base*, double)>& per_path = nullptr)
 {
   vector<double> out;
   for (int nb = 0; nb < 2; nb++) {
     p->SetIsNuBar(nb);
     for (double c : C) {
+      if (per_path) per_path(p, c);
       prem.FillPath(c);
       p->SetPath(prem.GetNuPath());
       for (double e : E) append_matrix(out, p->ProbMatrix(N, N, e), N);
@@ -573,7 +630,7 @@ int main(int argc, char** argv)
     dump_hms(v.hms(p), v.N, dir + "/" + v.tag + "_hms.npy");
     dump_fixed_path(p, v.N, testpath, Etest, dir + "/" + v.tag + "_testpath.npy");
     dump_fixed_path(p, v.N, vacpath, Etest, dir + "/" + v.tag + "_vacuum.npy");
-    dump_prem(p, v.N, prem, C, Eprem, dir + "/" + v.tag + "_prem.npy");
+    dump_prem(p, v.N, prem, C, Eprem, dir + "/" + v.tag + "_prem.npy", v.per_path);
     delete p;
   }
 
