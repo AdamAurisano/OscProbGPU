@@ -3,9 +3,9 @@
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
 //   model  : fast (default), nsi, nunm, sterile, decay, liv, snsi, deco,
-//            sidereal, binned, grad,
+//            sidereal, oqs, binned, grad,
 //            grad_nsi, grad_nunm, grad_sterile, grad_decay, grad_liv,
-//            grad_snsi, grad_deco, grad_sidereal, grad_binned,
+//            grad_snsi, grad_deco, grad_sidereal, grad_oqs, grad_binned,
 //            grad_points, or all
 
 #include <chrono>
@@ -282,6 +282,15 @@ namespace {
     return p;
   }
 
+  opg::OQS<double>::Params oqs_params()
+  {
+    auto p = nominal_params<opg::OQS<double>>();
+    p.SetDecoElement(3, std::sqrt(2e-23));
+    p.SetDecoElement(8, std::sqrt(4e-23));
+    p.SetDecoAngle(3, 8, std::acos(0.5));
+    return p;
+  }
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -353,6 +362,8 @@ int main(int argc, char** argv)
   if (want("deco")) run<opg::Deco<double>>(deco_params(), nE, nC, dev, reps);
   if (want("sidereal")) run<opg::SiderealLIV<double>>(sidereal_params(), nE, nC, dev, reps);
   if (want("grad_deco")) run_grad<opg::Deco<double>>(deco_params(), nE, nC, dev, reps);
+  if (want("oqs")) run<opg::OQS<double>>(oqs_params(), nE, nC, dev, reps);
+  if (want("grad_oqs")) run_grad<opg::OQS<double>>(oqs_params(), nE, nC, dev, reps);
   if (want("grad_sidereal"))
     run_grad<opg::SiderealLIV<double>>(sidereal_params(), nE, nC, dev, reps);
   if (want("grad")) {

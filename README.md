@@ -14,6 +14,7 @@ neutrino oscillation calculators, with a batched C++ API and Python bindings.
 | `opg::SNSI`      | `PMNS_SNSI`              | scalar non-standard interactions          |
 | `opg::Deco`      | `PMNS_Deco`              | decoherence (density matrices)            |
 | `opg::SiderealLIV` | `PMNS_SiderealLIV`     | direction/sidereal-time dependent SME LIV |
+| `opg::OQS`       | `PMNS_OQS`               | open quantum system (Gell-Mann basis dissipator) |
 
 Every model runs on the GPU (one or more devices) or on a multi-threaded CPU
 backend that executes the *same* `__host__ __device__` physics code. Results
@@ -62,7 +63,9 @@ value, phase)` (dim 4, 6, 8), `SNSI.set_eps(i, j, value, phase)` (MeV⁻²),
 `set_colatitude(chi)` / `set_latitude(deg, min, sec)`,
 `set_neutrino_direction(zenith, azimuth)` (fixed direction; set the latitude
 first), `set_azimuth(azimuth)` (Earth paths then use their own zenith,
-arccos cos θ_z), `set_time_hours(t)`. All models start
+arccos cos θ_z), `set_time_hours(t)`, `OQS.set_deco_element(i, value)`
+(|a_i|, i = 1..8), `OQS.set_deco_angle(i, j, theta)`, `OQS.set_power(n)`.
+All models start
 from OscProb's PDG defaults (`set_std_pars()`). See `python/examples/`:
 `oscillogram.py`, `lbl_spectrum.py`, and `gradient_fit.py` (a binned
 atmospheric likelihood fit with exact Jacobians from `binned_grad()`,
@@ -228,6 +231,7 @@ the model parameters and the Earth model's Z/A per layer type (see
 | SNSI    | NSI's, plus `mlight` (lightest mass, eV; one-sided at 0); default as NSI |
 | SiderealLIV | mixing and, per flavour pair `<ab>`, `aX aY aZ cXX cYY cXY cXZ cYZ` (`aX_emu`, ...) |
 | Deco    | mixing, `gamma21 gamma31` (GeV), `deco_angle`, `deco_power` (default: all but `deco_power`). Where the Γ₃₂ square-root argument vanishes (e.g. Γ₂₁ = 0) its derivative is taken as 0, so gradients stay finite at Γ = 0 |
+| OQS     | mixing, `a1` .. `a8`, the angles `ang<i><j>` (1 ≤ i < j ≤ 8, e.g. `ang38`), `power` (default: mixing and `a1` .. `a8`). The 8x8 exponential is differentiated in dual arithmetic through the Padé approximant |
 
 Earth parameters (`earth_parameter_names`, per propagator): `zoa_<t>` for each
 layer type t of the Earth model, i.e. the Z/A of all layers of that type
@@ -341,22 +345,25 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | SNSI    | 19 | 42x (1.1 s)    | 47x (1.2 s)    | 2.2 |
 | SiderealLIV | 54 | 104x (2.9 s) | 109x (3.0 s)  | 1.9 |
 | Deco    | 10 | 54x (2.8 s)    | 56x (2.9 s)    | 5.4 |
+| OQS     | 43 | 377x (180 s)   | 382x (183 s)   | 8.8 |
 
 The weighted times include uploading the weights. On the CPU the factors are
 9x, 28x, 28x, 17x and 6x. This is about 1.5–2 probability evaluations per
 parameter: comparable to central finite differences (2 per parameter), but
-exact. Deco is the exception (5.4): each step carries three density matrices
-and their derivatives.
+exact. Deco (5.4) and OQS (8.8; 3.3 on the CPU) are the exceptions: Deco
+carries three density matrices and their derivatives; OQS differentiates an
+8x8 matrix exponential per segment in dual arithmetic, whose GPU kernels spill
+~17 KB of registers.
 
 ## Validation
 
 The tests compare against reference data from the original OscProb: point
 `ProbMatrix` values (cache disabled), mass matrices, PREM paths, brute-force bin
-averages and `AvgProb` values (≈ 36 MB, not committed). Download it into
+averages and `AvgProb` values (≈ 39 MB, not committed). Download it into
 `tests/data/` with
 
 ```sh
-scripts/fetch_test_data.sh          # release asset testdata-v1, checked against tests/data/SHA256SUMS
+scripts/fetch_test_data.sh          # release asset testdata-v2, checked against tests/data/SHA256SUMS
 ```
 
 or regenerate it with `reference/make_reference.sh`, which builds OscProb
@@ -377,6 +384,7 @@ Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and 
 | SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
 | Deco | 9e-14 (**0** with `OPG_OSCPROB_BITWISE`) | 9e-14 | |
 | SiderealLIV | 1.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.8e-13 | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
+| OQS | 2.9e-15 | 4.3e-14 | the 8x8 exponential follows Eigen's MatrixExponential (same Padé degrees and scaling), with a different summation order |
 
 Other checks: the ported Kopp eigensolver is bit-identical to OscProb's
 `MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;
@@ -426,6 +434,7 @@ and `reference/bench_oscprob.cxx`.
 | SNSI    | | | 7.6e7 /s | | |
 | SiderealLIV | | | 7.2e7 /s | | |
 | Deco    | | | 3.8e7 /s | | |
+| OQS     | | | 4.1e6 /s | | |
 
 ¹ Intel Core Ultra 5 225H (a different machine from the GPU host), so the last
 column is indicative. GPU times exclude the one-off set-up (context creation,

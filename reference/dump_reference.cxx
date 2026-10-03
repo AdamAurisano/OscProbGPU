@@ -45,6 +45,7 @@
 #include "PMNS_LIV.h"
 #include "PMNS_NSI.h"
 #include "PMNS_NUNM.h"
+#include "PMNS_OQS.h"
 #include "PMNS_SNSI.h"
 #include "PMNS_SiderealLIV.h"
 #include "PMNS_Sterile.h"
@@ -424,6 +425,34 @@ vector<Variant> GetVariants()
                  return (PMNS_Base*)p;
                },
                get_hms<PMNS_SiderealLIV>});
+
+  // Open quantum system with OscProb's test values (test/Utils.h)
+  v.push_back({"oqs", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_OQS>();
+                 SetNominalPars(p);
+                 p->SetDecoElement(3, sqrt(2e-23));
+                 p->SetDecoElement(8, sqrt(4e-23));
+                 p->SetDecoAngle(3, 8, acos(0.5));
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_OQS>});
+
+  // OQS with all dissipator terms, ~ E, inverted ordering
+  v.push_back({"oqs_full", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_OQS>();
+                 SetNominalPars(p);
+                 p->SetDm(3, -2.465e-3 + 7.41e-5);
+                 const double a[9] = {0, 1.0, 0.7, 1.3, 0.5, 0.9, 1.1, 0.6, 0.8};
+                 for (int i = 1; i <= 8; i++) p->SetDecoElement(i, a[i] * 1e-13);
+                 for (int i = 1; i <= 8; i++)
+                   for (int j = i + 1; j <= 8; j++)
+                     p->SetDecoAngle(i, j, 0.3 + 0.17 * i + 0.11 * j);
+                 p->SetPower(1);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_OQS>});
 
   return v;
 }

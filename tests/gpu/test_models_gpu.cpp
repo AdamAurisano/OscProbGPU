@@ -125,6 +125,12 @@ TEST_CASE("GPU SiderealLIV per-event azimuth and time in event lists")
   extratest::check_extras(prop, 1e-12);
 }
 
+TEST_CASE("GPU OQS matches OscProb and the CPU backend")
+{
+  check_model<opg::OQS<>>(variants::oqs(), "oqs");
+  check_model<opg::OQS<>>(variants::oqs_full(), "oqs_full");
+}
+
 TEST_CASE("GPU NUNM matches OscProb and the CPU backend")
 {
   check_model<opg::NUNM<>>(variants::nunm(0), "nunm");

@@ -218,6 +218,10 @@ def _model(cls, devices):
         p.set_gamma(2, 2e-21)
         p.set_gamma(3, 5e-21)
         p.set_deco_angle(0.3)
+    elif cls is opg.OQS:
+        p.set_deco_element(3, 4e-12)
+        p.set_deco_element(8, 6e-12)
+        p.set_deco_angle(3, 8, 1.0)
     elif cls is opg.SNSI:
         p.set_lowest_mass(0.05)
         p.set_eps(0, 1, 0.3, 0.4)
@@ -225,7 +229,7 @@ def _model(cls, devices):
 
 
 @pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Decay,
-                                 opg.LIV, opg.SNSI, opg.Deco, opg.SiderealLIV],
+                                 opg.LIV, opg.SNSI, opg.Deco, opg.SiderealLIV, opg.OQS],
                          ids=lambda c: c.__name__)
 def test_all_models_grid_points_weighted_binned(cls, devices):
     if not cls.has_gradients:

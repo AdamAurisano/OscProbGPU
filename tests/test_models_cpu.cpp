@@ -110,6 +110,15 @@ TEST_CASE("SiderealLIV (CPU) per-event azimuth and time in event lists")
   extratest::check_extras(prop, 0);
 }
 
+TEST_CASE("OQS (CPU) matches OscProb PMNS_OQS")
+{
+  opg::Propagator<opg::OQS<>> prop;
+  prop.set_params(variants::oqs());
+  check_all(prop, "oqs", kTolCPU);
+  prop.set_params(variants::oqs_full());
+  check_all(prop, "oqs_full", kTolCPU);
+}
+
 TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
 {
   opg::Propagator<opg::NUNM<>> prop;

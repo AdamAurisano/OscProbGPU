@@ -169,6 +169,13 @@ namespace gradtest {
     return param_scale(name);
   }
 
+  /// OQS: |a_i| matter on scales ~1e-12 (D ~ a_i a_j GeV with D L ~ 1).
+  template <> inline double model_scale<opg::OQS<double>>(const std::string& name)
+  {
+    if (name.size() == 2 && name[0] == 'a') return 1e-12;
+    return param_scale(name);
+  }
+
   /// SNSI: with absolute masses of a few 1e-2 eV, the probabilities vary on
   /// scales ~1e-2 of eps (MeV^-2), the couplings and mlight (eV).
   template <> inline double model_scale<opg::SNSI<double>>(const std::string& name)
@@ -208,6 +215,24 @@ namespace gradtest {
     p.mix = variants::nominal_mix<3>();
     p.SetLowestMass(0.05);
     v.push_back({"eps=0", p});
+    return v;
+  }
+
+  using OQS = opg::OQS<double>;
+  template <> inline std::vector<std::pair<std::string, OQS::Params>> param_points<OQS>()
+  {
+    std::vector<std::pair<std::string, OQS::Params>> v;
+    v.push_back({"oqs", variants::oqs()});
+    v.push_back({"oqs_full", variants::oqs_full()});
+    OQS::Params p;
+    p.mix = variants::nominal_mix<3>();
+    v.push_back({"a=0", p});
+    p = variants::oqs();
+    p.mix = variants::fast_io_mix();
+    p.SetPower(2);
+    p.SetDecoElement(3, 3e-14);
+    p.SetDecoElement(8, 5e-14);
+    v.push_back({"IO,power=2", p});
     return v;
   }
 

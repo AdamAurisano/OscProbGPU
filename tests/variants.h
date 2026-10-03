@@ -246,6 +246,29 @@ namespace variants {
     return p;
   }
 
+  inline opg::OQS<>::Params oqs()
+  {
+    opg::OQS<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetDecoElement(3, std::sqrt(2e-23));
+    p.SetDecoElement(8, std::sqrt(4e-23));
+    p.SetDecoAngle(3, 8, std::acos(0.5));
+    return p;
+  }
+
+  inline opg::OQS<>::Params oqs_full()
+  {
+    opg::OQS<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.mix.SetDm(3, -2.465e-3 + 7.41e-5);
+    const double a[9] = {0, 1.0, 0.7, 1.3, 0.5, 0.9, 1.1, 0.6, 0.8};
+    for (int i = 1; i <= 8; i++) p.SetDecoElement(i, a[i] * 1e-13);
+    for (int i = 1; i <= 8; i++)
+      for (int j = i + 1; j <= 8; j++) p.SetDecoAngle(i, j, 0.3 + 0.17 * i + 0.11 * j);
+    p.SetPower(1);
+    return p;
+  }
+
 } // namespace variants
 
 #endif

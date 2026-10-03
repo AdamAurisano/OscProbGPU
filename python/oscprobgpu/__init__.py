@@ -1,7 +1,8 @@
 """OscProbGPU: CUDA port of selected OscProb neutrino oscillation calculators.
 
 Models: Fast, NSI, NUNM, Sterile (3+1), Decay, LIV (SME), SNSI (scalar NSI),
-Deco (decoherence), SiderealLIV (direction/time-dependent SME). Each model exposes OscProb-style
+Deco (decoherence), SiderealLIV (direction/time-dependent SME), OQS (open
+quantum system). Each model exposes OscProb-style
 parameter setters and a batched API::
 
     import numpy as np
@@ -37,6 +38,7 @@ from ._oscprobgpu import (  # noqa: F401
     NSI,
     Deco,
     NUNM,
+    OQS,
     SNSI,
     SiderealLIV,
     Decay,
@@ -50,7 +52,7 @@ from ._oscprobgpu import (  # noqa: F401
     has_cuda,
 )
 
-__all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "Deco", "SiderealLIV", "PremModel",
+__all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "Deco", "SiderealLIV", "OQS", "PremModel",
            "DeviceArray", "cuda_device_count", "has_cuda", "default_devices",
            "path_column_depth", "path_transmission"]
 
@@ -105,7 +107,7 @@ def _device_binned(self):
     return DeviceArray(self, *self._device_view("binned"))
 
 
-for _cls in (Fast, NSI, NUNM, Sterile, Decay, LIV, SNSI, Deco, SiderealLIV):
+for _cls in (Fast, NSI, NUNM, Sterile, Decay, LIV, SNSI, Deco, SiderealLIV, OQS):
     _cls.device_probs = _device_probs
     _cls.device_binned = _device_binned
 

@@ -124,6 +124,21 @@ def make(tag, devices):
             p.set_colatitude(43.5)
             p.set_neutrino_direction(120.0, 250.0)
             p.set_time_hours(17.3)
+    elif tag.startswith("oqs"):
+        p = set_nominal(opg.OQS(devices=devices))
+        if tag == "oqs":
+            p.set_deco_element(3, np.sqrt(2e-23))
+            p.set_deco_element(8, np.sqrt(4e-23))
+            p.set_deco_angle(3, 8, np.arccos(0.5))
+        else:
+            p.set_dm(3, -2.465e-3 + 7.41e-5)
+            a = [0, 1.0, 0.7, 1.3, 0.5, 0.9, 1.1, 0.6, 0.8]
+            for i in range(1, 9):
+                p.set_deco_element(i, a[i] * 1e-13)
+            for i in range(1, 9):
+                for j in range(i + 1, 9):
+                    p.set_deco_angle(i, j, 0.3 + 0.17 * i + 0.11 * j)
+            p.set_power(1)
     else:
         raise ValueError(tag)
     return p
@@ -132,7 +147,7 @@ def make(tag, devices):
 TAGS = ["fast", "fast_io", "nsi", "nsi_phases", "nunm", "nunm_phases",
         "nunm_high", "sterile", "sterile_phases", "decay", "decay_both",
         "liv", "liv_phases", "snsi", "snsi_io", "deco", "deco_power",
-        "sidereal", "sidereal_fixed"]
+        "sidereal", "sidereal_fixed", "oqs", "oqs_full"]
 
 
 @pytest.mark.parametrize("tag", TAGS)

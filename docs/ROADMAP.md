@@ -78,8 +78,9 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   eigensystem (with Padé fallback) were less accurate near degeneracies
   (5e-9 vs 1e-11 in the gradient tests, 1e-13 vs 1e-14 against OscProb) and
   1.8x slower on the CPU, so Decay keeps Padé for values.
-* Done: `tests/data` (OscProb references, ~36 MB) published as the release
-  asset testdata-v1; `scripts/fetch_test_data.sh` checks it against
+* Done: `tests/data` (OscProb references, ~39 MB) published as release
+  assets (testdata-v1; testdata-v2 adds OQS); `scripts/fetch_test_data.sh`
+  (default testdata-v2) checks them against
   `tests/data/SHA256SUMS`. A new data version needs a new tag and manifest.
 
 ## More OscProb calculators
@@ -112,15 +113,21 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
     n_event_extra. Done and tested on CPU, GPU and Python (tests/extras.h:
     bit-identical to per-propagator settings on CPU, ~1e-14 on GPU from the
     device sin/cos).
-* Next: PMNS_OQS,
-  EarthModelBinned (uses the per-event azimuth).
+* Done: OQS (`PMNS_OQS`): Gell-Mann 9-vectors per initial flavour, real 8x8
+  exponential per segment (`opg::expm` now also takes real `RMat`); OscProb
+  references `oqs` (OscProb's test values) and `oqs_full` (all dissipator
+  terms, power 1, IO); 2.9e-15 CPU, 4.3e-14 GPU. Gradients: dual Padé, K = 1,
+  separate_probs; mixing, a1..a8 (default), 28 angles, power. V100: P-only
+  4.1e6 /s (stack 5 KB), gradients 8.8 P-evals/param (stack 17 KB) — a
+  candidate for optimisation (fewer live matrices in Padé 13, or an
+  eigenbasis/Fréchet formulation).
+* Next: EarthModelBinned (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,
   but P-only 1.3-2.2x slower).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast),
-  PMNS_Maltoni (alternative bin averaging); PMNS_OQS and EarthModelBinned on
-  request.
+  PMNS_Maltoni (alternative bin averaging).
 
 ## Working notes
 * Local: `cmake -S . -B build -DOPG_ENABLE_CUDA=OFF -DOPG_ENABLE_PYTHON=ON`;

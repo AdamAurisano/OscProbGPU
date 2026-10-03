@@ -739,6 +739,43 @@ NB_MODULE(_oscprobgpu, m)
       .def("get_gamma", [](PyModel<Deco>& w, int i, int j) { return w.params.GetGamma(i, j); },
            "i"_a, "j"_a);
 
+  using OQS = opg::OQS<double>;
+  auto co   = bind_model<OQS>(m, "OQS",
+                            "3 flavours as an open quantum system (PMNS_OQS).");
+  bind_ctor<OQS>(co);
+  co.def("set_deco_element",
+         [](PyModel<OQS>& w, int i, double v) {
+           w.dirty = true;
+           w.params.SetDecoElement(i, v);
+         },
+         "i"_a, "value"_a, "Set |a_i|, i = 1..8 (Gell-Mann basis; |value| is used).")
+      .def("set_deco_angle",
+           [](PyModel<OQS>& w, int i, int j, double th) {
+             w.dirty = true;
+             w.params.SetDecoAngle(i, j, th);
+           },
+           "i"_a, "j"_a, "theta"_a, "Angle (radians) between a_i and a_j, i != j in 1..8.")
+      .def("set_power",
+           [](PyModel<OQS>& w, double n) {
+             w.dirty = true;
+             w.params.SetPower(n);
+           },
+           "n"_a, "Dissipator ~ (E/GeV)^n.")
+      .def("get_deco_element",
+           [](PyModel<OQS>& w, int i) {
+             if (i < 1 || i > 8) throw std::invalid_argument("i in [1, 8]");
+             return w.params.a[i];
+           },
+           "i"_a)
+      .def("get_deco_angle",
+           [](PyModel<OQS>& w, int i, int j) {
+             if (i < 1 || i > 8 || j < 1 || j > 8 || i == j)
+               throw std::invalid_argument("i != j in [1, 8]");
+             return w.params.ang[std::min(i, j)][std::max(i, j)];
+           },
+           "i"_a, "j"_a)
+      .def("get_power", [](PyModel<OQS>& w) { return w.params.power; });
+
   auto cd = bind_model<Decay>(m, "Decay", "3 flavours with invisible decay (PMNS_Decay).");
   bind_ctor<Decay>(cd);
   cd.def("set_alpha2",
