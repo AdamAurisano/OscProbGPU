@@ -309,8 +309,8 @@ X diag(e^{−iλL}) X⁻¹ reproduces the Padé operator to 1e-11; otherwise
 (degenerate or ill-conditioned eigenvectors) it falls back to differentiating
 the Padé exponential in dual arithmetic. Over 1.2M PREM segments of the test
 parameter sets the fallback never triggered. Parameters are processed in
-passes of K directions (K = 2; K = 1 for Sterile, whose 4x4 kernels would
-otherwise spill registers; K = 8 for Decay, whose passes share the value
+passes of K directions (K = 2; K = 1 for Sterile and Deco, whose kernels
+would otherwise spill registers; K = 8 for Decay, whose passes share the value
 exponential and the eigensystem).
 
 **Validation** (`tests/test_gradients.cpp`, `tests/gpu/test_gradients_gpu.cpp`,
@@ -339,12 +339,13 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | LIV     | 60 | 123x (3.5 s)   | 131x (3.7 s)   | 2.1 |
 | SNSI    | 19 | 42x (1.1 s)    | 47x (1.2 s)    | 2.2 |
 | SiderealLIV | 54 | 104x (2.9 s) | 109x (3.0 s)  | 1.9 |
-| Deco    | 10 | 70x (3.7 s)    | 73x (3.8 s)    | 7.0 |
+| Deco    | 10 | 54x (2.8 s)    | 56x (2.9 s)    | 5.4 |
 
 The weighted times include uploading the weights. On the CPU the factors are
 9x, 28x, 28x, 17x and 6x. This is about 1.5–2 probability evaluations per
 parameter: comparable to central finite differences (2 per parameter), but
-exact.
+exact. Deco is the exception (5.4): each step carries three density matrices
+and their derivatives.
 
 ## Validation
 

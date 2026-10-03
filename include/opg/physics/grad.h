@@ -62,6 +62,17 @@ namespace opg {
   };
 #endif
 
+  /// Models with Model::separate_probs = true get their probabilities in
+  /// gradient mode from the probability-only GPU kernels instead of the
+  /// value part of the gradient kernels: inlined into different kernels the
+  /// same code can contract multiply-adds differently, and the probabilities
+  /// must be bit-identical with gradients on and off. Costs one probability
+  /// evaluation per call.
+  template <class Model, class = void> struct separate_probs : std::false_type {};
+  template <class Model>
+  struct separate_probs<Model, std::void_t<decltype(Model::separate_probs)>>
+      : std::bool_constant<Model::separate_probs> {};
+
   /// Values and derivatives (columns of S and dS_k) through a PREM path.
   /// The value part S is computed exactly as by evolve_prem.
   template <class Model, class R, int K>

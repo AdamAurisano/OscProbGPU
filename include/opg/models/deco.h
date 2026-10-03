@@ -132,8 +132,15 @@ namespace opg {
 #ifdef OPG_DECO_GRAD_CHUNK
       static constexpr int grad_chunk = OPG_DECO_GRAD_CHUNK;
 #else
-      static constexpr int grad_chunk = 2;
+      // K = 1: V100 2.7 s vs 3.3 s at K = 2 (1000 x 1000 grid, 10 params;
+      // K = 2 spills ~5 KB)
+      static constexpr int grad_chunk = 1;
 #endif
+
+      /// Probabilities in gradient mode from the probability-only GPU
+      /// kernels (opg::separate_probs): the gradient kernels do not reproduce
+      /// them bit for bit.
+      static constexpr bool separate_probs = true;
 
       template <class S> using ParamsT   = DecoParamsT<S>;
       using Params                       = DecoParams;
@@ -382,10 +389,43 @@ namespace opg {
         for (int a = 0; a < 3; a++) dS[k].rho[a] = Mat<3, R>::zero();
       }
 
-      /// The segment step in dual arithmetic. The eigenvalue and eigenvector
-      /// derivatives follow from first-order perturbation theory of the dual
-      /// Hamiltonian (non-degenerate eigenvalues; gauge v_i^dag dv_i = 0, the
-      /// step is invariant under eigenvector phases). Values: as step().
+      /// V^dag A V (in = true) or V A V^dag (in = false) for hermitian A,
+      /// from the upper triangle of the result.
+      template <bool in>
+      OPG_HD OPG_INLINE static Mat<3, R> rotate_herm(const Mat<3, R>& V, const Mat<3, R>& A)
+      {
+        using C = Complex<R>;
+        Mat<3, R> buf, out;
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+        for (int j = 0; j < 3; j++) {
+          C acc(0, 0);
+          OPG_UNROLL
+          for (int l = 0; l < 3; l++) acc += A(i, l) * (in ? V(l, j) : conj(V(j, l)));
+          buf(i, j) = acc;
+        }
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+        for (int j = i; j < 3; j++) {
+          C acc(0, 0);
+          OPG_UNROLL
+          for (int l = 0; l < 3; l++) acc += (in ? conj(V(l, i)) : V(i, l)) * buf(l, j);
+          out(i, j) = acc;
+          if (j > i) out(j, i) = conj(acc);
+        }
+        return out;
+      }
+
+      /// Segment step with derivatives. In the eigenbasis of the segment,
+      /// with Y = V^dag rho V, X = D o Y (D: damping and phases, unit
+      /// diagonal) and rho' = V X V^dag, a parameter change gives
+      ///   d rho' = V ( [C, X] + dD o Y + D o ([Y, C] + V^dag d rho V) ) V^dag,
+      /// where dV = V C (C anti-hermitian, from first-order perturbation
+      /// theory of the eigenpairs: C_li = M_li / (lam_i - lam_l), M =
+      /// V^dag dH V; non-degenerate eigenvalues) and dD follows from dlam_i =
+      /// M_ii and the Gamma derivatives. Values: exactly as step().
       template <int K>
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
@@ -393,30 +433,45 @@ namespace opg {
                                               const SegmentZ<R, Dual<R, K>>& sz,
                                               State& S, State (&dS)[K])
       {
-        using D  = Dual<R, K>;
-        using C  = Complex<R>;
-        using CD = Complex<D>;
+        using C = Complex<R>;
+        using std::exp;
+        using std::log;
+        using std::pow;
         const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
         Mat<3, R>        V;
         R                lam[3];
         hermitian3_eigen<Deco, R>(P, E, nubar, s, V, lam);
         int idx[3];
         match(P, lam, idx);
+        const R L = length_in_eV(s.length);
 
-        Mat<3, D>               HD;
+        Mat<3, Dual<R, K>>      HD;
         SegmentZ<R, Dual<R, K>> sd = sz;
         if (s.density < R(1.0e-6)) sd.density = 0;  // vacuum: H = Hms / 2E
         hamiltonian(PD, E, nubar, sd, HD);
 
-        // eigensystem with derivatives
-        Mat<3, D> VD;
-        D         lamD[3];
+        // damping matrix D (full, unit diagonal) and its log-derivative
+        // pieces: D_ij = exp(-g_ij) exp(-i (lam_i - lam_j) L), i < j
+        const R Ec  = pow(E, P.power);
+        const R gL  = R(constants::kGeV2eV) * L;
+        Mat<3, R> Df;
+        R         g[3][3] = {};
         OPG_UNROLL
         for (int i = 0; i < 3; i++) {
-          lamD[i] = D(lam[i]);
+          Df(i, i) = C(1, 0);
           OPG_UNROLL
-          for (int j = 0; j < 3; j++) VD(i, j) = CD(D(V(i, j).re), D(V(i, j).im));
+          for (int j = i + 1; j < 3; j++) {
+            g[i][j] = P.gam[idx[i]][idx[j]] * Ec * gL;
+            R sn, cs;
+            sin_cos((lam[i] - lam[j]) * L, sn, cs);
+            const R e = exp(-g[i][j]);
+            Df(i, j)  = C(e * cs, -e * sn);
+            Df(j, i)  = conj(Df(i, j));
+          }
         }
+
+        // per direction: C (dV = V C) and dD
+        Mat<3, R> Cm[K], dDf[K];
         OPG_UNROLL
         for (int k = 0; k < K; k++) {
           Mat<3, R> dH;  // hermitian, from the upper triangle
@@ -429,49 +484,59 @@ namespace opg {
           }
           const Mat<3, R> M = matmul(adjoint(V), matmul(dH, V));
           OPG_UNROLL
-          for (int i = 0; i < 3; i++) lamD[i].d[k] = M(i, i).re;
+          for (int l = 0; l < 3; l++)
+            OPG_UNROLL
+          for (int i = 0; i < 3; i++)
+            Cm[k](l, i) = l == i ? C(0, 0) : M(l, i) / (lam[i] - lam[l]);
+          // d g_ij = (dGamma Ec + Gamma Ec ln(E) dn) gL
+          const R dn = PD.power.d[k];
+          dDf[k]     = Mat<3, R>::zero();
           OPG_UNROLL
-          for (int r = 0; r < 3; r++)
+          for (int i = 0; i < 3; i++)
             OPG_UNROLL
-          for (int i = 0; i < 3; i++) {
-            C dv(0, 0);  // (dV)(r, i) = sum_l V(r, l) M(l, i) / (lam_i - lam_l)
-            OPG_UNROLL
-            for (int l = 0; l < 3; l++)
-              if (l != i) dv += V(r, l) * M(l, i) / (lam[i] - lam[l]);
-            VD(r, i).re.d[k] = dv.re;
-            VD(r, i).im.d[k] = dv.im;
+          for (int j = i + 1; j < 3; j++) {
+            const R dgam = PD.gam[idx[i]][idx[j]].d[k];
+            const R dg   = (dgam * Ec + P.gam[idx[i]][idx[j]] * Ec * log(E) * dn) * gL;
+            const R dph  = (M(i, i).re - M(j, j).re) * L;  // d of (lam_i - lam_j) L
+            dDf[k](i, j) = Df(i, j) * C(-dg, -dph);
+            dDf[k](j, i) = conj(dDf[k](i, j));
           }
         }
 
-        // density matrices with derivatives
-        Mat<3, D> rho[3];
+        // [C, X] = CX + (CX)^dag and [Y, C] = YC + (YC)^dag (X, Y hermitian,
+        // C anti-hermitian); all products of hermitian results are formed
+        // from the upper triangle
         OPG_UNROLL
-        for (int a = 0; a < 3; a++)
+        for (int a = 0; a < 3; a++) {
+          const Mat<3, R> Y = rotate_herm<true>(V, S.rho[a]);
+          Mat<3, R>       X;
           OPG_UNROLL
-        for (int i = 0; i < 3; i++)
-          OPG_UNROLL
-        for (int j = 0; j < 3; j++) {
-          D re(S.rho[a](i, j).re), im(S.rho[a](i, j).im);
+          for (int i = 0; i < 3; i++)
+            OPG_UNROLL
+          for (int j = 0; j < 3; j++) X(i, j) = Df(i, j) * Y(i, j);
           OPG_UNROLL
           for (int k = 0; k < K; k++) {
-            re.d[k] = dS[k].rho[a](i, j).re;
-            im.d[k] = dS[k].rho[a](i, j).im;
+            const Mat<3, R> W  = rotate_herm<true>(V, dS[k].rho[a]);
+            const Mat<3, R> YC = matmul(Y, Cm[k]);
+            const Mat<3, R> CX = matmul(Cm[k], X);
+            Mat<3, R>       Z;
+            OPG_UNROLL
+            for (int i = 0; i < 3; i++)
+              OPG_UNROLL
+            for (int j = i; j < 3; j++) {
+              Z(i, j) = CX(i, j) + conj(CX(j, i)) +
+                        Df(i, j) * (W(i, j) + YC(i, j) + conj(YC(j, i)));
+              if (j > i) {
+                Z(i, j) += dDf[k](i, j) * Y(i, j);
+                Z(j, i) = conj(Z(i, j));
+              }
+            }
+            dS[k].rho[a] = rotate_herm<false>(V, Z);
           }
-          rho[a](i, j) = CD(re, im);
         }
-        deco_step<D, 3>(VD, lamD, PD.gam, PD.power, idx, E, length_in_eV(s.length), rho);
-        OPG_UNROLL
-        for (int k = 0; k < K; k++)
-          OPG_UNROLL
-        for (int a = 0; a < 3; a++)
-          OPG_UNROLL
-        for (int i = 0; i < 3; i++)
-          OPG_UNROLL
-        for (int j = 0; j < 3; j++)
-          dS[k].rho[a](i, j) = C(rho[a](i, j).re.d[k], rho[a](i, j).im.d[k]);
 
         // values exactly as step()
-        deco_step<R, 3>(V, lam, P.gam, P.power, idx, E, length_in_eV(s.length), S.rho);
+        deco_step<R, 3>(V, lam, P.gam, P.power, idx, E, L, S.rho);
       }
 
       template <int K>

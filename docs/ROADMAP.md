@@ -96,11 +96,26 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   bit-identical to OscProb with `OPG_OSCPROB_BITWISE`, with gradients. Note
   (OscProb behaviour, ported as is): the cT terms lack the GeV -> eV factor of
   the aT terms, and the sidereal terms are dropped in vacuum.
-* Open: per-event azimuth / sidereal time (currently per propagator).
-* Possible: cheaper Deco gradients (7 probability evaluations per parameter:
-  the density-matrix step runs in dual arithmetic).
-* LIV, SNSI, Deco, SiderealLIV keep grad_chunk K = 2 (V100: best or within
-  5% of K = 1, 3).
+* In progress (branch wip-deco-grad-extras):
+  - Deco gradients from an analytic eigenbasis formula instead of dual
+    arithmetic, K = 1 (done; V100 2.8 s vs 3.7 s before for 10 params on
+    1000 x 1000, 5.4 P-evals/param, was 7.0). Deco sets separate_probs: in
+    gradient mode the GPU engine takes the probabilities from the
+    probability-only kernels, because the Deco gradient kernels (K = 1 and
+    K = 2 alike) contract multiply-adds differently and broke the
+    bit-identity of P with gradients on vs off (+1 P-eval per call).
+  - Per-event extra inputs for event lists (Model::n_extra; engines and
+    Propagator take extra[x * n + i]); SiderealLIV takes azimuth [deg] and
+    sidereal time [h] per event; Python extra=None arguments and
+    n_event_extra. Done and tested on CPU, GPU and Python (tests/extras.h:
+    bit-identical to per-propagator settings on CPU, ~1e-14 on GPU from the
+    device sin/cos).
+* Next after that: reference-data release (approved), PMNS_OQS,
+  EarthModelBinned (uses the per-event azimuth).
+* LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
+  K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
+  __noinline__ value helpers shared by step() and step_grad() (bit-identical,
+  but P-only 1.3-2.2x slower).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast),
   PMNS_Maltoni (alternative bin averaging); PMNS_OQS and EarthModelBinned on
   request.

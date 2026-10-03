@@ -670,6 +670,8 @@ namespace opg {
       using typename EngineBase<Model>::Chunks;
       using GT                = grad_traits<Model>;
       static constexpr int GK = GT::K;
+      /// Probabilities from the probability-only kernels (see separate_probs).
+      static constexpr bool kSepP = separate_probs<Model>::value;
 
       void calculate_grad(const Prepared& P, const Chunks& chunks, int npar,
                           Flavor which) override
@@ -695,10 +697,11 @@ namespace opg {
             dim3 block(kBlockE);
             dim3 grid(unsigned((fNE + kBlockE - 1) / kBlockE),
                       unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
+            if constexpr (kSepP) launch_grid(D, G, fNE, P, lo, hi);
             for (size_t c = 0; c < chunks.size(); c++) {
               grid_grad_kernel<Model, R, GK><<<grid, block, 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow), lo,
-                  npar, chunks[c].offset, chunks[c].count, c == 0, G.probs.ptr,
+                  npar, chunks[c].offset, chunks[c].count, c == 0 && !kSepP, G.probs.ptr,
                   D.gslab.probs.ptr);
               OPG_CUDA(cudaGetLastError());
             }
@@ -836,11 +839,18 @@ namespace opg {
             xptr(D, extra, off[k], cnt[k], n);
             D.pOut.resize(D.id, N * N * cnt[k]);
             D.pGrad.resize(D.id, size_t(npar) * N * N * cnt[k]);
+            if constexpr (kSepP) {
+              points_kernel<Model, R><<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
+                  P, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr, cnt[k], cnt[k],
+                  D.pOut.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
             for (size_t c = 0; c < chunks.size(); c++) {
               points_grad_kernel<Model, R, GK>
                   <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
                       P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
-                      D.pX.ptr, cnt[k], chunks[c].offset, chunks[c].count, c == 0, D.pOut.ptr,
+                      D.pX.ptr, cnt[k], chunks[c].offset, chunks[c].count, c == 0 && !kSepP,
+                      D.pOut.ptr,
                       D.pGrad.ptr);
               OPG_CUDA(cudaGetLastError());
             }
@@ -917,11 +927,16 @@ namespace opg {
             D.path.upload(D.id, path, size_t(nseg), D.stream);
             D.pOut.resize(D.id, N * N * cnt[k]);
             D.pGrad.resize(D.id, size_t(npar) * N * N * cnt[k]);
+            if constexpr (kSepP) {
+              path_kernel<Model, R><<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
+                  P, D.path.ptr, nseg, D.pE.ptr, cnt[k], nubar, cnt[k], D.pOut.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
             for (size_t c = 0; c < chunks.size(); c++) {
               path_grad_kernel<Model, R, GK>
                   <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
                       P, pd_arg(D, chunks, c), D.path.ptr, nseg, D.pE.ptr, cnt[k], nubar,
-                      chunks[c].offset, chunks[c].count, c == 0, D.pOut.ptr,
+                      chunks[c].offset, chunks[c].count, c == 0 && !kSepP, D.pOut.ptr,
                       D.pGrad.ptr);
               OPG_CUDA(cudaGetLastError());
             }
@@ -957,10 +972,11 @@ namespace opg {
             dim3 block(kBlockE);
             dim3 grid(unsigned((nEn + kBlockE - 1) / kBlockE),
                       unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
+            if constexpr (kSepP) launch_grid(D, G, nEn, P, lo, hi);
             for (size_t c = 0; c < chunks.size(); c++) {
               grid_grad_kernel<Model, R, GK><<<grid, block, 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, G.E.ptr, int(nEn), G.C.ptr, int(nrow),
-                  lo, npar, chunks[c].offset, chunks[c].count, c == 0, G.probs.ptr,
+                  lo, npar, chunks[c].offset, chunks[c].count, c == 0 && !kSepP, G.probs.ptr,
                   D.ngrad.ptr);
               OPG_CUDA(cudaGetLastError());
             }
