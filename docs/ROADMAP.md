@@ -78,7 +78,9 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   eigensystem (with Padé fallback) were less accurate near degeneracies
   (5e-9 vs 1e-11 in the gradient tests, 1e-13 vs 1e-14 against OscProb) and
   1.8x slower on the CPU, so Decay keeps Padé for values.
-* Publish `tests/data` (OscProb references, ~22 MB) as a release asset.
+* Done: `tests/data` (OscProb references, ~36 MB) published as the release
+  asset testdata-v1; `scripts/fetch_test_data.sh` checks it against
+  `tests/data/SHA256SUMS`. A new data version needs a new tag and manifest.
 
 ## More OscProb calculators
 * Done: LIV (`PMNS_LIV`, SME d = 3..8) and SNSI (`PMNS_SNSI`), bit-identical to
@@ -110,7 +112,7 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
     n_event_extra. Done and tested on CPU, GPU and Python (tests/extras.h:
     bit-identical to per-propagator settings on CPU, ~1e-14 on GPU from the
     device sin/cos).
-* Next: reference-data release (approved), PMNS_OQS,
+* Next: PMNS_OQS,
   EarthModelBinned (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
