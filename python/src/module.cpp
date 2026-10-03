@@ -32,6 +32,18 @@ namespace {
     return std::vector<double>(a.data(), a.data() + a.shape(0));
   }
 
+  /// Per-event extra inputs extra[x, i] (x < nx, i < n) as a flat vector,
+  /// or empty for None.
+  std::vector<double> to_extra(const std::optional<Arr2>& a, int nx, size_t n)
+  {
+    if (!a) return {};
+    if (nx == 0)
+      throw std::invalid_argument("extra: this model takes no per-event inputs");
+    if (a->shape(0) != size_t(nx) || a->shape(1) != n)
+      throw std::invalid_argument("extra must have shape (n_event_extra, n_events)");
+    return std::vector<double>(a->data(), a->data() + a->size());
+  }
+
   /// numpy array that owns a copy of the data
   nb::ndarray<nb::numpy, double> make_array(std::vector<double>&& v,
                                             std::vector<size_t> shape)
@@ -107,6 +119,7 @@ namespace {
   template <class Model> struct PyModel {
       using Params           = typename Model::Params;
       static constexpr int N = Model::N;
+      static constexpr int NX = opg::Propagator<Model>::n_event_extra();
 
       opg::Propagator<Model> prop;
       Params                 params;
@@ -227,17 +240,23 @@ namespace {
         .def("binned", &W::binned,
              "Bin averages A[nubar, a, b, iCbin, iEbin] (copy).")
         // one-shot modes
+        .def_prop_ro_static("n_event_extra",
+                            [](nb::handle) { return opg::Propagator<Model>::n_event_extra(); },
+                            "Number of per-event extra inputs in event lists (e.g. "
+                            "SiderealLIV: azimuth [deg], local sidereal time [h]).")
         .def("prob_points",
-             [](W& w, Arr1 E, Arr1 C, Arr1u nb_) {
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, std::optional<Arr2> ex) {
                w.sync();
                if (E.shape(0) != C.shape(0) || E.shape(0) != nb_.shape(0))
                  throw std::invalid_argument("size mismatch");
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
-               auto out = w.prop.prob_points(to_vec(E), to_vec(C), nbv);
+               auto out = w.prop.prob_points(to_vec(E), to_vec(C), nbv,
+                                             to_extra(ex, W::NX, E.shape(0)));
                return make_array(std::move(out), {N, N, E.shape(0)});
              },
-             "energies"_a, "cosines"_a, "nubar"_a,
-             "Event list: returns P[a, b, i].")
+             "energies"_a, "cosines"_a, "nubar"_a, "extra"_a = nb::none(),
+             "Event list: returns P[a, b, i]. extra: optional per-event inputs "
+             "extra[x, i], x < n_event_extra (None: the values set on the model).")
         .def("prob_path",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                w.sync();
@@ -336,46 +355,52 @@ namespace {
              "what"_a, "(pointer, shape, device) of device-resident results "
              "(see device_probs()/device_binned()).")
         .def("prob_points_grad",
-             [](W& w, Arr1 E, Arr1 C, Arr1u nb_) {
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, std::optional<Arr2> ex) {
                w.sync();
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                std::vector<double>  P, dP;
-               w.prop.prob_points_grad(to_vec(E), to_vec(C), nbv, P, dP);
+               w.prop.prob_points_grad(to_vec(E), to_vec(C), nbv, P, dP,
+                                       to_extra(ex, W::NX, E.shape(0)));
                size_t np = w.prop.n_gradient_params();
                return nb::make_tuple(make_array(std::move(P), {N, N, E.shape(0)}),
                                      make_array(std::move(dP), {np, N, N, E.shape(0)}));
              },
-             "energies"_a, "cosines"_a, "nubar"_a,
-             "Event list: returns (P[a, b, i], dP[p, a, b, i]).")
+             "energies"_a, "cosines"_a, "nubar"_a, "extra"_a = nb::none(),
+             "Event list: returns (P[a, b, i], dP[p, a, b, i]); extra as in "
+             "prob_points.")
         .def("weighted_gradient_points",
              [](W& w, Arr1 E, Arr1 C, Arr1u nb_,
-                nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt) {
+                nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
+                std::optional<Arr2> ex) {
                w.sync();
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                std::vector<double>  v(wt.data(), wt.data() + wt.size());
-               auto g = w.prop.weighted_gradient_points(to_vec(E), to_vec(C), nbv, v);
+               auto g = w.prop.weighted_gradient_points(to_vec(E), to_vec(C), nbv, v,
+                                                        to_extra(ex, W::NX, E.shape(0)));
                return make_array(std::move(g), {g.size()});
              },
-             "energies"_a, "cosines"_a, "nubar"_a, "weights"_a,
-             "sum of weights[a, b, i] * dP_ab(i)/dp over an event list.")
+             "energies"_a, "cosines"_a, "nubar"_a, "weights"_a, "extra"_a = nb::none(),
+             "sum of weights[a, b, i] * dP_ab(i)/dp over an event list; extra "
+             "as in prob_points.")
         .def("weighted_gradient_points_binned",
              [](W& w, Arr1 E, Arr1 C, Arr1u nb_,
                 nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
                 nb::ndarray<const int, nb::ndim<1>, nb::c_contig, nb::device::cpu> bins,
-                int nbins) {
+                int nbins, std::optional<Arr2> ex) {
                w.sync();
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                std::vector<double>  v(wt.data(), wt.data() + wt.size());
                std::vector<int>     bv(bins.data(), bins.data() + bins.shape(0));
-               auto G = w.prop.weighted_gradient_points_binned(to_vec(E), to_vec(C), nbv,
-                                                               v, bv, nbins);
+               auto G = w.prop.weighted_gradient_points_binned(
+                   to_vec(E), to_vec(C), nbv, v, bv, nbins, to_extra(ex, W::NX, E.shape(0)));
                return make_array(std::move(G),
                                  {size_t(nbins), w.prop.n_gradient_params()});
              },
              "energies"_a, "cosines"_a, "nubar"_a, "weights"_a, "bins"_a, "nbins"_a,
+             "extra"_a = nb::none(),
              "Per-analysis-bin weighted gradient: G[b, p] = sum over events i "
              "with bins[i] == b of weights[a, b, i] * dP_ab(i)/dp (bins outside "
-             "[0, nbins) are ignored).")
+             "[0, nbins) are ignored); extra as in prob_points.")
         .def("prob_path_grad",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                w.sync();

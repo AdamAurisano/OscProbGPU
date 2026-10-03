@@ -269,7 +269,7 @@ namespace opg {
 
       void prob_points_grad(const Prepared& P, const Chunks& chunks, int npar,
                             const R* E, const R* cosZ, const uint8_t* nubar,
-                            size_t n, R* outP, R* outG) override
+                            size_t n, R* outP, R* outG, const R* extra = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
@@ -282,8 +282,10 @@ namespace opg {
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
             for (long long i = 0; i < nn; i++) {
               StateOf<Model> S, dS[GK];
+              R              ex[kMaxExtra];
               evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
-                                             nubar[i] != 0, S, dS);
+                                             nubar[i] != 0, S, dS,
+                                             gather_extra<Model, R>(extra, size_t(i), n, ex));
               if (c == 0) store_model_probs<Model, R>(S, outP + i, n);
               store_model_grads<Model, R, GK>(S, dS, ch.count,
                                     outG + size_t(ch.offset) * N * N * n + i, n);
@@ -295,7 +297,7 @@ namespace opg {
       void weighted_grad_points(const Prepared& P, const Chunks& chunks,
                                 int npar, const R* E, const R* cosZ,
                                 const uint8_t* nubar, size_t n, const R* w,
-                                R* g) override
+                                R* g, const R* extra = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
@@ -311,8 +313,10 @@ namespace opg {
               R blk[GK] = {};
               for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++) {
                 StateOf<Model> S, dS[GK];
+                R              ex[kMaxExtra];
                 evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
-                                               nubar[i] != 0, S, dS);
+                                               nubar[i] != 0, S, dS,
+                                               gather_extra<Model, R>(extra, i, n, ex));
                 R acc[GK];
                 contract_model_grads<Model, R, GK>(S, dS, w + i, n, acc);
                 for (int k = 0; k < GK; k++) blk[k] += acc[k];
@@ -328,7 +332,8 @@ namespace opg {
       void weighted_grad_points_binned(const Prepared& P, const Chunks& chunks,
                                        int npar, const R* E, const R* cosZ,
                                        const uint8_t* nubar, size_t n, const R* w,
-                                       const int* bin, int nbins, R* G) override
+                                       const int* bin, int nbins, R* G,
+                                       const R* extra = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
@@ -342,8 +347,10 @@ namespace opg {
             for (long long i = 0; i < nn; i++) {
               if (bin[i] < 0 || bin[i] >= nbins) continue;
               StateOf<Model> S, dS[GK];
+              R              ex[kMaxExtra];
               evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
-                                             nubar[i] != 0, S, dS);
+                                             nubar[i] != 0, S, dS,
+                                             gather_extra<Model, R>(extra, size_t(i), n, ex));
               R acc[GK];
               contract_model_grads<Model, R, GK>(S, dS, w + i, n, acc);
               for (int k = 0; k < GK; k++) contrib[size_t(i) * GK + k] = acc[k];
@@ -381,14 +388,17 @@ namespace opg {
       const R* host_probs() override { return fProbs.data(); }
 
       void prob_points(const Prepared& P, const R* E, const R* cosZ,
-                       const uint8_t* nubar, size_t n, R* out) override
+                       const uint8_t* nubar, size_t n, R* out,
+                       const R* extra = nullptr) override
       {
         require_earth();
         const EarthView<R> earth = fTable->view();
         const long long    nn    = (long long)n;
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
         for (long long i = 0; i < nn; i++) {
-          auto S = evolve_prem<Model, R>(P, earth, E[i], cosZ[i], nubar[i] != 0);
+          R    ex[kMaxExtra];
+          auto S = evolve_prem<Model, R>(P, earth, E[i], cosZ[i], nubar[i] != 0,
+                                         gather_extra<Model, R>(extra, size_t(i), n, ex));
           store_model_probs<Model, R>(S, out + i, n);
         }
       }

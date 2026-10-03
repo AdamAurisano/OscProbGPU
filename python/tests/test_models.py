@@ -152,6 +152,51 @@ def test_reference(tag, devices):
     assert np.abs(got - load(f"{tag}_prem.npy")).max() < 1e-10
 
 
+@pytest.mark.parametrize("tag", ["sidereal", "sidereal_fixed"])
+def test_sidereal_per_event_extra(tag, devices):
+    """Per-event azimuth and sidereal time equal the values set on the model."""
+    p = make(tag, devices)
+    assert opg.SiderealLIV.n_event_extra == 2 and opg.Fast.n_event_extra == 0
+    rng = np.random.default_rng(5)
+    n = 24
+    E = 10 ** rng.uniform(-0.3, 1.7, n)
+    C = rng.uniform(-1, 1, n)
+    nb = (np.arange(n) % 2).astype(np.uint8)
+    extra = np.stack([rng.uniform(0, 360, n), rng.uniform(0, 24, n)])
+    grads = opg.SiderealLIV.has_gradients
+    names = ["th23", "dm31", "aX_emu", "cXZ_etau"]
+    if grads:
+        p.set_gradient_params(names)
+        P, dP = p.prob_points_grad(E, C, nb, extra)
+        assert np.array_equal(P, p.prob_points(E, C, nb, extra=extra))
+        w = rng.uniform(-1, 1, P.shape)
+        g = p.weighted_gradient_points(E, C, nb, w, extra=extra)
+        assert np.allclose(g, np.einsum("pabi,abi->p", dP, w), rtol=1e-12, atol=0)
+        bins = (np.arange(n) % 3).astype(np.int32)
+        G = p.weighted_gradient_points_binned(E, C, nb, w, bins, 3, extra=extra)
+        Ge = np.stack([np.einsum("pabi,abi->p", dP[..., bins == b], w[..., bins == b])
+                       for b in range(3)])
+        assert np.allclose(G, Ge, rtol=1e-12, atol=0)
+    else:
+        P = p.prob_points(E, C, nb, extra=extra)
+    zen = 120.0 if tag == "sidereal_fixed" else None
+    for i in range(n):
+        if zen is None:
+            p.set_azimuth(extra[0, i])
+        else:
+            p.set_neutrino_direction(zen, extra[0, i])
+        p.set_time_hours(extra[1, i])
+        Pi = p.prob_points(E[i:i + 1], C[i:i + 1], nb[i:i + 1])
+        assert np.abs(Pi[:, :, 0] - P[:, :, i]).max() <= 1e-12
+        if grads:
+            _, dPi = p.prob_points_grad(E[i:i + 1], C[i:i + 1], nb[i:i + 1])
+            assert np.abs(dPi[..., 0] - dP[..., i]).max() <= 1e-12 * np.abs(dP).max()
+    with pytest.raises(ValueError):
+        p.prob_points(E, C, nb, extra=extra[:1])
+    with pytest.raises(ValueError):
+        set_nominal(opg.Fast(devices=devices)).prob_points(E, C, nb, extra=extra)
+
+
 def test_api_basics(devices):
     p = opg.Fast(devices=devices)
     # OscProb PDG defaults

@@ -9,6 +9,7 @@
 
 #include "doctest.h"
 
+#include "../extras.h"
 #include "../ref_compare.h"
 #include "../variants.h"
 
@@ -116,6 +117,12 @@ TEST_CASE("GPU SiderealLIV matches OscProb and the CPU backend")
 {
   check_model<opg::SiderealLIV<>>(variants::sidereal(), "sidereal");
   check_model<opg::SiderealLIV<>>(variants::sidereal_fixed(), "sidereal_fixed");
+}
+
+TEST_CASE("GPU SiderealLIV per-event azimuth and time in event lists")
+{
+  opg::Propagator<opg::SiderealLIV<>> prop(opg::PremModel(), test_devices());
+  extratest::check_extras(prop, 1e-12);
 }
 
 TEST_CASE("GPU NUNM matches OscProb and the CPU backend")

@@ -121,17 +121,58 @@ namespace opg {
                                  typename Model::Real()))>> : std::true_type {};
   } // namespace detail
 
+  /// Number of extra per-event inputs a model takes in event lists
+  /// (Model::n_extra, e.g. azimuth and sidereal time; default 0).
+  namespace detail {
+    template <class Model, class = void> struct extra_count {
+        static constexpr int value = 0;
+    };
+    template <class Model>
+    struct extra_count<Model, std::void_t<decltype(Model::n_extra)>> {
+        static constexpr int value = Model::n_extra;
+    };
+  } // namespace detail
+  template <class Model> constexpr int n_extra_v = detail::extra_count<Model>::value;
+
   /// Initial state for a path through the Earth with direction cosZ (models
   /// whose Hamiltonian depends on the direction, e.g. sidereal LIV, provide
-  /// initial(P, nubar, cosZ)).
+  /// initial(P, nubar, cosZ)); with per-event extra inputs ex (n_extra
+  /// values, or nullptr) models that take them provide
+  /// initial(P, nubar, cosZ, ex).
   template <class Model, class R>
   OPG_HD OPG_INLINE StateOf<Model> initial_state(const typename Model::Prepared& P,
-                                                 bool nubar, R cosZ)
+                                                 bool nubar, R cosZ,
+                                                 const R* ex = nullptr)
   {
+    if constexpr (n_extra_v<Model> > 0) {
+      if (ex) return Model::initial(P, nubar, cosZ, ex);
+    }
     if constexpr (detail::path_aware<Model>::value)
       return Model::initial(P, nubar, cosZ);
     else
       return Model::initial(P, nubar);
+  }
+
+  /// Maximum number of extra per-event inputs.
+  constexpr int kMaxExtra = 4;
+
+  /// Extra inputs of event i, read from extra[x * n + i] into ex; returns
+  /// ex, or nullptr if the model takes none or extra is nullptr.
+  template <class Model, class R>
+  OPG_HD OPG_INLINE const R* gather_extra(const R* extra, size_t i, size_t n,
+                                          R (&ex)[kMaxExtra])
+  {
+    static_assert(n_extra_v<Model> <= kMaxExtra, "too many extra inputs");
+    if constexpr (n_extra_v<Model> > 0) {
+      if (!extra) return nullptr;
+      OPG_UNROLL
+      for (int x = 0; x < n_extra_v<Model>; x++) ex[x] = extra[size_t(x) * n + i];
+      return ex;
+    }
+    else {
+      (void)extra, (void)i, (void)n, (void)ex;
+      return nullptr;
+    }
   }
 
   /// Write P(a -> b) for a model state to out[(a*N + b) * stride].
@@ -148,9 +189,9 @@ namespace opg {
   template <class Model, class R>
   OPG_HD inline StateOf<Model>
   evolve_prem(const typename Model::Prepared& P, const EarthView<R>& earth,
-              R E, R cosZ, bool nubar)
+              R E, R cosZ, bool nubar, const R* ex = nullptr)
   {
-    auto S = initial_state<Model, R>(P, nubar, cosZ);
+    auto S = initial_state<Model, R>(P, nubar, cosZ, ex);
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
       Model::step(P, E, nubar, s, S);
     });

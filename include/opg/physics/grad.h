@@ -68,9 +68,10 @@ namespace opg {
   OPG_HD inline void evolve_prem_grad(const typename Model::Prepared& P,
                                       const GradPrepared<Model, K>& G,
                                       const EarthView<R>& earth, R E, R cosZ, bool nubar,
-                                      StateOf<Model>& S, StateOf<Model> (&dS)[K])
+                                      StateOf<Model>& S, StateOf<Model> (&dS)[K],
+                                      const R* ex = nullptr)
   {
-    S = initial_state<Model, R>(P, nubar, cosZ);
+    S = initial_state<Model, R>(P, nubar, cosZ, ex);
     Model::template initial_grad<K>(G.P, nubar, dS);
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
       Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, s), S, dS);

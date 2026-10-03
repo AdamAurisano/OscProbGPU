@@ -500,31 +500,38 @@ namespace opg {
         return t;
       }
 
-      /// Event list through the Earth model. Returns out[a][b][i].
+      /// Number of extra per-event inputs of this model in event lists
+      /// (e.g. SiderealLIV: azimuth [deg], local sidereal time [h]).
+      static constexpr int n_event_extra() { return n_extra_v<Model>; }
+
+      /// Event list through the Earth model. Returns out[a][b][i]. extra:
+      /// optional per-event inputs extra[x * n + i], x < n_event_extra()
+      /// (empty: the values set in the parameters).
       std::vector<R> prob_points(const std::vector<R>& E,
                                  const std::vector<R>& cosZ,
-                                 const std::vector<uint8_t>& nubar)
+                                 const std::vector<uint8_t>& nubar,
+                                 const std::vector<R>& extra = {})
       {
         require_params();
-        check_points(E, cosZ, nubar);
+        check_points(E, cosZ, nubar, extra);
         std::vector<R> out(size_t(N) * N * E.size());
         fEngine->prob_points(fPrepared, E.data(), cosZ.data(), nubar.data(),
-                             E.size(), out.data());
+                             E.size(), out.data(), xdata(extra));
         return out;
       }
 
       /// Event list with gradients: P[a][b][i] and dP[p][a][b][i].
       void prob_points_grad(const std::vector<R>& E, const std::vector<R>& cosZ,
                             const std::vector<uint8_t>& nubar, std::vector<R>& P,
-                            std::vector<R>& dP)
+                            std::vector<R>& dP, const std::vector<R>& extra = {})
       {
         require_params();
-        check_points(E, cosZ, nubar);
+        check_points(E, cosZ, nubar, extra);
         P.assign(size_t(N) * N * E.size(), R(0));
         dP.assign(fGradIdx.size() * N * N * E.size(), R(0));
         fEngine->prob_points_grad(fPrepared, chunks(), int(fGradIdx.size()),
                                   E.data(), cosZ.data(), nubar.data(), E.size(),
-                                  P.data(), dP.data());
+                                  P.data(), dP.data(), xdata(extra));
       }
 
       /// Weighted gradient over an event list: g[p] = sum_i,ab w[a][b][i]
@@ -532,17 +539,18 @@ namespace opg {
       std::vector<R> weighted_gradient_points(const std::vector<R>& E,
                                               const std::vector<R>& cosZ,
                                               const std::vector<uint8_t>& nubar,
-                                              const std::vector<R>& w)
+                                              const std::vector<R>& w,
+                                              const std::vector<R>& extra = {})
       {
         require_params();
-        check_points(E, cosZ, nubar);
+        check_points(E, cosZ, nubar, extra);
         if (w.size() != size_t(N) * N * E.size())
           throw std::invalid_argument("weighted_gradient_points: weights must "
                                       "be [a][b][i]");
         std::vector<R> g(fGradIdx.size(), R(0));
         fEngine->weighted_grad_points(fPrepared, chunks(), int(fGradIdx.size()),
                                       E.data(), cosZ.data(), nubar.data(),
-                                      E.size(), w.data(), g.data());
+                                      E.size(), w.data(), g.data(), xdata(extra));
         return g;
       }
 
@@ -555,10 +563,11 @@ namespace opg {
                                                      const std::vector<uint8_t>& nubar,
                                                      const std::vector<R>& w,
                                                      const std::vector<int>& bin,
-                                                     int nbins)
+                                                     int nbins,
+                                                     const std::vector<R>& extra = {})
       {
         require_params();
-        check_points(E, cosZ, nubar);
+        check_points(E, cosZ, nubar, extra);
         if (w.size() != size_t(N) * N * E.size() || bin.size() != E.size())
           throw std::invalid_argument("weighted_gradient_points_binned: weights "
                                       "must be [N][N][n] and bins [n]");
@@ -566,7 +575,8 @@ namespace opg {
         std::vector<R> G(size_t(nbins) * fGradIdx.size(), R(0));
         fEngine->weighted_grad_points_binned(fPrepared, chunks(), int(fGradIdx.size()),
                                              E.data(), cosZ.data(), nubar.data(), E.size(),
-                                             w.data(), bin.data(), nbins, G.data());
+                                             w.data(), bin.data(), nbins, G.data(),
+                                             xdata(extra));
         return G;
       }
 
@@ -595,10 +605,14 @@ namespace opg {
 
     private:
       static void check_points(const std::vector<R>& E, const std::vector<R>& C,
-                               const std::vector<uint8_t>& nb)
+                               const std::vector<uint8_t>& nb,
+                               const std::vector<R>& extra = {})
       {
         if (E.size() != C.size() || E.size() != nb.size())
           throw std::invalid_argument("prob_points: size mismatch");
+        if (!extra.empty() && extra.size() != size_t(n_extra_v<Model>) * E.size())
+          throw std::invalid_argument("prob_points: extra must hold n_event_extra() "
+                                      "values per event ([x][i])");
       }
 
       /// Gradient passes for the selected parameters (cached until the
@@ -681,6 +695,11 @@ namespace opg {
             out[ch * nb + b] = acc;
           }
         return out;
+      }
+
+      static const R* xdata(const std::vector<R>& extra)
+      {
+        return extra.empty() ? nullptr : extra.data();
       }
 
       void require_params() const

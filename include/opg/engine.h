@@ -139,15 +139,19 @@ namespace opg {
         throw std::logic_error("weighted_gradient_binned_device: needs the CUDA "
                                "backend");
       }
+      // Event-list modes take optional per-event extra inputs (models with
+      // n_extra > 0, e.g. azimuth and sidereal time): extra[x * n + i], or
+      // nullptr for the model's defaults.
       virtual void prob_points_grad(const Prepared&, const Chunks&, int,
                                     const R*, const R*, const uint8_t*, size_t,
-                                    R* /*P*/, R* /*G*/)
+                                    R* /*P*/, R* /*G*/, const R* /*extra*/ = nullptr)
       {
         no_grad();
       }
       virtual void weighted_grad_points(const Prepared&, const Chunks&, int,
                                         const R*, const R*, const uint8_t*,
-                                        size_t, const R* /*w*/, R* /*g*/)
+                                        size_t, const R* /*w*/, R* /*g*/,
+                                        const R* /*extra*/ = nullptr)
       {
         no_grad();
       }
@@ -158,7 +162,7 @@ namespace opg {
                                                const R*, const R*, const uint8_t*,
                                                size_t, const R* /*w*/,
                                                const int* /*bin*/, int /*nbins*/,
-                                               R* /*G*/)
+                                               R* /*G*/, const R* /*extra*/ = nullptr)
       {
         no_grad();
       }
@@ -191,7 +195,8 @@ namespace opg {
       // --- one-shot modes ---------------------------------------------------
       /// Event list: out[a][b][i], i < n
       virtual void prob_points(const Prepared& P, const R* E, const R* cosZ,
-                               const uint8_t* nubar, size_t n, R* out) = 0;
+                               const uint8_t* nubar, size_t n, R* out,
+                               const R* extra = nullptr) = 0;
       /// Fixed path: out[a][b][iE]
       virtual void prob_path(const Prepared& P, const R* E, size_t nE,
                              const Segment<R>* path, int nseg, bool nubar,

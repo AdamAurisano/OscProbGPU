@@ -103,10 +103,11 @@ namespace opg {
       double              sw, cw;         ///< sin, cos(omega_sidereal T)
   };
 
-  /// Amplitudes plus the direction of the path.
+  /// Amplitudes plus the direction of the path and the sidereal phase.
   template <class R> struct SiderealLIVState {
       Mat<3, R> S;
       R         N[3];
+      R         sw, cw;  ///< sin, cos(omega_sidereal T)
   };
 
   template <class R = double> struct SiderealLIV {
@@ -122,6 +123,10 @@ namespace opg {
 #else
       static constexpr int grad_chunk = 2;
 #endif
+
+      /// Per-event inputs in event lists: azimuth [deg], local sidereal
+      /// time [h] (the zenith comes from the path unless fixed).
+      static constexpr int n_extra = 2;
 
       template <class S> using ParamsT   = SiderealLIVParams<S>;
       using Params                       = SiderealLIVParams<double>;
@@ -194,11 +199,12 @@ namespace opg {
 
       /// Direction factors (PMNS_SiderealLIV::SetNeutrinoDirection).
       template <class S>
-      OPG_HD OPG_INLINE static void direction(const PreparedT<S>& P, double zen, R n[3])
+      OPG_HD OPG_INLINE static void direction(const PreparedT<S>& P, double zen, double azi,
+                                              R n[3])
       {
         using std::cos;
         using std::sin;
-        const double chi = P.chi, azi = P.azi;
+        const double chi = P.chi;
         n[0] = R(cos(chi) * sin(zen) * cos(azi) + sin(chi) * cos(zen));
         n[1] = R(sin(zen) * sin(azi));
         n[2] = R(-sin(chi) * sin(zen) * cos(azi) + cos(chi) * cos(zen));
@@ -208,7 +214,7 @@ namespace opg {
       /// any scalar type S of the prepared state and segment type Seg; with
       /// liv = false only the standard part (vacuum shortcut, see header).
       template <class S, class Seg>
-      OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, const R n[3], R E,
+      OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, const State& st, R E,
                                                 bool nubar, const Seg& s, Mat<3, S>& H,
                                                 bool liv = true)
       {
@@ -229,9 +235,9 @@ namespace opg {
           H(0, 0).re -= kr2GNe;
 
         if (liv) {
-          const R sw = R(P.sw), cw = R(P.cw);
+          const R sw = st.sw, cw = st.cw;
           const R sign = nubar ? -R(constants::kGeV2eV) : R(constants::kGeV2eV);
-          const R N0 = n[0], N1 = n[1], N2 = n[2];
+          const R N0 = st.N[0], N1 = st.N[1], N2 = st.N[2];
           OPG_UNROLL
           for (int i = 0; i < 3; i++)
             OPG_UNROLL
@@ -278,23 +284,44 @@ namespace opg {
       {
         State st;
         st.S = Mat<3, R>::identity();
-        direction(P, P.zen, st.N);
+        direction(P, P.zen, P.azi, st.N);
+        st.sw = R(P.sw);
+        st.cw = R(P.cw);
         return st;
       }
-      /// Earth path with direction cosZ: zenith = acos(cosZ) unless fixed.
+      /// Zenith of an Earth path with direction cosZ, unless fixed (as
+      /// SetNeutrinoDirection(acos(cosZ) [deg], azimuth)).
+      OPG_HD OPG_INLINE static double path_zenith(const Prepared& P, R cosZ)
+      {
+        using std::acos;
+        const double zdeg = acos(double(cosZ)) * 180.0 / M_PI;
+        return P.fixed_dir ? P.zen : zdeg * M_PI / 180.0;
+      }
+      /// Earth path with direction cosZ.
       OPG_HD OPG_INLINE static State initial(const Prepared& P, bool, R cosZ)
       {
         State st;
         st.S = Mat<3, R>::identity();
-        using std::acos;
-        // as SetNeutrinoDirection(acos(cosZ) [deg], ...)
-        const double zdeg = acos(double(cosZ)) * 180.0 / M_PI;
-        direction(P, P.fixed_dir ? P.zen : zdeg * M_PI / 180.0, st.N);
+        direction(P, path_zenith(P, cosZ), P.azi, st.N);
+        st.sw = R(P.sw);
+        st.cw = R(P.cw);
+        return st;
+      }
+      /// Event with its own azimuth ex[0] [deg] and sidereal time ex[1] [h].
+      OPG_HD OPG_INLINE static State initial(const Prepared& P, bool, R cosZ, const R* ex)
+      {
+        using std::cos;
+        using std::sin;
+        State st;
+        st.S = Mat<3, R>::identity();
+        direction(P, path_zenith(P, cosZ), double(ex[0]) * M_PI / 180.0, st.N);
+        st.sw = R(sin(kOmegaSidereal * double(ex[1])));
+        st.cw = R(cos(kOmegaSidereal * double(ex[1])));
         return st;
       }
 
       /// Eigensystem of a segment (PMNS_Fast::SolveHam with the sidereal H).
-      OPG_HD OPG_INLINE static void eigen(const Prepared& P, const R n[3], R E, bool nubar,
+      OPG_HD OPG_INLINE static void eigen(const Prepared& P, const State& st, R E, bool nubar,
                                           const Segment<R>& s, Mat<3, R>& V, R lam[3])
       {
         if (s.density < R(1.0e-6)) {
@@ -305,7 +332,7 @@ namespace opg {
         }
         else {
           Mat<3, R> H;
-          hamiltonian(P, n, E, nubar, s, H);
+          hamiltonian(P, st, E, nubar, s, H);
           diagonalize3(H, V, lam);
         }
       }
@@ -315,7 +342,7 @@ namespace opg {
       {
         Mat<3, R> V;
         R         lam[3];
-        eigen(P, st.N, E, nubar, s, V, lam);
+        eigen(P, st, E, nubar, s, V, lam);
         apply_eigen_step<3, R>(V, lam, length_in_eV(s.length), st.S);
       }
 
@@ -336,6 +363,7 @@ namespace opg {
         for (int k = 0; k < K; k++) {
           dS[k].S = Mat<3, R>::zero();
           dS[k].N[0] = dS[k].N[1] = dS[k].N[2] = R(0);
+          dS[k].sw = dS[k].cw = R(0);
         }
       }
 
@@ -349,14 +377,14 @@ namespace opg {
         const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
         Mat<3, R>        V;
         R                lam[3];
-        eigen(P, st.N, E, nubar, s, V, lam);
+        eigen(P, st, E, nubar, s, V, lam);
 
         // dual Hamiltonian; in vacuum H = Hms/2E (no sidereal terms)
         const bool              vac = s.density < R(1.0e-6);
         SegmentZ<R, Dual<R, K>> sd  = sz;
         if (vac) sd.density = 0;
         Mat<3, Dual<R, K>> HD;
-        hamiltonian(PD, st.N, E, nubar, sd, HD, !vac);
+        hamiltonian(PD, st, E, nubar, sd, HD, !vac);
 
         Mat<3, R> dSm[K];
         OPG_UNROLL

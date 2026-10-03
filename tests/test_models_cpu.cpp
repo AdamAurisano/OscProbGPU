@@ -2,6 +2,7 @@
 
 #include "doctest.h"
 
+#include "extras.h"
 #include "ref_compare.h"
 #include "variants.h"
 
@@ -101,6 +102,12 @@ TEST_CASE("SiderealLIV (CPU) matches OscProb PMNS_SiderealLIV")
   check_all(prop, "sidereal", kTolCPU, true);
   prop.set_params(variants::sidereal_fixed());
   check_all(prop, "sidereal_fixed", kTolCPU, true);
+}
+
+TEST_CASE("SiderealLIV (CPU) per-event azimuth and time in event lists")
+{
+  opg::Propagator<opg::SiderealLIV<>> prop;
+  extratest::check_extras(prop, 0);
 }
 
 TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
