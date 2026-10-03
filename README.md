@@ -97,6 +97,7 @@ cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=70   # CUDA auto-detected
 cmake -S . -B build -DOPG_ENABLE_CUDA=OFF           # CPU only
 cmake -S . -B build -DOPG_ENABLE_PYTHON=ON          # + Python module
 cmake --build build -j8
+scripts/fetch_test_data.sh                           # reference data for the tests
 ctest --test-dir build                               # labels: cpu, gpu, python
 ```
 
@@ -349,11 +350,19 @@ and their derivatives.
 
 ## Validation
 
-`reference/make_reference.sh` builds the original OscProb (needs ROOT) and dumps
-point `ProbMatrix` values (cache disabled), mass matrices, PREM paths,
-brute-force bin averages and `AvgProb` values into `tests/data/` (≈ 22 MB, not
-committed). Parameter sets follow `OscProb/test/Utils.h` plus variants with
-complex phases.
+The tests compare against reference data from the original OscProb: point
+`ProbMatrix` values (cache disabled), mass matrices, PREM paths, brute-force bin
+averages and `AvgProb` values (≈ 36 MB, not committed). Download it into
+`tests/data/` with
+
+```sh
+scripts/fetch_test_data.sh          # release asset testdata-v1, checked against tests/data/SHA256SUMS
+```
+
+or regenerate it with `reference/make_reference.sh`, which builds OscProb
+(needs ROOT; the published data is from OscProb v2.4.0-5-g5f2d719) and runs
+`reference/dump_reference.cxx`. Parameter sets follow `OscProb/test/Utils.h`
+plus variants with complex phases.
 
 Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and a
 101 x 120 PREM grid):

@@ -41,7 +41,8 @@ namespace npy {
     std::ifstream f(path(name), std::ios::binary);
     if (!f)
       throw std::runtime_error("npy: cannot open " + path(name) +
-                               " (run reference/make_reference.sh)");
+                               " (run scripts/fetch_test_data.sh, or "
+                               "reference/make_reference.sh to regenerate)");
     char magic[8];
     f.read(magic, 8);
     if (std::memcmp(magic, "\x93NUMPY", 6) != 0)
