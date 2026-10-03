@@ -41,14 +41,14 @@ K = 1 (K = 2 spills ~5 KB on V100).
 
 ### G4 — Decay (done)
 `expm` is generic over the scalar type (degree, squarings and pivots from the
-values); `step_grad` uses the plain `expm` for values and the dual one for
-derivatives only, so values stay bit-identical even under FMA contraction
-differences. A long-double `ExpmTraits` (Padé 13, norm ≤ 1) serves the FD
-reference. Parameters: mixing + `alpha2`, `alpha3` (8), tested at α = 0.
-Cost: 44x a probability evaluation on V100 (5.4 per parameter, K = 2): the
-dual expm spills ~19 KB. Options: reuse the dual values instead of a second
-plain expm (~15%, check GPU bit-identity); Daleckii–Krein with a complex
-non-hermitian eigensystem and fall back to dual Padé when ill-conditioned.
+values); a long-double `ExpmTraits` (Padé 13, norm ≤ 1) serves the FD
+reference. `step_grad` keeps the plain `expm` for values (bit-identical) and
+takes derivatives from Daleckii–Krein with the complex eigensystem of H
+(`eig3_general.h`, `eigen_grad_general.h`), checked per segment by
+reconstructing U; on failure it falls back to the dual `expm`
+(`pade_step_grad`, not inlined on the GPU). Parameters: mixing + `alpha2`,
+`alpha3` (8), tested at α = 0 and at a degenerate point (fallback). Cost on
+V100: 17x a probability evaluation with K = 8 (dual-expm only: 44x).
 
 ### G5 — Binned / Earth
 * Gradients of `set_bins`/`calculate_binned` and `avg_path` (linear in P: reuse
@@ -61,8 +61,8 @@ non-hermitian eigensystem and fall back to dual Padé when ill-conditioned.
 
 ## Other improvements
 * Weighted mode: accept weights as a device pointer (avoid the 144 MB upload).
-* Decay register spills (also affect probability-only speed and Decay
-  gradients).
+* Decay register spills (probability-only kernels; the gradient kernels spill
+  ~1 KB).
 * Exercise `pip install .` (pyproject/scikit-build-core) on a machine with pip.
 * Publish `tests/data` (OscProb references, ~22 MB) as a release asset.
 

@@ -22,6 +22,7 @@
 #include "opg/core/constants.h"
 #include "opg/core/dual.h"
 #include "opg/linalg/expm.h"
+#include "opg/physics/eigen_grad_general.h"
 #include "opg/physics/mixing.h"
 #include "opg/physics/propagate.h"
 
@@ -60,7 +61,10 @@ namespace opg {
 #ifdef OPG_DECAY_GRAD_CHUNK
       static constexpr int grad_chunk = OPG_DECAY_GRAD_CHUNK;
 #else
-      static constexpr int grad_chunk = 2;  // tuned on V100 (1.3x faster than K = 1, 3)
+      // tuned on V100: all 8 parameters in one pass (17x a probability
+      // evaluation; K = 4: 21x, K = 2: 28x). Each pass recomputes the value
+      // operator and the eigensystem, which K directions share.
+      static constexpr int grad_chunk = 8;
 #endif
 
       template <class S> using ParamsT   = DecayParams<S>;
@@ -143,11 +147,11 @@ namespace opg {
         return out;
       }
 
-      /// -i H L for one segment (port of PMNS_Decay::UpdateHam), scalar
+      /// H for one segment in eV (port of PMNS_Decay::UpdateHam), scalar
       /// type S of the prepared state.
       template <class S>
-      OPG_HD OPG_INLINE static Mat<3, S> exponent(const PreparedT<S>& P, R E,
-                                                  bool nubar, const Segment<R>& s)
+      OPG_HD OPG_INLINE static Mat<3, S> hamiltonian(const PreparedT<S>& P, R E,
+                                                     bool nubar, const Segment<R>& s)
       {
         const S lv = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
 
@@ -164,8 +168,15 @@ namespace opg {
           H(0, 0).re += kr2GNe;
         else
           H(0, 0).re -= kr2GNe;
+        return H;
+      }
 
-        // Evolution operator exp(-i H L)
+      /// -i H L (the argument of the evolution operator exp(-i H L)).
+      template <class S>
+      OPG_HD OPG_INLINE static Mat<3, S> exponent(const Mat<3, S>& Hin,
+                                                  const Segment<R>& s)
+      {
+        Mat<3, S>        H = Hin;
         const Complex<S> mil(S(0), S(-length_in_eV(s.length)));
         OPG_UNROLL
         for (int i = 0; i < 3; i++)
@@ -183,7 +194,7 @@ namespace opg {
       OPG_HD OPG_INLINE static void step(const Prepared& P, R E, bool nubar,
                                          const Segment<R>& s, Mat<3, R>& S)
       {
-        Mat<3, R> U = expm<3, R>(exponent(P, E, nubar, s));
+        Mat<3, R> U = expm<3, R>(exponent(hamiltonian(P, E, nubar, s), s));
         apply_operator<3, R>(U, S);
       }
 
@@ -199,8 +210,10 @@ namespace opg {
       }
 
       /// dS_k <- U dS_k + dU_k S, S <- U S. U is computed exactly as in
-      /// step() (so values are unchanged); dU_k are the derivative parts of
-      /// expm evaluated in dual arithmetic.
+      /// step() (so values are unchanged). dU_k follow from the eigensystem
+      /// of H (Daleckii-Krein with complex eigenvalues); where that is not
+      /// accurate (degenerate or ill-conditioned eigenvectors, detected by
+      /// reconstructing U) from expm in dual arithmetic instead.
       template <int K>
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
@@ -208,9 +221,30 @@ namespace opg {
                                               const Segment<R>& s, Mat<3, R>& S,
                                               Mat<3, R> (&dS)[K])
       {
-        using D = Dual<R, K>;
-        const Mat<3, D> UD = expm<3, D>(exponent(PD, E, nubar, s));
-        const Mat<3, R> U  = expm<3, R>(exponent(P, E, nubar, s));
+        using D           = Dual<R, K>;
+        const Mat<3, R> H = hamiltonian(P, E, nubar, s);
+        const Mat<3, R> U = expm<3, R>(exponent(H, s));
+#ifndef OPG_DECAY_GRAD_PADE_ONLY
+        const Mat<3, D> HD = hamiltonian(PD, E, nubar, s);
+        if (!general_eigen_step_grad<R, K>(H, length_in_eV(s.length), HD, U, S, dS))
+#endif
+          pade_step_grad<K>(PD, E, nubar, s, U, S, dS);
+        apply_operator<3, R>(U, S);
+      }
+
+      /// Fallback of step_grad: dU_k from expm in dual arithmetic (not
+      /// inlined on the GPU so that its register use does not burden the
+      /// common path).
+      template <int K>
+      OPG_HD OPG_NOINLINE static void pade_step_grad(const PreparedT<Dual<R, K>>& PD,
+                                                     R E, bool nubar,
+                                                     const Segment<R>& s,
+                                                     const Mat<3, R>& U,
+                                                     const Mat<3, R>& S,
+                                                     Mat<3, R> (&dS)[K])
+      {
+        using D            = Dual<R, K>;
+        const Mat<3, D> UD = expm<3, D>(exponent(hamiltonian(PD, E, nubar, s), s));
         OPG_UNROLL
         for (int k = 0; k < K; k++) {
           apply_operator<3, R>(U, dS[k]);
@@ -225,7 +259,6 @@ namespace opg {
             dS[k](i, a) += acc;
           }
         }
-        apply_operator<3, R>(U, S);
       }
 
       template <int K>

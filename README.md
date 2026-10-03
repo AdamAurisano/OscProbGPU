@@ -223,12 +223,17 @@ eigensystem is the usual one, and the derivative of U = exp(−iHL) follows from
 the Daleckii–Krein formula dU = V[(V†dH V) ∘ Γ]V†, with divided differences
 Γ evaluated stably for any eigenvalue separation. Derivatives are therefore
 exact (no step sizes) and well behaved at zero mixing angles and near
-degeneracies. For Decay (non-hermitian H) the segment operator is the Padé
-scaling-and-squaring exp evaluated in dual arithmetic, with the degree,
-squarings and pivots taken from the values; its derivative is the Fréchet
-derivative of exp to the accuracy of exp itself, and the values are those of
-the probability-only code. Parameters are processed in passes of K directions (K = 2;
-K = 1 for Sterile, whose 4x4 kernels would otherwise spill registers).
+degeneracies. For Decay (non-hermitian H) the values come from the Padé
+exponential as in the probability-only code, and the derivative from the same
+formula with the complex eigensystem H = X diag(λ) X⁻¹ (cubic roots refined by
+Newton steps, eigenvectors from cross products). Each segment checks that
+X diag(e^{−iλL}) X⁻¹ reproduces the Padé operator to 1e-11; otherwise
+(degenerate or ill-conditioned eigenvectors) it falls back to differentiating
+the Padé exponential in dual arithmetic. Over 1.2M PREM segments of the test
+parameter sets the fallback never triggered. Parameters are processed in
+passes of K directions (K = 2; K = 1 for Sterile, whose 4x4 kernels would
+otherwise spill registers; K = 8 for Decay, whose passes share the value
+exponential and the eigensystem).
 
 **Validation** (`tests/test_gradients.cpp`, `tests/gpu/test_gradients_gpu.cpp`,
 `python/tests/test_gradients.py`): against 6-point central differences
@@ -252,14 +257,12 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | NSI     | 18 | 33x (0.81 s)   | 38x (0.93 s)   | 1.8 |
 | NUNM    | 16 | 32x (0.85 s)   | 36x (0.95 s)   | 2.0 |
 | Sterile | 12 | 18x (3.0 s)    | 20x (3.2 s)    | 1.5 |
-| Decay   | 8  | 44x (2.9 s)    | 48x (3.2 s)    | 5.4 |
+| Decay   | 8  | 17x (1.15 s)   | 18x (1.24 s)   | 2.1 |
 
 The weighted times include uploading the weights. On the CPU the factors are
-similar (9x, 28x, 28x, 17x, 22x). For the hermitian models this is about
-1.5–2 probability evaluations per parameter: comparable to central finite
-differences (2 per parameter), but exact. Decay's derivative runs the matrix
-exponential in dual arithmetic, whose GPU kernels spill registers; it is
-currently ~2.7x the cost of finite differences on the GPU (see the roadmap).
+9x, 28x, 28x, 17x and 6x. This is about 1.5–2 probability evaluations per
+parameter: comparable to central finite differences (2 per parameter), but
+exact.
 
 ## Validation
 

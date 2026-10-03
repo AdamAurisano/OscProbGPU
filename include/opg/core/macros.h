@@ -12,10 +12,12 @@
 #define OPG_HD __host__ __device__
 #define OPG_DEVICE __device__
 #define OPG_INLINE __forceinline__
+#define OPG_NOINLINE __noinline__
 #else
 #define OPG_HD
 #define OPG_DEVICE
 #define OPG_INLINE inline
+#define OPG_NOINLINE
 #endif
 
 #if defined(__CUDA_ARCH__)

@@ -11,6 +11,7 @@
 #include "opg/avg/gauss_legendre.h"
 #include "opg/earth/prem.h"
 #include "opg/linalg/expm.h"
+#include "opg/physics/eigen_grad_general.h"
 #include "opg/linalg/jacobi_herm.h"
 #include "opg/models/decay.h"
 #include "opg/linalg/kopp/zheevh3.h"
@@ -455,6 +456,86 @@ TEST_CASE("expm in dual arithmetic: unchanged values, exact Frechet derivative")
     }
   }
   MESSAGE("dual expm derivative vs long-double FD: worst " << worst);
+}
+
+TEST_CASE("Non-hermitian Daleckii-Krein derivative agrees with dual expm")
+{
+  using D  = opg::Dual<double, 2>;
+  using MD = opg::Mat<3, D>;
+  std::mt19937_64                        rng(9);
+  std::uniform_real_distribution<double> u(-1, 1);
+  const double                           ev = 1e-12;  // Hamiltonian scale (eV)
+  double                                 worst = 0;
+  int                                    nfail = 0;
+  for (int t = 0; t < 2000; t++) {
+    // H = h - i g (h hermitian, g >= 0 hermitian, |g| < |h|), phases |H L|
+    // from 1e-3 to 1e3
+    double L = std::pow(10.0, -3 + 6.0 * (t % 13) / 12.0) / ev;
+    M3     a, b, H, S;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        a(i, j) = C(u(rng), u(rng));
+        b(i, j) = C(u(rng), u(rng));
+        S(i, j) = C(u(rng), u(rng));
+      }
+    const double gs = 0.3 * std::fabs(u(rng));
+    MD           HD;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        C h = (a(i, j) + opg::conj(a(j, i))) * 0.5;
+        C g(0, 0);  // g = b b^dag (positive semi-definite)
+        for (int k = 0; k < 3; k++) g += b(i, k) * opg::conj(b(j, k));
+        g       = g * gs;
+        H(i, j) = (h - C(-g.im, g.re)) * ev;  // h - i g
+        D re(H(i, j).re), im(H(i, j).im);
+        re.d[0] = u(rng) * ev;
+        im.d[0] = u(rng) * ev;
+        re.d[1] = (i == j ? u(rng) : 0.0) * ev;
+        HD(i, j) = opg::Complex<D>(re, im);
+      }
+    // reference: dual expm
+    const opg::Complex<D> mil(D(0), D(-L));
+    MD AD = HD;
+    M3 A;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        AD(i, j) *= mil;
+        A(i, j) = H(i, j) * C(0, -L);
+      }
+    MD UD = opg::expm<3, D>(AD);
+    M3 U  = opg::expm<3, double>(A);
+    M3 dS[2] = {M3::zero(), M3::zero()};
+    if (!opg::general_eigen_step_grad<double, 2>(H, L, HD, U, S, dS)) {
+      nfail++;
+      continue;
+    }
+    double err = 0, ref = 0;
+    for (int k = 0; k < 2; k++)
+      for (int i = 0; i < 3; i++)
+        for (int c = 0; c < 3; c++) {
+          C r(0, 0);
+          for (int j = 0; j < 3; j++) r += C(UD(i, j).re.d[k], UD(i, j).im.d[k]) * S(j, c);
+          err = std::max(err, opg::abs(dS[k](i, c) - r));
+          ref = std::max(ref, opg::abs(r));
+        }
+    worst = std::max(worst, err / ref);
+    INFO("L*|H| ~ " << L * ev);
+    CHECK(err <= 1e-10 * ref);
+  }
+  MESSAGE("eigen vs dual-expm derivative: worst relative " << worst << ", "
+                                                           << nfail << "/2000 fell back");
+  CHECK(nfail < 20);
+
+  // degenerate H: must report failure (callers fall back)
+  M3 Hd = M3::zero(), Ud = M3::identity(), Sd = M3::identity();
+  Hd(0, 0) = C(1e-12, -1e-14);
+  Hd(1, 1) = C(1e-12, -1e-14);
+  Hd(2, 2) = C(3e-12, 0);
+  MD HDd;
+  for (int i = 0; i < 3; i++)
+    for (int j = 0; j < 3; j++) HDd(i, j) = opg::Complex<D>(D(Hd(i, j).re), D(Hd(i, j).im));
+  M3 dSd[2] = {M3::zero(), M3::zero()};
+  CHECK_FALSE(opg::general_eigen_step_grad<double, 2>(Hd, 1e10, HDd, Ud, Sd, dSd));
 }
 
 #ifdef OPG_HAVE_EIGEN

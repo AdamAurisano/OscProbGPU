@@ -128,6 +128,11 @@ namespace gradtest {
     p = variants::decay_both();
     p.mix.SetAngle(1, 3, 0);
     v.push_back({"decay_both,th13=0", p});
+    // degenerate vacuum eigenvalues (exercises the dual-expm fallback)
+    p = Decay::Params();
+    p.mix.SetDm(3, 2.5e-3);
+    p.SetAlpha3(1e-4);
+    v.push_back({"no mixing,dm21=0", p});
     return v;
   }
 
