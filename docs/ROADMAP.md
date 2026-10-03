@@ -96,7 +96,7 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   bit-identical to OscProb with `OPG_OSCPROB_BITWISE`, with gradients. Note
   (OscProb behaviour, ported as is): the cT terms lack the GeV -> eV factor of
   the aT terms, and the sidereal terms are dropped in vacuum.
-* In progress (branch wip-deco-grad-extras):
+* Done (51e2387, 481803c):
   - Deco gradients from an analytic eigenbasis formula instead of dual
     arithmetic, K = 1 (done; V100 2.8 s vs 3.7 s before for 10 params on
     1000 x 1000, 5.4 P-evals/param, was 7.0). Deco sets separate_probs: in
@@ -110,7 +110,7 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
     n_event_extra. Done and tested on CPU, GPU and Python (tests/extras.h:
     bit-identical to per-propagator settings on CPU, ~1e-14 on GPU from the
     device sin/cos).
-* Next after that: reference-data release (approved), PMNS_OQS,
+* Next: reference-data release (approved), PMNS_OQS,
   EarthModelBinned (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
