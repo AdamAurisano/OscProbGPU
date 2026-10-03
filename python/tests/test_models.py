@@ -89,6 +89,18 @@ def make(tag, devices):
             p.set_eps(0, 2, 0.2, -2.1)
             p.set_eps(1, 1, 0.3, 0)
             p.set_ferm_coup(0.5, 1.0, 0.8)
+    elif tag.startswith("deco"):
+        p = set_nominal(opg.Deco(devices=devices))
+        if tag == "deco":
+            p.set_gamma(2, 2e-21)
+            p.set_gamma(3, 5e-21)
+            p.set_deco_angle(0.3)
+        else:
+            p.set_dm(3, -2.465e-3 + 7.41e-5)
+            p.set_gamma(2, 1e-24)
+            p.set_deco_angle(2.0)
+            p.set_gamma32(3e-24)
+            p.set_power(2)
     else:
         raise ValueError(tag)
     return p
@@ -96,7 +108,7 @@ def make(tag, devices):
 
 TAGS = ["fast", "fast_io", "nsi", "nsi_phases", "nunm", "nunm_phases",
         "nunm_high", "sterile", "sterile_phases", "decay", "decay_both",
-        "liv", "liv_phases", "snsi", "snsi_io"]
+        "liv", "liv_phases", "snsi", "snsi_io", "deco", "deco_power"]
 
 
 @pytest.mark.parametrize("tag", TAGS)

@@ -635,6 +635,36 @@ NB_MODULE(_oscprobgpu, m)
            },
            "m"_a, "Lightest neutrino mass in eV.");
 
+  using Deco = opg::Deco<double>;
+  auto ce = bind_model<Deco>(m, "Deco", "3 flavours with decoherence (PMNS_Deco).");
+  bind_ctor<Deco>(ce);
+  ce.def("set_gamma",
+         [](PyModel<Deco>& w, int j, double v) {
+           w.dirty = true;
+           w.params.SetGamma(j, v);
+         },
+         "j"_a, "value"_a, "Set Gamma_j1 in GeV, j = 2 or 3.")
+      .def("set_gamma32",
+           [](PyModel<Deco>& w, double v) {
+             w.dirty = true;
+             w.params.SetGamma32(v);
+           },
+           "value"_a, "Set Gamma_32 (adjusts Gamma_31; see PMNS_Deco::SetGamma32).")
+      .def("set_deco_angle",
+           [](PyModel<Deco>& w, double th) {
+             w.dirty = true;
+             w.params.SetDecoAngle(th);
+           },
+           "theta"_a)
+      .def("set_power",
+           [](PyModel<Deco>& w, double n) {
+             w.dirty = true;
+             w.params.SetPower(n);
+           },
+           "n"_a, "Gamma_ij ~ (E/GeV)^n.")
+      .def("get_gamma", [](PyModel<Deco>& w, int i, int j) { return w.params.GetGamma(i, j); },
+           "i"_a, "j"_a);
+
   auto cd = bind_model<Decay>(m, "Decay", "3 flavours with invisible decay (PMNS_Decay).");
   bind_ctor<Decay>(cd);
   cd.def("set_alpha2",

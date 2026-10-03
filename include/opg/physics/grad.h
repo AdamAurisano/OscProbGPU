@@ -68,7 +68,7 @@ namespace opg {
   OPG_HD inline void evolve_prem_grad(const typename Model::Prepared& P,
                                       const GradPrepared<Model, K>& G,
                                       const EarthView<R>& earth, R E, R cosZ, bool nubar,
-                                      Mat<Model::N, R>& S, Mat<Model::N, R> (&dS)[K])
+                                      StateOf<Model>& S, StateOf<Model> (&dS)[K])
   {
     S = Model::initial(P, nubar);
     Model::template initial_grad<K>(G.P, nubar, dS);
@@ -84,7 +84,7 @@ namespace opg {
   OPG_HD inline void evolve_path_grad(const typename Model::Prepared& P,
                                       const GradPrepared<Model, K>& G,
                                       const Segment<R>* path, int nseg, R E, bool nubar,
-                                      Mat<Model::N, R>& S, Mat<Model::N, R> (&dS)[K])
+                                      StateOf<Model>& S, StateOf<Model> (&dS)[K])
   {
     S = Model::initial(P, nubar);
     Model::template initial_grad<K>(G.P, nubar, dS);
@@ -92,6 +92,31 @@ namespace opg {
       Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, path[k]), S, dS);
     Model::template finalize_grad<K>(P, G.P, nubar, S, dS);
     Model::finalize(P, nubar, S);
+  }
+
+  /// dP(a -> b)/dp_k for a model state (see store_grads / contract_grads in
+  /// eigen_grad.h); models with their own state type provide store_grads
+  /// and contract_grads with the same signatures.
+  template <class Model, class R, int K>
+  OPG_HD OPG_INLINE void store_model_grads(const StateOf<Model>& S,
+                                           const StateOf<Model> (&dS)[K], int count,
+                                           R* out, size_t stride)
+  {
+    if constexpr (detail::state_of<Model>::custom)
+      Model::template store_grads<K>(S, dS, count, out, stride);
+    else
+      store_grads<Model::N, R, K>(S, dS, count, out, stride);
+  }
+
+  template <class Model, class R, int K>
+  OPG_HD OPG_INLINE void contract_model_grads(const StateOf<Model>& S,
+                                              const StateOf<Model> (&dS)[K], const R* w,
+                                              size_t stride, R (&acc)[K])
+  {
+    if constexpr (detail::state_of<Model>::custom)
+      Model::template contract_grads<K>(S, dS, w, stride, acc);
+    else
+      contract_grads<Model::N, R, K>(S, dS, w, stride, acc);
   }
 
 } // namespace opg

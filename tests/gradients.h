@@ -153,6 +153,13 @@ namespace gradtest {
   {
     return param_scale(name);
   }
+  /// Deco: Gamma_ij of order 1e-21 GeV (power 0) to 1e-24 GeV (power 2).
+  template <> inline double model_scale<opg::Deco<double>>(const std::string& name)
+  {
+    if (name == "gamma21" || name == "gamma31") return 1e-24;
+    return param_scale(name);
+  }
+
   /// SNSI: with absolute masses of a few 1e-2 eV, the probabilities vary on
   /// scales ~1e-2 of eps (MeV^-2), the couplings and mlight (eV).
   template <> inline double model_scale<opg::SNSI<double>>(const std::string& name)
@@ -195,6 +202,18 @@ namespace gradtest {
     return v;
   }
 
+  using Deco = opg::Deco<double>;
+  template <> inline std::vector<std::pair<std::string, Deco::Params>> param_points<Deco>()
+  {
+    std::vector<std::pair<std::string, Deco::Params>> v;
+    v.push_back({"deco", variants::deco()});
+    v.push_back({"deco_power", variants::deco_power()});
+    Deco::Params p;
+    p.mix = variants::nominal_mix<3>();
+    v.push_back({"Gamma=0", p});
+    return v;
+  }
+
   /// Step for each parameter: 1e-4 absolute for angles, phases and
   /// couplings (smaller steps amplify the long-double round-off of the
   /// O(1e5) rad phases at dm41 ~ 1 eV^2); relative 1e-5 for mass
@@ -234,8 +253,9 @@ namespace gradtest {
                                                        LD(E[i]), nb[i] != 0)
                             : opg::evolve_prem<FL, LD>(P, ev, LD(E[i]), LD(C[i]),
                                                        nb[i] != 0);
-          for (int a = 0; a < N; a++)
-            for (int b = 0; b < N; b++) out.push_back(opg::norm(S(b, a)));
+          LD pr[N * N];
+          opg::store_model_probs<FL, LD>(S, pr, 1);
+          for (int ab = 0; ab < N * N; ab++) out.push_back(pr[ab]);
         }
         return out;
       }

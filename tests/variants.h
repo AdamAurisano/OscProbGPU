@@ -183,6 +183,28 @@ namespace variants {
     return p;
   }
 
+  inline opg::Deco<>::Params deco()
+  {
+    opg::Deco<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetGamma(2, 2e-21);
+    p.SetGamma(3, 5e-21);
+    p.SetDecoAngle(0.3);
+    return p;
+  }
+
+  inline opg::Deco<>::Params deco_power()
+  {
+    opg::Deco<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.mix.SetDm(3, -2.465e-3 + 7.41e-5);
+    p.SetGamma(2, 1e-24);
+    p.SetDecoAngle(2.0);
+    p.SetGamma32(3e-24);
+    p.SetPower(2);
+    return p;
+  }
+
 } // namespace variants
 
 #endif

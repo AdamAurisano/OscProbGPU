@@ -59,7 +59,7 @@ namespace opg {
           for (long long k = 0; k < n; k++) {
             size_t ic = size_t(k) / nE, ie = size_t(k) % nE;
             auto   S  = evolve_prem<Model, R>(P, earth, fE[ie], fC[ic], nb == 1);
-            store_probs<N, R>(S, base + k, stride);
+            store_model_probs<Model, R>(S, base + k, stride);
           }
         }
       }
@@ -89,7 +89,7 @@ namespace opg {
             size_t ic = size_t(k) / nEn, ie = size_t(k) % nEn;
             auto   S  = evolve_prem<Model, R>(P, earth, B.nodesE[ie],
                                               B.nodesC[ic], nb == 1);
-            store_probs<N, R>(S, base + k, npt);
+            store_model_probs<Model, R>(S, base + k, npt);
           }
           reduce_nodes(base, N * N, fBinned.data() + (nb * N * N) * B.nCb * B.nEb);
         }
@@ -123,11 +123,11 @@ namespace opg {
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
               for (long long k = 0; k < n; k++) {
                 size_t    ic = size_t(k) / nEn, ie = size_t(k) % nEn;
-                Mat<N, R> S, dS[GK];
+                StateOf<Model> S, dS[GK];
                 evolve_prem_grad<Model, R, GK>(P, ch.P, earth, B.nodesE[ie],
                                                B.nodesC[ic], nb == 1, S, dS);
-                if (c == 0) store_probs<N, R>(S, pbase + k, npt);
-                store_grads<N, R, GK>(S, dS, ch.count, node.data() + k, npt);
+                if (c == 0) store_model_probs<Model, R>(S, pbase + k, npt);
+                store_model_grads<Model, R, GK>(S, dS, ch.count, node.data() + k, npt);
               }
               reduce_nodes(node.data(), size_t(ch.count) * N * N,
                            fBinnedGrad.data() +
@@ -176,11 +176,11 @@ namespace opg {
                   for (int ab = 0; ab < N * N; ab++)
                     wn[ab] = wbase[(ab * B.nCb + icb) * B.nEb + ieb] * B.wC[size_t(rc)] *
                              B.wE[ie];
-                  Mat<N, R> S, dS[GK];
+                  StateOf<Model> S, dS[GK];
                   evolve_prem_grad<Model, R, GK>(P, ch.P, earth, B.nodesE[ie],
                                                  B.nodesC[size_t(rc)], nb == 1, S, dS);
                   R acc[GK];
-                  contract_grads<N, R, GK>(S, dS, wn, 1, acc);
+                  contract_model_grads<Model, R, GK>(S, dS, wn, 1, acc);
                   for (int k = 0; k < GK; k++) rowacc[k] += acc[k];
                 }
                 for (int k = 0; k < GK; k++) part[size_t(rc) * GK + k] = rowacc[k];
@@ -214,11 +214,11 @@ namespace opg {
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
               for (long long k = 0; k < n; k++) {
                 size_t    ic = size_t(k) / nE, ie = size_t(k) % nE;
-                Mat<N, R> S, dS[GK];
+                StateOf<Model> S, dS[GK];
                 evolve_prem_grad<Model, R, GK>(P, ch.P, earth, fE[ie], fC[ic],
                                                nb == 1, S, dS);
-                if (c == 0) store_probs<N, R>(S, pbase + k, npt);
-                store_grads<N, R, GK>(S, dS, ch.count, gbase + k, npt);
+                if (c == 0) store_model_probs<Model, R>(S, pbase + k, npt);
+                store_model_grads<Model, R, GK>(S, dS, ch.count, gbase + k, npt);
               }
             }
           }
@@ -250,11 +250,11 @@ namespace opg {
               for (long long ic = 0; ic < nrow; ic++) {
                 R rowacc[GK] = {};
                 for (size_t ie = 0; ie < nE; ie++) {
-                  Mat<N, R> S, dS[GK];
+                  StateOf<Model> S, dS[GK];
                   evolve_prem_grad<Model, R, GK>(P, ch.P, earth, fE[ie], fC[ic],
                                                  nb == 1, S, dS);
                   R acc[GK];
-                  contract_grads<N, R, GK>(S, dS, wbase + ic * nE + ie, npt, acc);
+                  contract_model_grads<Model, R, GK>(S, dS, wbase + ic * nE + ie, npt, acc);
                   for (int k = 0; k < GK; k++) rowacc[k] += acc[k];
                 }
                 for (int k = 0; k < GK; k++) part[ic * GK + k] = rowacc[k];
@@ -281,11 +281,11 @@ namespace opg {
             const auto& ch = chunks[c];
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
             for (long long i = 0; i < nn; i++) {
-              Mat<N, R> S, dS[GK];
+              StateOf<Model> S, dS[GK];
               evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
                                              nubar[i] != 0, S, dS);
-              if (c == 0) store_probs<N, R>(S, outP + i, n);
-              store_grads<N, R, GK>(S, dS, ch.count,
+              if (c == 0) store_model_probs<Model, R>(S, outP + i, n);
+              store_model_grads<Model, R, GK>(S, dS, ch.count,
                                     outG + size_t(ch.offset) * N * N * n + i, n);
             }
           }
@@ -310,11 +310,11 @@ namespace opg {
             for (long long b = 0; b < nb_; b++) {
               R blk[GK] = {};
               for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++) {
-                Mat<N, R> S, dS[GK];
+                StateOf<Model> S, dS[GK];
                 evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
                                                nubar[i] != 0, S, dS);
                 R acc[GK];
-                contract_grads<N, R, GK>(S, dS, w + i, n, acc);
+                contract_model_grads<Model, R, GK>(S, dS, w + i, n, acc);
                 for (int k = 0; k < GK; k++) blk[k] += acc[k];
               }
               for (int k = 0; k < GK; k++) part[b * GK + k] = blk[k];
@@ -341,11 +341,11 @@ namespace opg {
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
             for (long long i = 0; i < nn; i++) {
               if (bin[i] < 0 || bin[i] >= nbins) continue;
-              Mat<N, R> S, dS[GK];
+              StateOf<Model> S, dS[GK];
               evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
                                              nubar[i] != 0, S, dS);
               R acc[GK];
-              contract_grads<N, R, GK>(S, dS, w + i, n, acc);
+              contract_model_grads<Model, R, GK>(S, dS, w + i, n, acc);
               for (int k = 0; k < GK; k++) contrib[size_t(i) * GK + k] = acc[k];
             }
             for (size_t i = 0; i < n; i++)  // fixed summation order
@@ -368,10 +368,10 @@ namespace opg {
             const auto& ch = chunks[c];
 #pragma omp parallel for schedule(static) num_threads(threads())
             for (long long i = 0; i < n; i++) {
-              Mat<N, R> S, dS[GK];
+              StateOf<Model> S, dS[GK];
               evolve_path_grad<Model, R, GK>(P, ch.P, path, nseg, E[i], nubar, S, dS);
-              if (c == 0) store_probs<N, R>(S, outP + i, nE);
-              store_grads<N, R, GK>(S, dS, ch.count,
+              if (c == 0) store_model_probs<Model, R>(S, outP + i, nE);
+              store_model_grads<Model, R, GK>(S, dS, ch.count,
                                     outG + size_t(ch.offset) * N * N * nE + i, nE);
             }
           }
@@ -389,7 +389,7 @@ namespace opg {
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
         for (long long i = 0; i < nn; i++) {
           auto S = evolve_prem<Model, R>(P, earth, E[i], cosZ[i], nubar[i] != 0);
-          store_probs<N, R>(S, out + i, n);
+          store_model_probs<Model, R>(S, out + i, n);
         }
       }
 
@@ -401,7 +401,7 @@ namespace opg {
 #pragma omp parallel for schedule(static) num_threads(threads())
         for (long long i = 0; i < n; i++) {
           auto S = evolve_path<Model, R>(P, path, nseg, E[i], nubar);
-          store_probs<N, R>(S, out + i, nE);
+          store_model_probs<Model, R>(S, out + i, nE);
         }
       }
 

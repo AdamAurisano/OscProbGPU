@@ -40,6 +40,7 @@
 
 #include "Absorption.h"
 #include "PMNS_Decay.h"
+#include "PMNS_Deco.h"
 #include "PMNS_Fast.h"
 #include "PMNS_LIV.h"
 #include "PMNS_NSI.h"
@@ -342,6 +343,32 @@ vector<Variant> GetVariants()
                  return (PMNS_Base*)p;
                },
                get_hms<PMNS_SNSI>});
+
+  // Decoherence, energy independent
+  v.push_back({"deco", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_Deco>();
+                 SetNominalPars(p);
+                 p->SetGamma(2, 2e-21);
+                 p->SetGamma(3, 5e-21);
+                 p->SetDecoAngle(0.3);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_Deco>});
+
+  // Decoherence ~ E^2, Gamma_32 set directly, inverted ordering
+  v.push_back({"deco_power", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_Deco>();
+                 SetNominalPars(p);
+                 p->SetDm(3, -2.465e-3 + 7.41e-5);
+                 p->SetGamma(2, 1e-24);
+                 p->SetDecoAngle(2.0);
+                 p->SetGamma32(3e-24);
+                 p->SetPower(2);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_Deco>});
 
   return v;
 }

@@ -106,6 +106,12 @@ TEST_CASE("GPU SNSI matches OscProb and the CPU backend")
   check_model<opg::SNSI<>>(variants::snsi_io(), "snsi_io");
 }
 
+TEST_CASE("GPU Deco matches OscProb and the CPU backend")
+{
+  check_model<opg::Deco<>>(variants::deco(), "deco");
+  check_model<opg::Deco<>>(variants::deco_power(), "deco_power");
+}
+
 TEST_CASE("GPU NUNM matches OscProb and the CPU backend")
 {
   check_model<opg::NUNM<>>(variants::nunm(0), "nunm");

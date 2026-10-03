@@ -85,6 +85,15 @@ TEST_CASE("SNSI (CPU) matches OscProb PMNS_SNSI")
   check_all(prop, "snsi_io", kTolCPU, true);
 }
 
+TEST_CASE("Deco (CPU) matches OscProb PMNS_Deco")
+{
+  opg::Propagator<opg::Deco<>> prop;
+  prop.set_params(variants::deco());
+  check_all(prop, "deco", kTolCPU, true);
+  prop.set_params(variants::deco_power());
+  check_all(prop, "deco_power", kTolCPU, true);
+}
+
 TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
 {
   opg::Propagator<opg::NUNM<>> prop;

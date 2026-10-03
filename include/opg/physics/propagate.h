@@ -14,6 +14,8 @@
 
 #include <cmath>
 
+#include <type_traits>
+
 #include "opg/core/constants.h"
 #include "opg/core/matrix.h"
 #include "opg/earth/prem.h"
@@ -88,14 +90,42 @@ namespace opg {
   }
 
   // Every model provides
-  //   initial(P, nubar)        -> starting matrix (identity, or e.g. alpha^dagger)
+  //   initial(P, nubar)        -> starting state (identity, or e.g. alpha^dagger)
   //   step(P, E, nubar, seg, S) -> S <- U_seg S
   //   finalize(P, nubar, S)    -> e.g. S <- alpha S
-  // and the probability is P(a -> b) = |S(b, a)|^2.
+  // and the probability is P(a -> b) = |S(b, a)|^2. A model may instead use
+  // its own state type (`using State = ...`, e.g. density matrices) and then
+  // provides store_probs(S, out, stride) writing P(a -> b) to
+  // out[(a*N + b) * stride].
+
+  namespace detail {
+    template <class Model, class = void> struct state_of {
+        using type = Mat<Model::N, typename Model::Real>;
+        static constexpr bool custom = false;
+    };
+    template <class Model>
+    struct state_of<Model, std::void_t<typename Model::State>> {
+        using type = typename Model::State;
+        static constexpr bool custom = true;
+    };
+  } // namespace detail
+
+  /// State evolved by a model (amplitude matrix unless the model defines one).
+  template <class Model> using StateOf = typename detail::state_of<Model>::type;
+
+  /// Write P(a -> b) for a model state to out[(a*N + b) * stride].
+  template <class Model, class R>
+  OPG_HD OPG_INLINE void store_model_probs(const StateOf<Model>& S, R* out, size_t stride)
+  {
+    if constexpr (detail::state_of<Model>::custom)
+      Model::store_probs(S, out, stride);
+    else
+      store_probs<Model::N, R>(S, out, stride);
+  }
 
   /// Evolution matrix through a PREM path for direction cosZ.
   template <class Model, class R>
-  OPG_HD inline Mat<Model::N, R>
+  OPG_HD inline StateOf<Model>
   evolve_prem(const typename Model::Prepared& P, const EarthView<R>& earth,
               R E, R cosZ, bool nubar)
   {
@@ -109,7 +139,7 @@ namespace opg {
 
   /// Evolution matrix through an explicit list of segments.
   template <class Model, class R>
-  OPG_HD inline Mat<Model::N, R>
+  OPG_HD inline StateOf<Model>
   evolve_path(const typename Model::Prepared& P, const Segment<R>* path,
               int nseg, R E, bool nubar)
   {

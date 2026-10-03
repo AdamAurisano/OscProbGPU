@@ -87,8 +87,12 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
 * Done: absorption (`transmission`, `column_depth`; bit-identical to
   Absorption::Trans). Possible extension: apply σ(E) tables on the device
   (needed inside bin averages, where T varies across a bin).
-* Next: PMNS_Deco (density-matrix evolution) and PMNS_SiderealLIV (direction
-  and sidereal-time dependent SME).
+* Done: Deco (`PMNS_Deco`): models may define their own state type
+  (`State`, `store_probs`, `store_grads`, `contract_grads`); Deco propagates
+  three density matrices, bit-identical to OscProb with
+  `OPG_OSCPROB_BITWISE`; gradients from first-order perturbation theory of
+  the eigensystem in dual arithmetic.
+* Next: PMNS_SiderealLIV (direction and sidereal-time dependent SME).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast),
   PMNS_Maltoni (alternative bin averaging); PMNS_OQS and EarthModelBinned on
   request.

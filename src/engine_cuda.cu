@@ -123,7 +123,7 @@ namespace opg {
 
       for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
         auto S = evolve_prem<Model, R>(P, earth, E[ie], C[ic], nb == 1);
-        store_probs<N, R>(S, base + size_t(ic) * nE + ie, stride);
+        store_model_probs<Model, R>(S, base + size_t(ic) * nE + ie, stride);
       }
     }
 
@@ -139,7 +139,7 @@ namespace opg {
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
         auto S = evolve_prem<Model, R>(P, earth, E[i], C[i], nubar[i] != 0);
-        store_probs<N, R>(S, out + i, stride);
+        store_model_probs<Model, R>(S, out + i, stride);
       }
     }
 
@@ -153,7 +153,7 @@ namespace opg {
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < nE;
            i += size_t(gridDim.x) * blockDim.x) {
         auto S = evolve_path<Model, R>(P, path, nseg, E[i], nubar);
-        store_probs<N, R>(S, out + i, stride);
+        store_model_probs<Model, R>(S, out + i, stride);
       }
     }
 
@@ -236,11 +236,11 @@ namespace opg {
       if (ie >= nE) return;
       const size_t stride = size_t(nC) * nE;
       for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
-        Mat<N, R> S, dS[K];
+        StateOf<Model> S, dS[K];
         evolve_prem_grad<Model, R, K>(P, PD, earth, E[ie], C[ic], nb == 1, S, dS);
         const size_t pt = size_t(ic) * nE + ie;
-        if (write_probs) store_probs<N, R>(S, probs + size_t(nb) * N * N * stride + pt, stride);
-        store_grads<N, R, K>(S, dS, count,
+        if (write_probs) store_model_probs<Model, R>(S, probs + size_t(nb) * N * N * stride + pt, stride);
+        store_model_grads<Model, R, K>(S, dS, count,
                              grad + (size_t(nb) * npar + offset) * N * N * stride + pt,
                              stride);
       }
@@ -262,10 +262,10 @@ namespace opg {
       R             acc[K] = {};
       if (ie < nE) {
         for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
-          Mat<N, R> S, dS[K];
+          StateOf<Model> S, dS[K];
           evolve_prem_grad<Model, R, K>(P, PD, earth, E[ie], C[ic], nb == 1, S, dS);
           R a[K];
-          contract_grads<N, R, K>(S, dS,
+          contract_model_grads<Model, R, K>(S, dS,
                                   w + size_t(nb) * N * N * stride + size_t(ic) * nE + ie,
                                   stride, a);
           for (int k = 0; k < K; k++) acc[k] += a[k];
@@ -296,7 +296,7 @@ namespace opg {
       if (ie < nE) {
         const int ieb = ie / nglE;
         for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
-          Mat<N, R> S, dS[K];
+          StateOf<Model> S, dS[K];
           evolve_prem_grad<Model, R, K>(P, PD, earth, E[ie], C[ic], nb == 1, S, dS);
           const R   f   = wC[ic] * wE[ie];
           const int icb = binOfRow[ic];
@@ -304,7 +304,7 @@ namespace opg {
           for (int ab = 0; ab < N * N; ab++)
             wn[ab] = w[((size_t(nb) * N * N + ab) * nCb + icb) * nEb + ieb] * f;
           R a[K];
-          contract_grads<N, R, K>(S, dS, wn, 1, a);
+          contract_model_grads<Model, R, K>(S, dS, wn, 1, a);
           for (int k = 0; k < K; k++) acc[k] += a[k];
         }
       }
@@ -325,10 +325,10 @@ namespace opg {
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
-        Mat<N, R> S, dS[K];
+        StateOf<Model> S, dS[K];
         evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS);
-        if (write_probs) store_probs<N, R>(S, probs + i, n);
-        store_grads<N, R, K>(S, dS, count, grad + size_t(offset) * N * N * n + i, n);
+        if (write_probs) store_model_probs<Model, R>(S, probs + i, n);
+        store_model_grads<Model, R, K>(S, dS, count, grad + size_t(offset) * N * N * n + i, n);
       }
     }
 
@@ -345,10 +345,10 @@ namespace opg {
       R             acc[K] = {};
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
-        Mat<N, R> S, dS[K];
+        StateOf<Model> S, dS[K];
         evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS);
         R a[K];
-        contract_grads<N, R, K>(S, dS, w + i, n, a);
+        contract_model_grads<Model, R, K>(S, dS, w + i, n, a);
         for (int k = 0; k < K; k++) acc[k] += a[k];
       }
       block_reduce_store<R, K, 128>(acc, partial + size_t(blockIdx.x) * K);
@@ -370,10 +370,10 @@ namespace opg {
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
         if (bin[i] < 0) continue;
-        Mat<N, R> S, dS[K];
+        StateOf<Model> S, dS[K];
         evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS);
         R a[K];
-        contract_grads<N, R, K>(S, dS, w + i, n, a);
+        contract_model_grads<Model, R, K>(S, dS, w + i, n, a);
         for (int k = 0; k < K; k++) contrib[i * K + k] = a[k];
       }
     }
@@ -404,10 +404,10 @@ namespace opg {
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < nE;
            i += size_t(gridDim.x) * blockDim.x) {
-        Mat<N, R> S, dS[K];
+        StateOf<Model> S, dS[K];
         evolve_path_grad<Model, R, K>(P, PD, path, nseg, E[i], nubar, S, dS);
-        if (write_probs) store_probs<N, R>(S, probs + i, nE);
-        store_grads<N, R, K>(S, dS, count, grad + size_t(offset) * N * N * nE + i, nE);
+        if (write_probs) store_model_probs<Model, R>(S, probs + i, nE);
+        store_model_grads<Model, R, K>(S, dS, count, grad + size_t(offset) * N * N * nE + i, nE);
       }
     }
 

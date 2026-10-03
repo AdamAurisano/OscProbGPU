@@ -131,7 +131,8 @@ TEST_CASE("Grid, event-list and weighted gradients are consistent (CPU)")
 
 TEST_CASE_TEMPLATE("G3/G4 gradients match long-double finite differences (CPU)", M,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
-                   gradtest::Decay, gradtest::LIV, gradtest::SNSI)
+                   gradtest::Decay, gradtest::LIV, gradtest::SNSI,
+                   gradtest::Deco)
 {
   opg::Propagator<M> prop;
   gradtest::check_against_ld(prop, 1e-9);
@@ -139,7 +140,8 @@ TEST_CASE_TEMPLATE("G3/G4 gradients match long-double finite differences (CPU)",
 
 TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU)", M,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
-                   gradtest::Decay, gradtest::LIV, gradtest::SNSI)
+                   gradtest::Decay, gradtest::LIV, gradtest::SNSI,
+                   gradtest::Deco)
 {
   opg::Propagator<M> prop;
   gradtest::check_values_unchanged(prop);
@@ -147,7 +149,8 @@ TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU
 
 TEST_CASE_TEMPLATE("G3/G4 grid, event-list and weighted gradients are consistent (CPU)", M,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
-                   gradtest::Decay, gradtest::LIV, gradtest::SNSI)
+                   gradtest::Decay, gradtest::LIV, gradtest::SNSI,
+                   gradtest::Deco)
 {
   opg::Propagator<M> prop;
   gradtest::check_grid_and_weighted(prop, 1e-13);
@@ -220,7 +223,7 @@ TEST_CASE("NSI/NUNM prepared values do not depend on the derivative seeds")
 
 TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay,
-                   gradtest::LIV, gradtest::SNSI)
+                   gradtest::LIV, gradtest::SNSI, gradtest::Deco)
 {
   opg::Propagator<M> prop;
   gradtest::check_binned(prop, 1e-6, 1e-13);
@@ -228,7 +231,8 @@ TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
 
 
 TEST_CASE_TEMPLATE("Earth Z/A gradients (CPU)", M, gradtest::Fast, gradtest::NSI, gradtest::NUNM,
-                   gradtest::Sterile, gradtest::Decay, gradtest::LIV, gradtest::SNSI)
+                   gradtest::Sterile, gradtest::Decay, gradtest::LIV, gradtest::SNSI,
+                   gradtest::Deco)
 {
   opg::Propagator<M> prop;
   gradtest::check_zoa(prop, 1e-9);
