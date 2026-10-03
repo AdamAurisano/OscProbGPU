@@ -42,11 +42,14 @@ from ._oscprobgpu import (  # noqa: F401
     Sterile,
     _dlpack,
     cuda_device_count,
+    path_column_depth,
+    path_transmission,
     has_cuda,
 )
 
 __all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "PremModel",
-           "DeviceArray", "cuda_device_count", "has_cuda", "default_devices"]
+           "DeviceArray", "cuda_device_count", "has_cuda", "default_devices",
+           "path_column_depth", "path_transmission"]
 
 
 class DeviceArray:

@@ -6,10 +6,13 @@
 #include "doctest.h"
 
 #include "npy.h"
+#include "ref_compare.h"
 #include "variants.h"
 
 #include "opg/avg/gauss_legendre.h"
+#include "opg/earth/absorption.h"
 #include "opg/earth/prem.h"
+#include "opg/propagator.h"
 #include "opg/linalg/expm.h"
 #include "opg/physics/eigen_grad_general.h"
 #include "opg/linalg/jacobi_herm.h"
@@ -189,6 +192,37 @@ TEST_CASE("SNSI mass matrix matches OscProb PMNS_SNSI fHms")
         CHECK(P.common.Hms(i, j).im == ref[(i * 3 + j) * 2 + 1]);
       }
   }
+}
+
+TEST_CASE("Absorption matches OscProb Absorption::Trans bit for bit")
+{
+  auto xs  = npy::load<double>("absorption_xsec.npy");
+  auto ref = npy::load<double>("absorption_prem.npy");
+  auto C   = npy::load<double>("grid_cosZ.npy");
+  const size_t nx = xs.shape[0];
+  opg::PremModel prem;
+  size_t         nexact = 0;
+  for (size_t ic = 0; ic < C.shape[0]; ic++) {
+    auto path = prem.FillPath(C[ic]);
+    for (size_t k = 0; k < nx; k++)
+      nexact += opg::transmission(path, xs[k]) == ref[ic * nx + k];
+  }
+  CHECK(nexact == C.shape[0] * nx);
+  auto tp = npy::load<double>("absorption_testpath.npy");
+  for (size_t k = 0; k < nx; k++)
+    CHECK(opg::transmission(refcmp::test_path(), xs[k]) == tp[k]);
+
+  // column depth: T = exp(-X sigma / u) up to round-off; propagator API
+  opg::Propagator<opg::Fast<>> prop;
+  std::vector<double>          c = {-1.0, -0.5, -0.1, 0.3};
+  auto                         X = prop.column_depth(c);
+  auto                         T = prop.transmission(c, {1e-35});
+  for (size_t i = 0; i < c.size(); i++)
+    CHECK(T[i] == doctest::Approx(std::exp(-X[i] * 1e-35 / opg::kAtomicMassUnit))
+                      .epsilon(1e-13));
+  CHECK(X[0] == doctest::Approx(1.1e10).epsilon(0.05));  // through the Earth
+  CHECK(X[3] > 0);  // down-going: the ocean and air above the detector
+  CHECK(X[3] < 2e6);
 }
 
 TEST_CASE("build_hms is bit-identical to OscProb fHms")

@@ -182,6 +182,22 @@ Measured on the reference bins (`tests/test_averaging.cpp`), error vs order:
 (The E column is dominated by a 1–1.5 GeV core-crossing bin spanning ~2
 oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 
+## Absorption
+
+`OscProb::Absorption` is available as flavour- and model-independent
+transmission factors (bit-identical to `Absorption::Trans`):
+
+```python
+e = opg.PremModel()
+T = e.transmission(cosZ, xsec)          # P(no interaction); xsec in cm^2/nucleon
+X = e.column_depth(cosZ)                 # sum rho L in g/cm^2: T = exp(-X xsec / u)
+T = opg.path_transmission(path, xsec)    # fixed path
+```
+
+C++: `opg::transmission(path, xsec)`, `opg::column_depth(path)`
+(`opg/earth/absorption.h`), `Propagator::transmission(cosZ, xsec)` and
+`column_depth(cosZ)`.
+
 ## Gradients
 
 Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
@@ -198,6 +214,8 @@ the model parameters and the Earth model's Z/A per layer type (see
 | NUNM    | mixing, `alpha_ee alpha_mue alpha_taue alpha_mumu alpha_taumu alpha_tautau` (values as in `set_alpha`, diagonal = 1 + value), `ph_mue ph_taue ph_taumu`, `frac_vnc` |
 | Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41` |
 | Decay   | mixing, `alpha2 alpha3` (eV²; at α = 0 the derivative is the one-sided one from α > 0) |
+| LIV     | mixing, `aT<d>_<ab>` / `cT<d>_<ab>` magnitudes and `ph_aT<d>_<ab>` / `ph_cT<d>_<ab>` phases for d = 3..8 (60 in total; default: mixing, aT3, cT4) |
+| SNSI    | NSI's, plus `mlight` (lightest mass, eV; one-sided at 0); default as NSI |
 
 Earth parameters (`earth_parameter_names`, per propagator): `zoa_<t>` for each
 layer type t of the Earth model, i.e. the Z/A of all layers of that type
@@ -214,8 +232,6 @@ row normalisation of α.
 
 Gradients are **off unless requested**: probability-only calls run the same
 code as before and are unaffected, and gradient buffers are only allocated when
-| LIV     | mixing, `aT<d>_<ab>` / `cT<d>_<ab>` magnitudes and `ph_aT<d>_<ab>` / `ph_cT<d>_<ab>` phases for d = 3..8 (60 in total; default: mixing, aT3, cT4) |
-| SNSI    | NSI's, plus `mlight` (lightest mass, eV; one-sided at 0); default as NSI |
 gradients are computed. `-DOPG_ENABLE_GRADIENTS=OFF` compiles them out.
 
 ```python
@@ -230,6 +246,9 @@ P, G = p.probs(), p.grad()        # G[nubar, p, a, b, iC, iE] = dP(a->b)/dp
 
 # Weighted mode: only sum(w * dP/dp) is formed on the device
 g = p.weighted_gradient(w)        # w has the shape of probs(); g[p]
+                                  # w may be a CUDA array (CuPy, PyTorch, ...)
+                                  # on the propagator's GPU: no upload
+d = p.device_probs()              # zero-copy DeviceArray of the GPU results
 
 P, dP = p.prob_points_grad(E_ev, cosZ_ev, nubar_ev)   # dP[p, a, b, i]
 g     = p.weighted_gradient_points(E_ev, cosZ_ev, nubar_ev, w_ev)
@@ -246,9 +265,6 @@ A, dA = p.avg_path_grad(E_edges, 5, path)            # 1D averages, fixed path
 G = p.weighted_gradient_points_binned(E_ev, cosZ_ev, nubar_ev, w_ev, bin_ev, nbins)
 
 p.set_gradient_params(["dm31", "zoa_0", "zoa_1"])   # inner/outer core Z/A
-                                  # w may be a CUDA array (CuPy, PyTorch, ...)
-                                  # on the propagator's GPU: no upload
-d = p.device_probs()              # zero-copy DeviceArray of the GPU results
 ```
 
 C++: `set_gradient_params()`, `calculate(Flavor, /*gradient=*/true)`, `grad()`,
@@ -332,6 +348,8 @@ Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and 
 | NUNM (scale 1) | 4e-14 | 5e-14 | see note below |
 | Sterile 3+1 | 1.1e-11 | 1.1e-11 | dominated by round-off amplified by phases ~1e4 rad at Δm²₄₁ = 1.3 eV²; against a long-double calculation ours is 3–4x closer than OscProb in 3 of 4 test cases and comparable in the 4th |
 | Decay | 1e-14 | 1.6e-14 | |
+| LIV | 7.9e-12 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
+| SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
 
 Other checks: the ported Kopp eigensolver is bit-identical to OscProb's
 `MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;
@@ -348,8 +366,6 @@ brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
 * **Rescaled 3x3 eigensolver.** OscProb calls Kopp's `zheevh3` on the raw
   Hamiltonian in eV (~1e-12); its error test, designed for O(1) matrices,
   then *always* takes the iterative QL fallback. We rescale H to O(1) first
-| LIV | 7.9e-12 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
-| SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
   (2.2x faster on V100; P agrees to ~1e-13). `OPG_OSCPROB_BITWISE=ON` restores
   OscProb's exact call.
 * **NUNM high-scale normalisation** is applied once when parameters are set.

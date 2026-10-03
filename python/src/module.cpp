@@ -481,6 +481,13 @@ NB_MODULE(_oscprobgpu, m)
   m.doc() = "OscProbGPU: CUDA port of OscProb oscillation calculators";
   m.def("cuda_device_count", &opg::cuda_device_count);
   m.def("_dlpack", &dlpack_capsule, "ptr"_a, "shape"_a, "device"_a, "owner"_a);
+  m.def("path_transmission",
+        [](Arr2 seg, double xsec) { return opg::transmission(to_path(seg), xsec); },
+        "path"_a, "xsec"_a,
+        "Probability of no absorption along a fixed path (rows: length km, "
+        "density, ...); xsec in cm^2 per nucleon.");
+  m.def("path_column_depth", [](Arr2 seg) { return opg::column_depth(to_path(seg)); },
+        "path"_a, "Column depth sum rho L (g/cm^2) of a fixed path.");
 #ifdef OPG_HAVE_CUDA
   m.attr("has_cuda") = true;
 #else
@@ -491,6 +498,33 @@ NB_MODULE(_oscprobgpu, m)
       .def(nb::init<const std::string&>(), "filename"_a = "",
            "Spherical-shell Earth model (default: PREM 44 layers).")
       .def("set_det_pos", &opg::PremModel::SetDetPos, "radius_km"_a)
+      .def("column_depth",
+           [](const opg::PremModel& e, Arr1 c) {
+             std::vector<double> x(c.shape(0));
+             for (size_t i = 0; i < x.size(); i++)
+               x[i] = opg::column_depth(e.FillPath(c.data()[i]));
+             return make_array(std::move(x), {x.size()});
+           },
+           "cosT"_a, "Column depth sum rho L (g/cm^2) for each cos(zenith).")
+      .def("transmission",
+           [](const opg::PremModel& e, Arr1 c, nb::handle xsec) {
+             const size_t        n = c.shape(0);
+             std::vector<double> xs;
+             if (nb::isinstance<nb::float_>(xsec) || nb::isinstance<nb::int_>(xsec))
+               xs.assign(n, nb::cast<double>(xsec));
+             else {
+               auto a = nb::cast<Arr1>(xsec);
+               if (a.shape(0) != n) throw std::invalid_argument("transmission: size mismatch");
+               xs.assign(a.data(), a.data() + n);
+             }
+             std::vector<double> t(n);
+             for (size_t i = 0; i < n; i++)
+               t[i] = opg::transmission(e.FillPath(c.data()[i]), xs[i]);
+             return make_array(std::move(t), {n});
+           },
+           "cosT"_a, "xsec"_a,
+           "Probability of no absorption (OscProb Absorption::Trans) for each "
+           "cos(zenith); xsec in cm^2 per nucleon, scalar or one per cosine.")
       .def("set_layer_zoa", &opg::PremModel::SetLayerZoA, "layer"_a, "zoa"_a)
       .def("get_layer_zoa", &opg::PremModel::GetLayerZoA, "layer"_a)
       .def("set_top_layer_size", &opg::PremModel::SetTopLayerSize, "thickness_km"_a)

@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "opg/avg/gauss_legendre.h"
+#include "opg/earth/absorption.h"
 #include "opg/engine.h"
 #include "opg/engine_cpu.h"
 #include "opg/models/all.h"
@@ -267,8 +268,8 @@ namespace opg {
         return g;
       }
 
-
       const Prepared& prepared() const { return fPrepared; }
+
       /// Launch the grid computation (asynchronous on GPU).
       void calculate(Flavor which = Flavor::Both)
       {
@@ -468,6 +469,35 @@ namespace opg {
         prob_path_grad(nodes, path, nubar, pn, dpn);
         out  = average_nodes(pn, size_t(N) * N, nb, nglE, wts);
         dout = average_nodes(dpn, fGradIdx.size() * N * N, nb, nglE, wts);
+      }
+
+      //.......................................................................
+      // Absorption (OscProb::Absorption): flavour- and model-independent
+      // attenuation exp(-sigma X / u) along the Earth path, X = column depth.
+
+      /// Column depth sum rho L (g/cm^2) through the Earth model for each
+      /// cosine of the zenith angle.
+      std::vector<double> column_depth(const std::vector<double>& cosZ) const
+      {
+        std::vector<double> x(cosZ.size());
+        for (size_t i = 0; i < cosZ.size(); i++)
+          x[i] = opg::column_depth(fEarth.FillPath(cosZ[i]));
+        return x;
+      }
+
+      /// Probability of no absorption, xsec in cm^2 per nucleon, for each
+      /// (cosZ[i], xsec[i]); a single xsec applies to all cosines.
+      std::vector<double> transmission(const std::vector<double>& cosZ,
+                                       const std::vector<double>& xsec) const
+      {
+        if (xsec.size() != 1 && xsec.size() != cosZ.size())
+          throw std::invalid_argument("transmission: xsec must have one value or "
+                                      "one per cosine");
+        std::vector<double> t(cosZ.size());
+        for (size_t i = 0; i < cosZ.size(); i++)
+          t[i] = opg::transmission(fEarth.FillPath(cosZ[i]),
+                                   xsec.size() == 1 ? xsec[0] : xsec[i]);
+        return t;
       }
 
       /// Event list through the Earth model. Returns out[a][b][i].

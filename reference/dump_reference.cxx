@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 
+#include "Absorption.h"
 #include "PMNS_Decay.h"
 #include "PMNS_Fast.h"
 #include "PMNS_LIV.h"
@@ -465,6 +466,30 @@ void dump_avgprob_1d(const string& dir)
 }
 
 //.............................................................................
+// OscProb Absorption::Trans on the PREM paths and the test path:
+//   absorption_xsec.npy : [nx] cross sections (cm^2)
+//   absorption_prem.npy : [nC][nx] (grid_cosZ), absorption_testpath.npy : [nx]
+//.............................................................................
+void dump_absorption(const string& dir, PremModel& prem, const vector<double>& C,
+                     const vector<NuPath>& testpath)
+{
+  vector<double> xs = {1e-38, 1e-36, 1e-35, 1e-34, 1e-33};
+  Absorption     a;
+  vector<double> out;
+  for (double c : C) {
+    prem.FillPath(c);
+    a.SetPath(prem.GetNuPath());
+    for (double x : xs) out.push_back(a.Trans(x));
+  }
+  vector<double> tp;
+  a.SetPath(testpath);
+  for (double x : xs) tp.push_back(a.Trans(x));
+  write_npy(dir + "/absorption_xsec.npy", xs, {xs.size()});
+  write_npy(dir + "/absorption_prem.npy", out, {C.size(), xs.size()});
+  write_npy(dir + "/absorption_testpath.npy", tp, {xs.size()});
+}
+
+//.............................................................................
 int main(int argc, char** argv)
 {
   string dir  = argc > 1 ? argv[1] : "tests/data";
@@ -524,6 +549,9 @@ int main(int argc, char** argv)
     dump_prem(p, v.N, prem, C, Eprem, dir + "/" + v.tag + "_prem.npy");
     delete p;
   }
+
+  if (only.empty() || only.find(",absorption,") != string::npos)
+    dump_absorption(dir, prem, C, testpath);
 
   if (!only.empty()) return 0;
 

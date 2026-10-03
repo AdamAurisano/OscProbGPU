@@ -163,3 +163,16 @@ def test_avg_path_vs_oscprob_avgprob(devices):
     for nb in (0, 1):
         A = p.avg_path(edges, 16, TEST_PATH, nubar=bool(nb))  # [a][b][iE]
         assert np.abs(A.transpose(2, 0, 1) - ref[nb]).max() < 5e-4
+
+
+def test_absorption():
+    """OscProb Absorption::Trans on the PREM paths and the test path."""
+    xs, ref, C = load("absorption_xsec.npy"), load("absorption_prem.npy"), load("grid_cosZ.npy")
+    e = opg.PremModel()
+    for k, x in enumerate(xs):
+        assert np.array_equal(e.transmission(C, x), ref[:, k])
+    assert np.array_equal(e.transmission(C, np.full(C.size, xs[2])), ref[:, 2])
+    tp = load("absorption_testpath.npy")
+    assert [opg.path_transmission(TEST_PATH, x) for x in xs] == list(tp)
+    X = e.column_depth(C)
+    assert np.allclose(np.exp(-X * xs[2] / 1.660539066e-24), ref[:, 2], rtol=1e-13, atol=0)
