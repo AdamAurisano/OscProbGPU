@@ -2,8 +2,9 @@
 
 Status as of 2026-10-02: all five models (Fast, NSI, NUNM, Sterile 3+1, Decay)
 validated against OscProb on CPU and GPU; bin averaging; multi-GPU; Python
-bindings. Gradients (G0–G4 + weighted mode) are done for all five models;
-G5 (binned / Earth) is next.
+bindings. Gradients (G0–G5) are done for all five models, including bin
+averages, Earth Z/A and per-analysis-bin weighted modes; G6 (Python docs and
+benchmarks) is next.
 
 ## Gradient plan (remaining)
 
@@ -50,12 +51,15 @@ reconstructing U; on failure it falls back to the dual `expm`
 `alpha3` (8), tested at α = 0 and at a degenerate point (fallback). Cost on
 V100: 17x a probability evaluation with K = 8 (dual-expm only: 44x).
 
-### G5 — Binned / Earth
-* Gradients of `set_bins`/`calculate_binned` and `avg_path` (linear in P: reuse
-  the GL weights).
-* Per-layer-type Z/A parameters (`zoa_<layer>`): seed the segment's zoa in the
-  dual hamiltonian when `seg.layer` matches.
-* Per-analysis-bin weighted variant (one gradient vector per analysis bin).
+### G5 — Binned / Earth (done)
+* `calculate_binned(which, true)` / `binned_grad()`: node-grid gradients
+  reduced with the GL weights; `weighted_gradient_binned()` forms node weights
+  w_bin·wC·wE on the fly (nothing stored); `avg_path_grad()`.
+* `zoa_<type>` parameters: model Hamiltonians take a segment whose Z/A may be
+  dual (`SegmentZ`); each gradient pass (`GradPrepared`) records which
+  direction seeds which layer type. Not in the defaults.
+* `weighted_gradient_points_binned()`: G[bin][p] for event lists, summed per
+  bin in a fixed order (per-event contractions, then one block per bin).
 
 ### G6 — Python, docs, benchmarks for the new models.
 

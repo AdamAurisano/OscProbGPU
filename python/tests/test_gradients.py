@@ -139,3 +139,54 @@ def test_g3_parameter_names():
     assert p.gradient_params == opg.NSI.parameter_names[:15]
     p.set_gradient_params(["coup_d"])
     assert p.gradient_params == ["coup_d"]
+
+
+def test_binned_and_earth_gradients(devices):
+    if not opg.Fast.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    p = set_nominal(opg.Fast(devices=devices))
+    assert p.earth_parameter_names[0] == "zoa_0"
+    assert p.gradient_parameter_names == (opg.Fast.parameter_names +
+                                          p.earth_parameter_names)
+    p.set_gradient_params(["dm31", "zoa_2"])
+    Ee, Ce = np.geomspace(0.6, 20, 9), np.linspace(-1, -0.2, 5)
+    p.set_bins(Ee, Ce, 3, 3)
+    p.calculate_binned_gradient()
+    A, G = p.binned(), p.binned_grad()
+    assert G.shape == (2, 2, 3, 3, 4, 8)
+    w = np.random.default_rng(2).normal(size=A.shape)
+    g = p.weighted_gradient_binned(w)
+    ref = np.einsum("nabce,npabce->p", w, G)
+    scale = np.einsum("nabce,npabce->p", np.abs(w), np.abs(G))
+    assert np.all(np.abs(g - ref) <= 1e-12 * scale)
+    # finite differences of the binned averages in dm31
+    h = 1e-9
+    q = set_nominal(opg.Fast(devices=devices))
+    q.set_bins(Ee, Ce, 3, 3)
+    q.set_dm(3, 2.507e-3 + h); q.calculate_binned(); Ap = q.binned()
+    q.set_dm(3, 2.507e-3 - h); q.calculate_binned(); Am = q.binned()
+    fd = (Ap - Am) / (2 * h)
+    assert np.abs(G[:, 0] - fd).max() / np.abs(fd).max() < 1e-6
+    A1, dA = p.avg_path_grad(np.linspace(0.5, 5, 10), 4, TEST_PATH)
+    assert dA.shape == (2, 3, 3, 9)
+
+
+def test_weighted_points_binned(devices):
+    if not opg.Fast.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    rng = np.random.default_rng(4)
+    n = 500
+    E, C = rng.uniform(0.5, 20, n), rng.uniform(-1, 1, n)
+    nb_ = rng.integers(0, 2, n).astype(np.uint8)
+    w = rng.normal(size=(3, 3, n))
+    bins = rng.integers(-1, 12, n).astype(np.int32)
+    p = set_nominal(opg.Fast(devices=devices))
+    p.set_gradient_params()
+    P, dP = p.prob_points_grad(E, C, nb_)
+    G = p.weighted_gradient_points_binned(E, C, nb_, w, bins, 10)
+    assert G.shape == (10, 6)
+    for b in range(10):
+        m = bins == b
+        ref = np.einsum("abi,pabi->p", w[:, :, m], dP[:, :, :, m])
+        sc = np.einsum("abi,pabi->p", np.abs(w[:, :, m]), np.abs(dP[:, :, :, m]))
+        assert np.all(np.abs(G[b] - ref) <= 1e-12 * sc + 1e-300)

@@ -180,4 +180,20 @@ TEST_CASE("NSI/NUNM prepared values do not depend on the derivative seeds")
   }
 }
 
+
+TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay)
+{
+  opg::Propagator<M> prop;
+  gradtest::check_binned(prop, 1e-6, 1e-13);
+}
+
+
+TEST_CASE_TEMPLATE("Earth Z/A gradients (CPU)", M, gradtest::Fast, gradtest::NSI, gradtest::NUNM,
+                   gradtest::Sterile, gradtest::Decay)
+{
+  opg::Propagator<M> prop;
+  gradtest::check_zoa(prop, 1e-9);
+}
+
 #endif  // OPG_DISABLE_GRADIENTS

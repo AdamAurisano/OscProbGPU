@@ -443,6 +443,209 @@ namespace gradtest {
         }
       CHECK(std::fabs(gwp[p] - s) <= tol_w * sc);
     }
+
+    // per-analysis-bin weighted mode (event list); bins -1 and >= nbins are
+    // ignored
+    const int        nbins = 37;
+    std::vector<int> bin(e.size());
+    for (size_t i = 0; i < e.size(); i++) bin[i] = int((i * 7919) % (nbins + 3)) - 1;
+    auto Gb = prop.weighted_gradient_points_binned(e, c, nb, wp, bin, nbins);
+    REQUIRE(Gb.size() == size_t(nbins) * np);
+    double rb = 0;
+    for (int b = 0; b < nbins; b++)
+      for (size_t p = 0; p < np; p++) {
+        double s = 0, sc = 0;
+        for (size_t i = 0; i < e.size(); i++) {
+          if (bin[i] != b) continue;
+          for (int ab = 0; ab < NN; ab++) {
+            double t = wp[ab * e.size() + i] * dP[(p * NN + ab) * e.size() + i];
+            s += t;
+            sc += std::fabs(t);
+          }
+        }
+        rb = std::max(rb, std::fabs(Gb[size_t(b) * np + p] - s) / std::max(sc, 1e-300));
+      }
+    MESSAGE(std::string(Model::name) << " per-bin weighted gradients vs explicit: " << rb);
+    CHECK(rb < tol_w);
+    CHECK(prop.weighted_gradient_points_binned(e, c, nb, wp, bin, nbins) == Gb);
+  }
+
+  /// Bin-averaged gradients: values unchanged, finite differences of
+  /// binned(), weighted mode, and avg_path_grad.
+  template <class Model>
+  void check_binned(opg::Propagator<Model>& prop, double tol_fd, double tol_w)
+  {
+    constexpr int NN    = Model::N * Model::N;
+    auto          par   = param_points<Model>()[0].second;
+    auto          all   = Model::param_names();
+    std::vector<std::string> names = {"th23", "dm31", all.back()};
+    prop.set_params(par);
+    prop.set_gradient_params(names);
+    const size_t np = names.size();
+    std::vector<double> Ee, Ce;
+    for (int i = 0; i <= 12; i++) Ee.push_back(std::pow(10.0, -0.2 + 1.6 * i / 12));
+    for (int i = 0; i <= 7; i++) Ce.push_back(-1 + 1.2 * i / 7);
+    prop.set_bins(Ee, Ce, 3, 3, opg::EMeasure::Log);
+    const size_t nbin = prop.n_energy_bins() * prop.n_cosine_bins();
+    prop.calculate_binned();
+    std::vector<double> B0(prop.binned(), prop.binned() + 2 * NN * nbin);
+    prop.calculate_binned(opg::Flavor::Both, true);
+    std::vector<double> B1(prop.binned(), prop.binned() + 2 * NN * nbin);
+    CHECK(B0 == B1);
+    std::vector<double> G(prop.binned_grad(), prop.binned_grad() + 2 * np * NN * nbin);
+
+    // central differences of binned() in double precision
+    double worst = 0;
+    for (size_t p = 0; p < np; p++) {
+      const int idx = int(std::find(all.begin(), all.end(), names[p]) - all.begin());
+      auto      at  = [&](double dx) {
+        auto q                         = Model::template cast<double>(par);
+        Model::param_ref(q, idx)      += dx;
+        opg::Propagator<Model> pp(opg::PremModel(), {}, 0);
+        pp.set_params(q);
+        pp.set_bins(Ee, Ce, 3, 3, opg::EMeasure::Log);
+        pp.calculate_binned();
+        return std::vector<double>(pp.binned(), pp.binned() + 2 * NN * nbin);
+      };
+      auto         q0 = Model::template cast<double>(par);
+      const double x0 = Model::param_ref(q0, idx);
+      const double h  = is_ev2(names[p]) ? std::min(std::max(std::fabs(x0), 1e-4) * 1e-6, 3e-9)
+                                         : 1e-6;  // eV^2: small phase change
+      auto         pl = at(h), mi = at(-h);
+      double       m = 0, r = 0;
+      for (int b = 0; b < 2; b++)
+        for (int ab = 0; ab < NN; ab++)
+          for (size_t k = 0; k < nbin; k++) {
+            const double fd = (pl[(b * NN + ab) * nbin + k] - mi[(b * NN + ab) * nbin + k]) /
+                              (2 * h);
+            const double g  = G[((b * np + p) * NN + ab) * nbin + k];
+            m               = std::max(m, std::fabs(g - fd));
+            r               = std::max(r, std::fabs(fd));
+          }
+      worst = std::max(worst, m / std::max(r, grad_floor(names[p])));
+    }
+    MESSAGE(std::string(Model::name) << " binned gradients vs double FD: " << worst);
+    CHECK(worst < tol_fd);
+
+    // weighted binned mode
+    std::vector<double> w(2 * NN * nbin);
+    for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.7 * i + 0.3);
+    auto                gw = prop.weighted_gradient_binned(w);
+    for (size_t p = 0; p < np; p++) {
+      double s = 0, sc = 0;
+      for (int b = 0; b < 2; b++)
+        for (int ab = 0; ab < NN; ab++)
+          for (size_t k = 0; k < nbin; k++) {
+            const double t = w[(b * NN + ab) * nbin + k] * G[((b * np + p) * NN + ab) * nbin + k];
+            s += t;
+            sc += std::fabs(t);
+          }
+      CHECK(std::fabs(gw[p] - s) <= tol_w * sc);
+    }
+
+    // avg_path_grad: GL average of prob_path_grad, and finite differences
+    std::vector<double> edges;
+    for (int i = 0; i <= 15; i++) edges.push_back(0.5 + 0.3 * i);
+    std::vector<double> A, dA;
+    prop.avg_path_grad(edges, 5, refcmp::test_path(), false, A, dA);
+    CHECK(A == prop.avg_path(edges, 5, refcmp::test_path(), false));
+    const size_t nb1 = edges.size() - 1;
+    double       wa  = 0;
+    for (size_t p = 0; p < np; p++) {
+      const int idx = int(std::find(all.begin(), all.end(), names[p]) - all.begin());
+      auto         q0 = Model::template cast<double>(par);
+      const double x0 = Model::param_ref(q0, idx);
+      const double h  = is_ev2(names[p]) ? std::min(std::max(std::fabs(x0), 1e-4) * 1e-6, 3e-9)
+                                         : 1e-6;  // eV^2: small phase change
+      auto         at = [&](double dx) {
+        auto q                    = Model::template cast<double>(par);
+        Model::param_ref(q, idx) += dx;
+        opg::Propagator<Model> pp(opg::PremModel(), {}, 0);
+        pp.set_params(q);
+        return pp.avg_path(edges, 5, refcmp::test_path(), false);
+      };
+      auto   pl = at(h), mi = at(-h);
+      double m = 0, r = 0;
+      for (size_t k = 0; k < NN * nb1; k++) {
+        const double fd = (pl[k] - mi[k]) / (2 * h);
+        m               = std::max(m, std::fabs(dA[p * NN * nb1 + k] - fd));
+        r               = std::max(r, std::fabs(fd));
+      }
+      wa = std::max(wa, m / std::max(r, grad_floor(names[p])));
+    }
+    MESSAGE(std::string(Model::name) << " avg_path gradients vs double FD: " << wa);
+    CHECK(wa < tol_fd);
+  }
+
+  /// Earth Z/A gradients (zoa_<type>) against long-double finite
+  /// differences of the layer Z/A (PREM event list) and of the segment Z/A
+  /// (fixed test path, all segments of type 0), together with a model
+  /// parameter in the same pass.
+  template <class Model> void check_zoa(opg::Propagator<Model>& prop, double tol)
+  {
+    using FL           = typename LongDouble<Model>::type;
+    constexpr int NN   = Model::N * Model::N;
+    auto          par  = param_points<Model>()[0].second;
+    auto          zoas = prop.earth_parameter_names();
+    REQUIRE(!zoas.empty());
+    std::vector<std::string> names = {"dm31"};
+    for (auto& z : zoas) names.push_back(z);
+    prop.set_params(par);
+    prop.set_gradient_params(names);
+    const auto PL = FL::template prepare_generic<LD>(Model::template cast<LD>(par));
+    const LD   h  = 1e-4L;
+    auto       fd = [&](auto&& at) {
+      auto p1 = at(h), m1 = at(-h), p2 = at(2 * h), m2 = at(-2 * h), p3 = at(3 * h),
+           m3 = at(-3 * h);
+      std::vector<LD> g(p1.size());
+      for (size_t i = 0; i < g.size(); i++)
+        g[i] = (45 * (p1[i] - m1[i]) - 9 * (p2[i] - m2[i]) + (p3[i] - m3[i])) / (60 * h);
+      return g;
+    };
+
+    // PREM event list
+    opg::PremModel      prem;
+    Points              pts;
+    std::vector<double> P, dP;
+    prop.prob_points_grad(pts.E, pts.C, pts.nb, P, dP);
+    LDEval<Model> base(prem);
+    std::vector<std::vector<LD>> ref;
+    ref.push_back(base.grads(par, {"dm31"}, pts.E, pts.C, pts.nbi)[0]);
+    for (auto& z : zoas) {
+      const int    t  = std::stoi(z.substr(4));
+      const double z0 = prem.GetLayerZoA(t);
+      ref.push_back(fd([&](LD dx) {
+        opg::PremModel m = prem;
+        m.SetLayerZoA(t, double(z0 + dx));
+        return LDEval<Model>(m).probs(PL, pts.E, pts.C, pts.nbi);
+      }));
+    }
+    size_t       w1 = 0;
+    const double e1 = rel_err(dP, ref, pts.E.size(), NN, names, &w1);
+
+    // fixed test path (all segments of layer type 0)
+    std::vector<double> Ep;
+    for (int i = 0; i < 60; i++) Ep.push_back(std::pow(10.0, -1 + 2.0 * i / 59));
+    std::vector<int>    nbv(Ep.size(), 0);
+    std::vector<double> Cd(Ep.size(), 0.0);
+    prop.set_gradient_params({"zoa_0"});
+    prop.prob_path_grad(Ep, refcmp::test_path(), false, P, dP);
+    std::vector<std::vector<LD>> refp = {fd([&](LD dx) {
+      auto path = refcmp::test_path();
+      for (auto& sg : path) sg.zoa = double(LD(sg.zoa) + dx);
+      return LDEval<Model>(prem, path).probs(PL, Ep, Cd, nbv);
+    })};
+    const double e2 = rel_err(dP, refp, Ep.size(), NN, {"zoa_0"});
+    prop.prob_path_grad(Ep, refcmp::vacuum_path(), false, P, dP);
+    double vmax = 0;
+    for (double x : dP) vmax = std::max(vmax, std::fabs(x));
+
+    MESSAGE(std::string(Model::name) << " Z/A gradients vs long-double FD: PREM " << e1
+                                     << " (" << names[w1] << "), test path " << e2
+                                     << ", vacuum max |dP| " << vmax);
+    CHECK(e1 < tol);
+    CHECK(e2 < tol);
+    CHECK(vmax == 0);
   }
 
 } // namespace gradtest

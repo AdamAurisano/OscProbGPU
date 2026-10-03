@@ -298,6 +298,24 @@ namespace {
              },
              "energies"_a, "cosines"_a, "nubar"_a, "weights"_a,
              "sum of weights[a, b, i] * dP_ab(i)/dp over an event list.")
+        .def("weighted_gradient_points_binned",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_,
+                nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
+                nb::ndarray<const int, nb::ndim<1>, nb::c_contig, nb::device::cpu> bins,
+                int nbins) {
+               w.sync();
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               std::vector<double>  v(wt.data(), wt.data() + wt.size());
+               std::vector<int>     bv(bins.data(), bins.data() + bins.shape(0));
+               auto G = w.prop.weighted_gradient_points_binned(to_vec(E), to_vec(C), nbv,
+                                                               v, bv, nbins);
+               return make_array(std::move(G),
+                                 {size_t(nbins), w.prop.n_gradient_params()});
+             },
+             "energies"_a, "cosines"_a, "nubar"_a, "weights"_a, "bins"_a, "nbins"_a,
+             "Per-analysis-bin weighted gradient: G[b, p] = sum over events i "
+             "with bins[i] == b of weights[a, b, i] * dP_ab(i)/dp (bins outside "
+             "[0, nbins) are ignored).")
         .def("prob_path_grad",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                w.sync();
@@ -309,6 +327,54 @@ namespace {
              },
              "energies"_a, "path"_a, "nubar"_a = false,
              "Fixed path: returns (P[a, b, iE], dP[p, a, b, iE]).")
+        .def_prop_ro("earth_parameter_names",
+                     [](W& w) { return w.prop.earth_parameter_names(); },
+                     "Earth Z/A gradient parameters zoa_<layer type> of this "
+                     "propagator's Earth model (never selected by default).")
+        .def_prop_ro("gradient_parameter_names",
+                     [](W& w) { return w.prop.gradient_parameter_names(); },
+                     "All selectable gradient parameters (model, then Earth).")
+        .def("calculate_binned_gradient",
+             [](W& w, const std::string& fl) {
+               w.sync();
+               w.prop.calculate_binned(parse_flavor(fl), true);
+             },
+             "flavor"_a = "both",
+             "Bin averages and their gradients (see binned() and binned_grad()).")
+        .def("binned_grad",
+             [](W& w) {
+               const double* g  = w.prop.binned_grad();
+               size_t        np = w.prop.n_gradient_params();
+               size_t        nc = w.prop.n_cosine_bins(), ne = w.prop.n_energy_bins();
+               return make_array(std::vector<double>(g, g + 2 * np * N * N * nc * ne),
+                                 {2, np, N, N, nc, ne});
+             },
+             "Binned gradients G[nubar, p, a, b, iCbin, iEbin] (copy).")
+        .def("weighted_gradient_binned",
+             [](W& w, nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
+                const std::string& fl) {
+               w.sync();
+               std::vector<double> v(wt.data(), wt.data() + wt.size());
+               auto g = w.prop.weighted_gradient_binned(v, parse_flavor(fl));
+               return make_array(std::move(g), {g.size()});
+             },
+             "weights"_a, "flavor"_a = "both",
+             "sum of weights * d(bin average)/dp; weights have the shape of "
+             "binned(). Returns one value per gradient parameter.")
+        .def("avg_path_grad",
+             [](W& w, Arr1 Ee, int nE, Arr2 seg, bool nubar, const std::string& meas) {
+               w.sync();
+               std::vector<double> A, dA;
+               w.prop.avg_path_grad(to_vec(Ee), nE, to_path(seg), nubar, A, dA,
+                                    parse_measure(meas));
+               size_t np = w.prop.n_gradient_params(), nb_ = Ee.shape(0) - 1;
+               return nb::make_tuple(make_array(std::move(A), {N, N, nb_}),
+                                     make_array(std::move(dA), {np, N, N, nb_}));
+             },
+             "energy_edges"_a, "n_gl"_a, "path"_a, "nubar"_a = false,
+             "measure"_a = "linear",
+             "1D bin averages for a fixed path with gradients: (A[a, b, iEbin], "
+             "dA[p, a, b, iEbin]).")
         .def("avg_path",
              [](W& w, Arr1 Ee, int nE, Arr2 seg, bool nubar, const std::string& meas) {
                w.sync();

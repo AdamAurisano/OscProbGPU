@@ -158,18 +158,19 @@ namespace opg {
     }
 
     /// Weighted Gauss-Legendre reduction of a node grid into bin averages.
-    /// node: [2][N][N][nCn][nEn] (local C nodes), out: [2][N][N][nCb][nEb].
+    /// node: [2][nch_nb][nCn][nEn] (local C nodes), out: [2][nch_nb][nCb][nEb]
+    /// (nch_nb = N*N for probabilities, npar*N*N for gradients).
     template <class R, int N>
     __global__ void reduce_bins_kernel(const R* __restrict__ node, size_t nCn,
                                        size_t nEn, const R* __restrict__ wE,
                                        const R* __restrict__ wC,
                                        const size_t* __restrict__ offC, int nglE,
                                        size_t nEb, size_t nCb, int nb_first,
-                                       R* __restrict__ out)
+                                       R* __restrict__ out, int nch_nb = N * N)
     {
       const size_t ieb = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
       if (ieb >= nEb) return;
-      const int ch = blockIdx.z + nb_first * N * N;  // channel incl. nubar
+      const int ch = blockIdx.z + nb_first * nch_nb;  // channel incl. nubar
       for (size_t icb = blockIdx.y; icb < nCb; icb += gridDim.y) {
         const R* pc  = node + size_t(ch) * nCn * nEn;
         R        acc = 0;
@@ -274,6 +275,43 @@ namespace opg {
       block_reduce_store<R, K, kBlockE>(acc, partial + blk * K);
     }
 
+    /// Weighted gradient over the GL node grid of the bins, with node
+    /// weights w_bin(channel, C bin of the row, E bin) * wC[row] * wE[ie]
+    /// formed on the fly (w: [2][N][N][nCb_local][nEb]).
+    template <class Model, class R, int K>
+    __global__ void nodes_wgrad_kernel(const typename Model::Prepared P,
+                                       const typename GradArg<Model>::type PDa,
+                                       const EarthView<R> earth, const R* __restrict__ E,
+                                       int nE, const R* __restrict__ C, int nC,
+                                       const R* __restrict__ wE, const R* __restrict__ wC,
+                                       const int* __restrict__ binOfRow, int nglE,
+                                       int nCb, int nEb, int nb_first,
+                                       const R* __restrict__ w, R* __restrict__ partial)
+    {
+      const auto&   PD = GradArg<Model>::get(PDa);
+      constexpr int N  = Model::N;
+      const int     nb = nb_first + blockIdx.z;
+      const int     ie = blockIdx.x * blockDim.x + threadIdx.x;
+      R             acc[K] = {};
+      if (ie < nE) {
+        const int ieb = ie / nglE;
+        for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+          Mat<N, R> S, dS[K];
+          evolve_prem_grad<Model, R, K>(P, PD, earth, E[ie], C[ic], nb == 1, S, dS);
+          const R   f   = wC[ic] * wE[ie];
+          const int icb = binOfRow[ic];
+          R         wn[N * N];
+          for (int ab = 0; ab < N * N; ab++)
+            wn[ab] = w[((size_t(nb) * N * N + ab) * nCb + icb) * nEb + ieb] * f;
+          R a[K];
+          contract_grads<N, R, K>(S, dS, wn, 1, a);
+          for (int k = 0; k < K; k++) acc[k] += a[k];
+        }
+      }
+      const size_t blk = (size_t(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+      block_reduce_store<R, K, kBlockE>(acc, partial + blk * K);
+    }
+
     template <class Model, class R, int K>
     __global__ void points_grad_kernel(const typename Model::Prepared         P,
                                        const typename GradArg<Model>::type PDa,
@@ -314,6 +352,44 @@ namespace opg {
         for (int k = 0; k < K; k++) acc[k] += a[k];
       }
       block_reduce_store<R, K, 128>(acc, partial + size_t(blockIdx.x) * K);
+    }
+
+    /// Per-event weighted contractions contrib[i][k] (events with bin < 0
+    /// are skipped).
+    template <class Model, class R, int K>
+    __global__ void points_contrib_kernel(const typename Model::Prepared P,
+                                          const typename GradArg<Model>::type PDa,
+                                          const EarthView<R> earth, const R* __restrict__ E,
+                                          const R* __restrict__ C,
+                                          const uint8_t* __restrict__ nubar,
+                                          const int* __restrict__ bin, size_t n,
+                                          const R* __restrict__ w, R* __restrict__ contrib)
+    {
+      const auto&   PD = GradArg<Model>::get(PDa);
+      constexpr int N  = Model::N;
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x) {
+        if (bin[i] < 0) continue;
+        Mat<N, R> S, dS[K];
+        evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS);
+        R a[K];
+        contract_grads<N, R, K>(S, dS, w + i, n, a);
+        for (int k = 0; k < K; k++) contrib[i * K + k] = a[k];
+      }
+    }
+
+    /// One block per analysis bin: sum contrib over the bin's events
+    /// (indices perm[start[b] .. start[b+1])) in a fixed order.
+    template <class R, int K>
+    __global__ void bin_sum_kernel(const R* __restrict__ contrib,
+                                   const int* __restrict__ perm,
+                                   const int* __restrict__ start, R* __restrict__ out)
+    {
+      const int b      = blockIdx.x;
+      R         acc[K] = {};
+      for (int j = start[b] + threadIdx.x; j < start[b + 1]; j += blockDim.x)
+        for (int k = 0; k < K; k++) acc[k] += contrib[size_t(perm[j]) * K + k];
+      block_reduce_store<R, K, 128>(acc, out + size_t(b) * K);
     }
 
     template <class Model, class R, int K>
@@ -485,6 +561,7 @@ namespace opg {
           D.binned.host.resize(D.binned.probs.n);
           OPG_CUDA(cudaStreamSynchronize(D.stream));
         }
+        fBinnedGradValid = false;
         if (nd > 1) fBinned.resize(2 * N * N * B.nCb * B.nEb);
         for (size_t k = 0; k < nd && nd > 1; k++) fDev[k]->binned.host.release();
         fBinnedValid = false;
@@ -804,6 +881,217 @@ namespace opg {
         }
       }
 
+      void calculate_binned_grad(const Prepared& P, const Chunks& chunks, int npar,
+                                 Flavor which) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          check_param_size();
+          upload_chunks(chunks);
+          const int lo = (int(which) & 1) ? 0 : 1;
+          const int hi = (int(which) & 2) ? 1 : 0;
+          if (hi < lo) return;
+          fNpar            = npar;
+          const size_t nEn = fBins.nodesE.size();
+          for (auto& Dp : fDev) {
+            Device& D = *Dp;
+            Slab&   G = D.nodes;
+            D.bgslab.rows = D.binned.rows;
+            if (D.binned.rows.empty()) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            const size_t nrow = G.C.n, ncb = D.binned.rows.size();
+            D.ngrad.resize(D.id, 2 * size_t(npar) * N * N * nrow * nEn);
+            D.bgslab.probs.resize(D.id, 2 * size_t(npar) * N * N * ncb * fBins.nEb);
+            if (fDev.size() == 1) D.bgslab.host.resize(D.bgslab.probs.n);
+            dim3 block(kBlockE);
+            dim3 grid(unsigned((nEn + kBlockE - 1) / kBlockE),
+                      unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
+            for (size_t c = 0; c < chunks.size(); c++) {
+              grid_grad_kernel<Model, R, GK><<<grid, block, 0, D.stream>>>(
+                  P, pd_arg(D, chunks, c), D.earth, G.E.ptr, int(nEn), G.C.ptr, int(nrow),
+                  lo, npar, chunks[c].offset, chunks[c].count, c == 0, G.probs.ptr,
+                  D.ngrad.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
+            dim3 rblock(64);
+            dim3 rgrid(unsigned((fBins.nEb + 63) / 64), unsigned(std::min<size_t>(ncb, 65535)),
+                       unsigned((hi - lo + 1) * N * N));
+            reduce_bins_kernel<R, N><<<rgrid, rblock, 0, D.stream>>>(
+                G.probs.ptr, nrow, nEn, D.wE.ptr, D.wC.ptr, D.offC.ptr, fBins.nglE,
+                fBins.nEb, ncb, lo, D.binned.probs.ptr);
+            OPG_CUDA(cudaGetLastError());
+            rgrid.z = unsigned((hi - lo + 1) * npar * N * N);
+            reduce_bins_kernel<R, N><<<rgrid, rblock, 0, D.stream>>>(
+                D.ngrad.ptr, nrow, nEn, D.wE.ptr, D.wC.ptr, D.offC.ptr, fBins.nglE,
+                fBins.nEb, ncb, lo, D.bgslab.probs.ptr, npar * N * N);
+            OPG_CUDA(cudaGetLastError());
+          }
+          if (fDev.size() > 1)
+            fBinnedGradFull.resize(2 * size_t(npar) * N * N * fBins.nCb * fBins.nEb);
+          fBinnedValid     = false;
+          fBinnedGradValid = false;
+        }
+      }
+
+      const R* host_binned_grad() override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          return gather(&Device::bgslab, fBins.nCb, fBins.nEb, fBinnedGradFull,
+                        fBinnedGradValid, 2 * size_t(fNpar) * N * N);
+        }
+      }
+
+      const R* device_binned_grad(int k) override
+      {
+        if (k < 0 || k >= int(fDev.size())) return nullptr;
+        return fDev[k]->bgslab.probs.ptr;
+      }
+
+      void weighted_grad_binned(const Prepared& P, const Chunks& chunks, int npar,
+                                Flavor which, const R* w, R* g) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          check_param_size();
+          upload_chunks(chunks);
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          const int lo = (int(which) & 1) ? 0 : 1;
+          const int hi = (int(which) & 2) ? 1 : 0;
+          if (hi < lo) return;
+          const size_t nd = fDev.size(), nEn = fBins.nodesE.size();
+          const size_t nCb = fBins.nCb, nEb = fBins.nEb;
+          // bin weights of each device's C bins, [2][N][N][ncb][nEb], and the
+          // local C bin of each local node row
+          for (size_t k = 0; k < nd; k++) {
+            Device& D = *fDev[k];
+            if (D.binned.rows.empty()) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            const size_t ncb = D.binned.rows.size();
+            std::vector<R> wl(2 * N * N * ncb * nEb);
+            for (size_t ch = 0; ch < size_t(2 * N * N); ch++)
+              for (size_t r = 0; r < ncb; r++)
+                std::copy(w + (ch * nCb + D.binned.rows[r]) * nEb,
+                          w + (ch * nCb + D.binned.rows[r] + 1) * nEb,
+                          wl.begin() + (ch * ncb + r) * nEb);
+            std::vector<int> bor;
+            for (size_t r = 0; r < ncb; r++) {
+              const size_t icb = D.binned.rows[r];
+              for (size_t rc = fBins.offC[icb]; rc < fBins.offC[icb + 1]; rc++)
+                bor.push_back(int(r));
+            }
+            D.wts.upload(D.id, wl.data(), wl.size(), D.stream);
+            D.binOfRow.upload(D.id, bor.data(), bor.size(), D.stream);
+            OPG_CUDA(cudaStreamSynchronize(D.stream));
+          }
+          for (size_t c = 0; c < chunks.size(); c++) {
+            for (size_t k = 0; k < nd; k++) {
+              Device& D = *fDev[k];
+              if (D.binned.rows.empty() || nEn == 0) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              const size_t nrow = D.nodes.C.n;
+              dim3 grid(unsigned((nEn + kBlockE - 1) / kBlockE),
+                        unsigned(std::min<size_t>(nrow, 4096)), unsigned(hi - lo + 1));
+              const size_t nblk = size_t(grid.x) * grid.y * grid.z;
+              D.partial.resize(D.id, nblk * GK);
+              nodes_wgrad_kernel<Model, R, GK><<<grid, dim3(kBlockE), 0, D.stream>>>(
+                  P, pd_arg(D, chunks, c), D.earth, D.nodes.E.ptr, int(nEn),
+                  D.nodes.C.ptr, int(nrow), D.wE.ptr, D.wC.ptr, D.binOfRow.ptr,
+                  fBins.nglE, int(D.binned.rows.size()), int(nEb), lo, D.wts.ptr,
+                  D.partial.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
+            sum_partials(chunks[c], g);
+          }
+        }
+      }
+
+      void weighted_grad_points_binned(const Prepared& P, const Chunks& chunks,
+                                       int npar, const R* E, const R* cosZ,
+                                       const uint8_t* nubar, size_t n, const R* w,
+                                       const int* bin, int nbins, R* G) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          check_param_size();
+          upload_chunks(chunks);
+          std::fill(G, G + size_t(nbins) * npar, R(0));
+          if (nbins <= 0) return;
+          const size_t nd = fDev.size(), chunk = (n + nd - 1) / nd;
+          std::vector<size_t> off(nd), cnt(nd);
+          for (size_t k = 0; k < nd; k++) {
+            off[k] = std::min(n, k * chunk);
+            cnt[k] = std::min(n, off[k] + chunk) - off[k];
+            Device& D = *fDev[k];
+            if (!cnt[k]) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            D.pE.upload(D.id, E + off[k], cnt[k], D.stream);
+            D.pC.upload(D.id, cosZ + off[k], cnt[k], D.stream);
+            D.pNb.upload(D.id, nubar + off[k], cnt[k], D.stream);
+            std::vector<R> loc(N * N * cnt[k]);
+            for (int ab = 0; ab < N * N; ab++)
+              std::copy(w + ab * n + off[k], w + ab * n + off[k] + cnt[k],
+                        loc.begin() + ab * cnt[k]);
+            D.wts.upload(D.id, loc.data(), loc.size(), D.stream);
+            // local bins (out of range -> -1) and events grouped by bin
+            std::vector<int> lb(cnt[k]), start(size_t(nbins) + 1, 0), perm;
+            for (size_t i = 0; i < cnt[k]; i++) {
+              const int b = bin[off[k] + i];
+              lb[i]       = (b >= 0 && b < nbins) ? b : -1;
+              if (lb[i] >= 0) start[size_t(lb[i]) + 1]++;
+            }
+            for (int b = 0; b < nbins; b++) start[b + 1] += start[b];
+            perm.resize(size_t(start[nbins]));
+            std::vector<int> fill(start.begin(), start.end() - 1);
+            for (size_t i = 0; i < cnt[k]; i++)
+              if (lb[i] >= 0) perm[size_t(fill[lb[i]]++)] = int(i);
+            D.pBin.upload(D.id, lb.data(), lb.size(), D.stream);
+            D.binStart.upload(D.id, start.data(), start.size(), D.stream);
+            D.binPerm.upload(D.id, perm.data(), perm.size(), D.stream);
+            D.contrib.resize(D.id, cnt[k] * GK);
+            OPG_CUDA(cudaStreamSynchronize(D.stream));
+          }
+          for (size_t c = 0; c < chunks.size(); c++) {
+            for (size_t k = 0; k < nd; k++) {
+              Device& D = *fDev[k];
+              if (!cnt[k]) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              points_contrib_kernel<Model, R, GK>
+                  <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
+                      P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
+                      D.pBin.ptr, cnt[k], D.wts.ptr, D.contrib.ptr);
+              OPG_CUDA(cudaGetLastError());
+              D.partial.resize(D.id, size_t(nbins) * GK);
+              if (D.binPerm.n)
+                bin_sum_kernel<R, GK><<<unsigned(nbins), 128, 0, D.stream>>>(
+                    D.contrib.ptr, D.binPerm.ptr, D.binStart.ptr, D.partial.ptr);
+              else
+                OPG_CUDA(cudaMemsetAsync(D.partial.ptr, 0, D.partial.n * sizeof(R),
+                                         D.stream));
+              OPG_CUDA(cudaGetLastError());
+            }
+            // add device partials in a fixed order
+            const auto& ch = chunks[c];
+            for (size_t k = 0; k < nd; k++) {
+              Device& D = *fDev[k];
+              if (!cnt[k]) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              D.partialHost.resize(D.partial.n);
+              OPG_CUDA(cudaMemcpyAsync(D.partialHost.data(), D.partial.ptr,
+                                       D.partial.n * sizeof(R), cudaMemcpyDeviceToHost,
+                                       D.stream));
+              OPG_CUDA(cudaStreamSynchronize(D.stream));
+              for (int b = 0; b < nbins; b++)
+                for (int kk = 0; kk < ch.count; kk++)
+                  G[size_t(b) * npar + ch.offset + kk] += D.partialHost[size_t(b) * GK + kk];
+            }
+          }
+        }
+      }
+
     private:
       /// A (E x cosZ-rows) grid resident on one device.
       struct Slab {
@@ -822,6 +1110,11 @@ namespace opg {
           Slab               nodes;     ///< GL node grid (rows = C nodes)
           Slab               binned;    ///< reduced bins (rows = C bins)
           Slab               gslab;     ///< grid gradients (rows as grid)
+          Slab               bgslab;    ///< binned gradients (rows as binned)
+          DevBuf<R>          ngrad;     ///< node-grid gradients (binned mode)
+          DevBuf<int>        binOfRow;  ///< local C bin of each node row
+          DevBuf<int>        pBin, binStart, binPerm;  ///< per-bin event lists
+          DevBuf<R>          contrib;   ///< per-event weighted contractions
           DevBuf<R>          wts;       ///< weights for weighted gradients
           DevBuf<typename grad_traits<Model>::Prepared> pd;  ///< dual states (GradArg)
           PinnedBuf<R>       wtsHost;   ///< pinned staging for wts
@@ -975,6 +1268,8 @@ namespace opg {
       std::vector<std::unique_ptr<Device>> fDev;
       PinnedBuf<R>                         fProbs, fBinned;  ///< multi-GPU results
       PinnedBuf<R>                         fGradFull;        ///< multi-GPU gradients
+      PinnedBuf<R>                         fBinnedGradFull;  ///< multi-GPU binned grads
+      bool                                 fBinnedGradValid = false;
       std::vector<typename grad_traits<Model>::Prepared> fPDHost;  ///< staging (GradArg)
       int                                  fNpar      = 0;
       bool                                 fGradValid = false;

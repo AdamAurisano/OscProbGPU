@@ -181,14 +181,14 @@ namespace opg {
       }
 
       /// Port of PMNS_NUNM::UpdateHam (upper triangle + diagonal), for any
-      /// scalar type S of the prepared state.
-      template <class S>
+      /// scalar type S of the prepared state and segment type Seg.
+      template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
-                                                bool nubar, const Segment<R>& s,
+                                                bool nubar, const Seg& s,
                                                 Mat<3, S>& H)
       {
-        const R rho = s.density;
-        const R zoa = s.zoa;
+        const R    rho = s.density;
+        const auto zoa = s.zoa;
         const S lv  = S(2 * R(constants::kGeV2eV) * E);  // 2*E in eV
 
         // Electron matter potential
@@ -198,7 +198,7 @@ namespace opg {
         // Neutron matter potential
         S kr2GNn = P.common.vfac;
         kr2GNn *= rho;
-        kr2GNn *= (1 - zoa);
+        kr2GNn *= (R(1) - zoa);
         kr2GNn /= R(2);
         kr2GNn *= P.fracVnc;
 
@@ -256,8 +256,8 @@ namespace opg {
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
                                               R E, bool nubar,
-                                              const Segment<R>& s, Mat<3, R>& S,
-                                              Mat<3, R> (&dS)[K])
+                                              const SegmentZ<R, Dual<R, K>>& s,
+                                              Mat<3, R>& S, Mat<3, R> (&dS)[K])
       {
         hermitian3_step_grad<NUNM, R, K>(P, PD, E, nubar, s, S, dS);
       }

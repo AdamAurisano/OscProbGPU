@@ -91,6 +91,14 @@ namespace opg {
       {
         fEarth = earth;
         fEngine->set_earth(earth);
+        fZoaTypes.clear();
+        for (const auto& l : fEarth.GetLayers())
+          if (std::find(fZoaTypes.begin(), fZoaTypes.end(), l.type) == fZoaTypes.end())
+            fZoaTypes.push_back(l.type);
+        std::sort(fZoaTypes.begin(), fZoaTypes.end());
+        // the meaning of zoa_<type> parameters may have changed
+        if (!fGradNames.empty()) set_gradient_params(std::vector<std::string>(fGradNames));
+        fChunksValid = false;
       }
 
       const PremModel& earth() const { return fEarth; }
@@ -126,10 +134,32 @@ namespace opg {
         else return {};
       }
 
+      /// Z/A parameters of the Earth model: zoa_<type> for each layer type
+      /// (PremModel::SetLayerZoA). The derivative with respect to zoa_<t> is
+      /// that of changing the Z/A of all layers of type t together; for
+      /// fixed paths it applies to segments whose `layer` is t.
+      std::vector<std::string> earth_parameter_names() const
+      {
+        if constexpr (!grad_traits<Model>::enabled) return {};
+        std::vector<std::string> n;
+        for (int t : fZoaTypes) n.push_back("zoa_" + std::to_string(t));
+        return n;
+      }
+
+      /// All parameters set_gradient_params() accepts: parameter_names()
+      /// followed by earth_parameter_names().
+      std::vector<std::string> gradient_parameter_names() const
+      {
+        auto n = parameter_names();
+        for (auto& e : earth_parameter_names()) n.push_back(e);
+        return n;
+      }
+
       /// The parameters set_gradient_params() selects when called without
       /// arguments: all of parameter_names() except those a model leaves
       /// out by default (Model::default_param_names(), e.g. NSI's fermion
-      /// couplings, which are rarely fitted).
+      /// couplings, which are rarely fitted). Earth Z/A parameters are never
+      /// selected by default.
       static std::vector<std::string> default_gradient_params()
       {
         if constexpr (!grad_traits<Model>::enabled) return {};
@@ -143,15 +173,15 @@ namespace opg {
       void set_gradient_params() { set_gradient_params(default_gradient_params()); }
 
       /// Select the parameters to differentiate with respect to, by name
-      /// (see parameter_names()). An empty list turns gradients off and
-      /// frees the gradient buffers.
+      /// (see gradient_parameter_names()). An empty list turns gradients off
+      /// and frees the gradient buffers.
       void set_gradient_params(const std::vector<std::string>& names)
       {
         if (!names.empty() && !has_gradients())
           throw std::logic_error("opg::Propagator: gradients are not available "
                                  "for this model (or were disabled at build "
                                  "time)");
-        auto all = parameter_names();
+        auto all = gradient_parameter_names();
         std::vector<int> idx;
         for (auto& n : names) {
           auto it = std::find(all.begin(), all.end(), n);
@@ -334,6 +364,39 @@ namespace opg {
         fEngine->calculate_binned(fPrepared, which);
       }
 
+      /// Launch the bin-averaged computation; with gradient = true also the
+      /// bin-averaged derivatives for the selected parameters (see
+      /// binned_grad()).
+      void calculate_binned(Flavor which, bool gradient)
+      {
+        if (!gradient) return calculate_binned(which);
+        require_params();
+        fEngine->calculate_binned_grad(fPrepared, chunks(), int(fGradIdx.size()), which);
+      }
+
+      /// Bin-averaged gradients grad[nubar][p][a][b][iCb][iEb]; waits.
+      const R* binned_grad() { return fEngine->host_binned_grad(); }
+      const R* device_binned_grad(int device_index = 0)
+      {
+        return fEngine->device_binned_grad(device_index);
+      }
+
+      /// Weighted bin-averaged gradient: g[p] = sum w * d(avg P)/dp over all
+      /// bins and channels, w in the layout of binned(). Nothing per bin or
+      /// node is stored.
+      std::vector<R> weighted_gradient_binned(const std::vector<R>& w,
+                                              Flavor which = Flavor::Both)
+      {
+        require_params();
+        if (w.size() != 2 * size_t(N) * N * fNCb * fNEb)
+          throw std::invalid_argument("weighted_gradient_binned: weights must "
+                                      "have the layout of binned()");
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad_binned(fPrepared, chunks(), int(fGradIdx.size()), which,
+                                      w.data(), g.data());
+        return g;
+      }
+
       /// Host array avg[nubar][a][b][iCbin][iEbin]; waits for completion.
       const R* binned() { return fEngine->host_binned(); }
 
@@ -359,37 +422,24 @@ namespace opg {
                               EMeasure measure = EMeasure::Linear)
       {
         require_params();
-        if (Eedges.size() < 2 || nglE < 1)
-          throw std::invalid_argument("avg_path: bad binning");
-        const size_t        nb = Eedges.size() - 1;
-        GaussLegendre       gl(nglE);
-        std::vector<double> x, w;
-        std::vector<R>      nodes, wts;
-        for (size_t b = 0; b < nb; b++) {
-          double lo = Eedges[b], hi = Eedges[b + 1], ulo, uhi;
-          if (!(hi > lo) || lo <= 0)
-            throw std::invalid_argument("avg_path: bad E edges");
-          if (measure == EMeasure::Linear) { ulo = lo; uhi = hi; }
-          else if (measure == EMeasure::Log) { ulo = std::log(lo); uhi = std::log(hi); }
-          else { ulo = 1 / hi; uhi = 1 / lo; }
-          gl.map(ulo, uhi, x, w);
-          for (int i = 0; i < nglE; i++) {
-            nodes.push_back(R(measure == EMeasure::Linear ? x[i]
-                              : measure == EMeasure::Log  ? std::exp(x[i])
-                                                          : 1 / x[i]));
-            wts.push_back(R(w[i] / (uhi - ulo)));
-          }
-        }
+        std::vector<R> nodes, wts;
+        const size_t   nb = path_nodes(Eedges, nglE, measure, nodes, wts);
         std::vector<R> pn = prob_path(nodes, path, nubar);  // [a][b][node]
-        std::vector<R> out(size_t(N) * N * nb, R(0));
-        for (size_t ch = 0; ch < size_t(N) * N; ch++)
-          for (size_t b = 0; b < nb; b++) {
-            R acc = 0;
-            for (int i = 0; i < nglE; i++)
-              acc += wts[b * nglE + i] * pn[ch * nodes.size() + b * nglE + i];
-            out[ch * nb + b] = acc;
-          }
-        return out;
+        return average_nodes(pn, size_t(N) * N, nb, nglE, wts);
+      }
+
+      /// avg_path with gradients: out[a][b][iEbin], dout[p][a][b][iEbin].
+      void avg_path_grad(const std::vector<double>& Eedges, int nglE,
+                         const std::vector<Segment<R>>& path, bool nubar,
+                         std::vector<R>& out, std::vector<R>& dout,
+                         EMeasure measure = EMeasure::Linear)
+      {
+        require_params();
+        std::vector<R> nodes, wts, pn, dpn;
+        const size_t   nb = path_nodes(Eedges, nglE, measure, nodes, wts);
+        prob_path_grad(nodes, path, nubar, pn, dpn);
+        out  = average_nodes(pn, size_t(N) * N, nb, nglE, wts);
+        dout = average_nodes(dpn, fGradIdx.size() * N * N, nb, nglE, wts);
       }
 
       /// Event list through the Earth model. Returns out[a][b][i].
@@ -438,6 +488,30 @@ namespace opg {
         return g;
       }
 
+      /// Per-analysis-bin weighted gradient over an event list:
+      /// G[b][p] = sum over events i in bin b (bin[i] in [0, nbins); other
+      /// events are ignored) of sum_ab w[a][b][i] dP_ab(i)/dp. Suited to
+      /// likelihoods that need dN_b/dp for each analysis bin b.
+      std::vector<R> weighted_gradient_points_binned(const std::vector<R>& E,
+                                                     const std::vector<R>& cosZ,
+                                                     const std::vector<uint8_t>& nubar,
+                                                     const std::vector<R>& w,
+                                                     const std::vector<int>& bin,
+                                                     int nbins)
+      {
+        require_params();
+        check_points(E, cosZ, nubar);
+        if (w.size() != size_t(N) * N * E.size() || bin.size() != E.size())
+          throw std::invalid_argument("weighted_gradient_points_binned: weights "
+                                      "must be [N][N][n] and bins [n]");
+        if (nbins < 0) throw std::invalid_argument("weighted_gradient_points_binned: nbins < 0");
+        std::vector<R> G(size_t(nbins) * fGradIdx.size(), R(0));
+        fEngine->weighted_grad_points_binned(fPrepared, chunks(), int(fGradIdx.size()),
+                                             E.data(), cosZ.data(), nubar.data(), E.size(),
+                                             w.data(), bin.data(), nbins, G.data());
+        return G;
+      }
+
       /// Fixed path with gradients: P[a][b][iE] and dP[p][a][b][iE].
       void prob_path_grad(const std::vector<R>& E, const std::vector<Segment<R>>& path,
                           bool nubar, std::vector<R>& P, std::vector<R>& dP)
@@ -481,13 +555,20 @@ namespace opg {
             constexpr int K = grad_traits<Model>::K;
             using D         = Dual<R, K>;
             fChunks.clear();
+            const int nmodel = int(parameter_names().size());
             for (size_t off = 0; off < fGradIdx.size(); off += K) {
               auto pd = Model::template cast<D>(fParams);
               int  cnt = int(std::min<size_t>(K, fGradIdx.size() - off));
-              for (int k = 0; k < cnt; k++)
-                Model::template param_ref<D>(pd, fGradIdx[off + k]).d[k] += R(1);
               GradChunk<Model> c;
-              c.P      = Model::template prepare_generic<D>(pd);
+              for (int k = 0; k < K; k++) c.P.zoa_type[k] = -1;
+              for (int k = 0; k < cnt; k++) {
+                const int idx = fGradIdx[off + k];
+                if (idx < nmodel)
+                  Model::template param_ref<D>(pd, idx).d[k] += R(1);
+                else
+                  c.P.zoa_type[k] = fZoaTypes[idx - nmodel];
+              }
+              c.P.P    = Model::template prepare_generic<D>(pd);
               c.offset = int(off);
               c.count  = cnt;
               fChunks.push_back(c);
@@ -496,6 +577,52 @@ namespace opg {
           }
         }
         return fChunks;
+      }
+
+      /// Gauss-Legendre nodes and normalised weights for 1D E bins.
+      static size_t path_nodes(const std::vector<double>& Eedges, int nglE,
+                               EMeasure measure, std::vector<R>& nodes,
+                               std::vector<R>& wts)
+      {
+        if (Eedges.size() < 2 || nglE < 1)
+          throw std::invalid_argument("avg_path: bad binning");
+        const size_t        nb = Eedges.size() - 1;
+        GaussLegendre       gl(nglE);
+        std::vector<double> x, w;
+        nodes.clear();
+        wts.clear();
+        for (size_t b = 0; b < nb; b++) {
+          double lo = Eedges[b], hi = Eedges[b + 1], ulo, uhi;
+          if (!(hi > lo) || lo <= 0)
+            throw std::invalid_argument("avg_path: bad E edges");
+          if (measure == EMeasure::Linear) { ulo = lo; uhi = hi; }
+          else if (measure == EMeasure::Log) { ulo = std::log(lo); uhi = std::log(hi); }
+          else { ulo = 1 / hi; uhi = 1 / lo; }
+          gl.map(ulo, uhi, x, w);
+          for (int i = 0; i < nglE; i++) {
+            nodes.push_back(R(measure == EMeasure::Linear ? x[i]
+                              : measure == EMeasure::Log  ? std::exp(x[i])
+                                                          : 1 / x[i]));
+            wts.push_back(R(w[i] / (uhi - ulo)));
+          }
+        }
+        return nb;
+      }
+
+      /// out[ch][b] = sum_i wts[b nglE + i] in[ch][b nglE + i]
+      static std::vector<R> average_nodes(const std::vector<R>& in, size_t nch,
+                                          size_t nb, int nglE, const std::vector<R>& wts)
+      {
+        const size_t   nn = nb * size_t(nglE);
+        std::vector<R> out(nch * nb, R(0));
+        for (size_t ch = 0; ch < nch; ch++)
+          for (size_t b = 0; b < nb; b++) {
+            R acc = 0;
+            for (int i = 0; i < nglE; i++)
+              acc += wts[b * nglE + i] * in[ch * nn + b * nglE + i];
+            out[ch * nb + b] = acc;
+          }
+        return out;
       }
 
       void require_params() const
@@ -511,6 +638,7 @@ namespace opg {
       Params                              fParams{};
       std::vector<std::string>            fGradNames;
       std::vector<int>                    fGradIdx;
+      std::vector<int>                    fZoaTypes;  ///< layer types (zoa_<t>)
       std::vector<GradChunk<Model>>       fChunks;
       bool                                fChunksValid = false;
       bool                                fHaveParams = false;

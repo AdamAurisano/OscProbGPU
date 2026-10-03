@@ -26,6 +26,26 @@ namespace opg {
     struct NoGradPrepared {};
   } // namespace detail
 
+  /// The state of one gradient pass: the model's prepared state in dual
+  /// numbers, plus, for each derivative direction k, the layer type whose
+  /// Z/A it differentiates (-1: none; the Z/A of segments of that type is
+  /// seeded in direction k).
+  template <class Model, int K> struct GradPrepared {
+      typename Model::template PreparedT<Dual<typename Model::Real, K>> P;
+      int zoa_type[K];
+  };
+
+  /// Segment with Z/A seeded according to G.zoa_type.
+  template <class Model, class R, int K>
+  OPG_HD OPG_INLINE SegmentZ<R, Dual<R, K>> seed_segment(const GradPrepared<Model, K>& G,
+                                                         const Segment<R>& s)
+  {
+    SegmentZ<R, Dual<R, K>> sd{s.length, s.density, Dual<R, K>(s.zoa), s.layer};
+    OPG_UNROLL
+    for (int k = 0; k < K; k++) sd.zoa.d[k] = G.zoa_type[k] == s.layer ? R(1) : R(0);
+    return sd;
+  }
+
   template <class Model, class = void> struct grad_traits {
       static constexpr bool enabled = false;
       static constexpr int  K       = 1;
@@ -38,41 +58,39 @@ namespace opg {
       static constexpr bool enabled = true;
       static constexpr int  K       = Model::grad_chunk;
       using Dual_                   = Dual<typename Model::Real, K>;
-      using Prepared = typename Model::template PreparedT<Dual_>;
+      using Prepared = GradPrepared<Model, K>;
   };
 #endif
 
   /// Values and derivatives (columns of S and dS_k) through a PREM path.
   /// The value part S is computed exactly as by evolve_prem.
   template <class Model, class R, int K>
-  OPG_HD inline void evolve_prem_grad(
-      const typename Model::Prepared&                       P,
-      const typename Model::template PreparedT<Dual<R, K>>& PD,
-      const EarthView<R>& earth, R E, R cosZ, bool nubar,
-      Mat<Model::N, R>& S, Mat<Model::N, R> (&dS)[K])
+  OPG_HD inline void evolve_prem_grad(const typename Model::Prepared& P,
+                                      const GradPrepared<Model, K>& G,
+                                      const EarthView<R>& earth, R E, R cosZ, bool nubar,
+                                      Mat<Model::N, R>& S, Mat<Model::N, R> (&dS)[K])
   {
     S = Model::initial(P, nubar);
-    Model::template initial_grad<K>(PD, nubar, dS);
+    Model::template initial_grad<K>(G.P, nubar, dS);
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
-      Model::template step_grad<K>(P, PD, E, nubar, s, S, dS);
+      Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, s), S, dS);
     });
-    Model::template finalize_grad<K>(P, PD, nubar, S, dS);
+    Model::template finalize_grad<K>(P, G.P, nubar, S, dS);
     Model::finalize(P, nubar, S);
   }
 
   /// Values and derivatives through an explicit list of segments.
   template <class Model, class R, int K>
-  OPG_HD inline void evolve_path_grad(
-      const typename Model::Prepared&                       P,
-      const typename Model::template PreparedT<Dual<R, K>>& PD,
-      const Segment<R>* path, int nseg, R E, bool nubar, Mat<Model::N, R>& S,
-      Mat<Model::N, R> (&dS)[K])
+  OPG_HD inline void evolve_path_grad(const typename Model::Prepared& P,
+                                      const GradPrepared<Model, K>& G,
+                                      const Segment<R>* path, int nseg, R E, bool nubar,
+                                      Mat<Model::N, R>& S, Mat<Model::N, R> (&dS)[K])
   {
     S = Model::initial(P, nubar);
-    Model::template initial_grad<K>(PD, nubar, dS);
+    Model::template initial_grad<K>(G.P, nubar, dS);
     for (int k = 0; k < nseg; k++)
-      Model::template step_grad<K>(P, PD, E, nubar, path[k], S, dS);
-    Model::template finalize_grad<K>(P, PD, nubar, S, dS);
+      Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, path[k]), S, dS);
+    Model::template finalize_grad<K>(P, G.P, nubar, S, dS);
     Model::finalize(P, nubar, S);
   }
 

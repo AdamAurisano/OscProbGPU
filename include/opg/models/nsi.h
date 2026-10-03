@@ -142,19 +142,19 @@ namespace opg {
       }
 
       /// PMNS_NSI::GetZoACoup
-      template <class S>
-      OPG_HD OPG_INLINE static S zoa_coup(const PreparedT<S>& P, R zoa)
+      template <class S, class Z>
+      OPG_HD OPG_INLINE static auto zoa_coup(const PreparedT<S>& P, Z zoa)
       {
         return P.coup[0] * zoa              // electrons: Z
-               + P.coup[1] * (1 + zoa)      // u-quarks:  A + Z
-               + P.coup[2] * (2 - zoa);     // d-quarks: 2A - Z
+               + P.coup[1] * (R(1) + zoa)   // u-quarks:  A + Z
+               + P.coup[2] * (R(2) - zoa);  // d-quarks: 2A - Z
       }
 
       /// Port of PMNS_NSI::UpdateHam (upper triangle + diagonal), for any
-      /// scalar type S of the prepared state.
-      template <class S>
+      /// scalar type S of the prepared state and segment type Seg.
+      template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
-                                                bool nubar, const Segment<R>& s,
+                                                bool nubar, const Seg& s,
                                                 Mat<3, S>& H)
       {
         const S lv = S(2 * R(constants::kGeV2eV) * E);  // 2*E in eV
@@ -209,8 +209,8 @@ namespace opg {
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
                                               R E, bool nubar,
-                                              const Segment<R>& s, Mat<3, R>& S,
-                                              Mat<3, R> (&dS)[K])
+                                              const SegmentZ<R, Dual<R, K>>& s,
+                                              Mat<3, R>& S, Mat<3, R> (&dS)[K])
       {
         hermitian3_step_grad<NSI, R, K>(P, PD, E, nubar, s, S, dS);
       }

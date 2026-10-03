@@ -34,6 +34,15 @@ namespace opg {
       int  layer;    ///< layer type index (informational)
   };
 
+  /// A segment whose Z/A has scalar type Z (e.g. a dual number carrying
+  /// derivatives with respect to the Z/A of its layer type).
+  template <class Real, class Z> struct SegmentZ {
+      Real length;
+      Real density;
+      Z    zoa;
+      int  layer;
+  };
+
   /// Device/host view of a PREM layer table (non-owning).
   template <class Real> struct EarthView {
       int         nlayers;     ///< number of layers

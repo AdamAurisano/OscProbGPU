@@ -129,4 +129,20 @@ TEST_CASE_TEMPLATE("GPU G3/G4 gradients agree with the CPU backend; multi-GPU id
 {
   check_gpu_vs_cpu<M>();
 }
+
+TEST_CASE_TEMPLATE("GPU binned and avg_path gradients", M, gradtest::Fast,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay)
+{
+  opg::Propagator<M> prop(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
+  gradtest::check_binned(prop, 1e-6, 1e-13);
+}
+
+
+TEST_CASE_TEMPLATE("GPU Earth Z/A gradients", M, gradtest::Fast, gradtest::NSI, gradtest::NUNM,
+                   gradtest::Sterile, gradtest::Decay)
+{
+  opg::Propagator<M> prop(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
+  gradtest::check_zoa(prop, 1e-9);
+}
+
 #endif

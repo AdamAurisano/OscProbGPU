@@ -169,8 +169,10 @@ oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 
 Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
 **Status:** available for all models (`Fast`, `NSI`, `NUNM`, `Sterile`,
-`Decay`); bin-averaged gradients and Earth Z/A parameters are planned (see
-[docs/ROADMAP.md](docs/ROADMAP.md)). Parameters (`parameter_names`):
+`Decay`), for grids, event lists, fixed paths and bin averages, with respect to
+the model parameters and the Earth model's Z/A per layer type (see
+[docs/ROADMAP.md](docs/ROADMAP.md) for what is next). Parameters
+(`parameter_names`):
 
 | Model | Parameters |
 |-------|------------|
@@ -180,9 +182,15 @@ Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
 | Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41` |
 | Decay   | mixing, `alpha2 alpha3` (eV²; at α = 0 the derivative is the one-sided one from α > 0) |
 
+Earth parameters (`earth_parameter_names`, per propagator): `zoa_<t>` for each
+layer type t of the Earth model, i.e. the Z/A of all layers of that type
+(`PremModel::SetLayerZoA`); for fixed paths, the Z/A of segments with
+`layer == t`. `gradient_parameter_names` lists model and Earth parameters.
+
 `set_gradient_params()` without arguments selects `default_gradient_params`:
 all parameters except NSI's fermion couplings `coup_e coup_u coup_d`, which
-are rarely fitted and must be named explicitly. Phases are differentiated at
+are rarely fitted and must be named explicitly (as must the Earth Z/A
+parameters). Phases are differentiated at
 fixed magnitude, so derivatives are well defined
 at zero couplings. In the NUNM high-scale scenario the derivatives include the
 row normalisation of α.
@@ -207,11 +215,25 @@ g = p.weighted_gradient(w)        # w has the shape of probs(); g[p]
 P, dP = p.prob_points_grad(E_ev, cosZ_ev, nubar_ev)   # dP[p, a, b, i]
 g     = p.weighted_gradient_points(E_ev, cosZ_ev, nubar_ev, w_ev)
 P, dP = p.prob_path_grad(E, path)                     # fixed baseline
+
+# Bin averages (same Gauss-Legendre nodes and weights as binned())
+p.set_bins(E_edges, cosZ_edges, 4, 4)
+p.calculate_binned_gradient()
+A, GA = p.binned(), p.binned_grad()   # GA[nubar, p, a, b, iCbin, iEbin]
+g = p.weighted_gradient_binned(w_bins)               # w_bins: shape of binned()
+A, dA = p.avg_path_grad(E_edges, 5, path)            # 1D averages, fixed path
+
+# One gradient vector per analysis bin (e.g. dN_b/dp for a Poisson likelihood)
+G = p.weighted_gradient_points_binned(E_ev, cosZ_ev, nubar_ev, w_ev, bin_ev, nbins)
+
+p.set_gradient_params(["dm31", "zoa_0", "zoa_1"])   # inner/outer core Z/A
 ```
 
 C++: `set_gradient_params()`, `calculate(Flavor, /*gradient=*/true)`, `grad()`,
 `weighted_gradient()`, `prob_points_grad()`, `weighted_gradient_points()`,
-`prob_path_grad()` on `opg::Propagator`.
+`weighted_gradient_points_binned()`, `prob_path_grad()`,
+`calculate_binned(Flavor, true)`, `binned_grad()`, `weighted_gradient_binned()`,
+`avg_path_grad()`, `earth_parameter_names()` on `opg::Propagator`.
 
 **Weighted mode.** A fit needs the gradient of a scalar such as χ², not every
 dP/dp: dχ²/dp = Σ w · dP/dp with w = ∂χ²/∂P (e.g. flux × cross-section ×

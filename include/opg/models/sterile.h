@@ -87,14 +87,14 @@ namespace opg {
 
       /// Port of PMNS_Sterile::UpdateHam, written for the upper triangle
       /// (OscProb fills the lower triangle with the conjugate), for any
-      /// scalar type S of the prepared state.
-      template <class S>
+      /// scalar type S of the prepared state and segment type Seg.
+      template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
-                                                bool nubar, const Segment<R>& s,
+                                                bool nubar, const Seg& s,
                                                 Mat<4, S>& H)
       {
-        const R rho = s.density;
-        const R zoa = s.zoa;
+        const R    rho = s.density;
+        const auto zoa = s.zoa;
         const S lv  = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
 
         // Electron matter potential
@@ -104,7 +104,7 @@ namespace opg {
         // Neutron matter potential
         S kr2GNn = P.vfac;
         kr2GNn *= rho;
-        kr2GNn *= (1 - zoa);
+        kr2GNn *= (R(1) - zoa);
         kr2GNn /= R(2);
 
         OPG_UNROLL
@@ -164,16 +164,17 @@ namespace opg {
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
                                               R E, bool nubar,
-                                              const Segment<R>& s, Mat<4, R>& S,
-                                              Mat<4, R> (&dS)[K])
+                                              const SegmentZ<R, Dual<R, K>>& sz,
+                                              Mat<4, R>& S, Mat<4, R> (&dS)[K])
       {
-        Mat<4, R> H, V;
-        R         lam[4];
+        const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
+        Mat<4, R>        H, V;
+        R                lam[4];
         hamiltonian(P, E, nubar, s, H);
         jacobi_hermitian<4, R>(H, V, lam);
 
         Mat<4, Dual<R, K>> HD;
-        hamiltonian(PD, E, nubar, s, HD);
+        hamiltonian(PD, E, nubar, sz, HD);
 
         eigen_step_grad<4, R, K>(V, lam, length_in_eV(s.length), HD, S, dS);
       }

@@ -69,10 +69,11 @@ namespace opg {
       }
 
       /// Port of PMNS_Fast::UpdateHam (upper triangle + diagonal), for any
-      /// scalar type S of the prepared state.
-      template <class S>
+      /// scalar type S of the prepared state and segment type Seg (whose Z/A
+      /// may be dual).
+      template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
-                                                bool nubar, const Segment<R>& s,
+                                                bool nubar, const Seg& s,
                                                 Mat<3, S>& H)
       {
         const S lv = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
@@ -124,8 +125,8 @@ namespace opg {
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
                                               R E, bool nubar,
-                                              const Segment<R>& s, Mat<3, R>& S,
-                                              Mat<3, R> (&dS)[K])
+                                              const SegmentZ<R, Dual<R, K>>& s,
+                                              Mat<3, R>& S, Mat<3, R> (&dS)[K])
       {
         hermitian3_step_grad<Fast, R, K>(P, PD, E, nubar, s, S, dS);
       }

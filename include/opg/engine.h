@@ -137,9 +137,39 @@ namespace opg {
       {
         no_grad();
       }
+      /// Per-analysis-bin weighted gradient over an event list:
+      /// G[b][p] = sum over events i with bin[i] == b (bins < 0 ignored) of
+      /// sum_ab w[ab][i] dP_ab(i)/dp, summed in a fixed order.
+      virtual void weighted_grad_points_binned(const Prepared&, const Chunks&, int,
+                                               const R*, const R*, const uint8_t*,
+                                               size_t, const R* /*w*/,
+                                               const int* /*bin*/, int /*nbins*/,
+                                               R* /*G*/)
+      {
+        no_grad();
+      }
       virtual void prob_path_grad(const Prepared&, const Chunks&, int, const R*,
                                   size_t, const Segment<R>*, int, bool,
                                   R* /*P*/, R* /*G*/)
+      {
+        no_grad();
+      }
+
+      /// Bin-averaged probabilities (as calculate_binned()) and gradients
+      /// binned_grad[nu][p][a][b][iCb][iEb] (same Gauss-Legendre weights).
+      virtual void calculate_binned_grad(const Prepared&, const Chunks&, int, Flavor)
+      {
+        no_grad();
+      }
+      virtual const R* host_binned_grad()
+      {
+        no_grad();
+        return nullptr;
+      }
+      virtual const R* device_binned_grad(int) { return nullptr; }
+      /// g[p] = sum w * d(avg P)/dp, w in the layout of host_binned().
+      virtual void weighted_grad_binned(const Prepared&, const Chunks&, int, Flavor,
+                                        const R* /*w*/, R* /*g*/)
       {
         no_grad();
       }

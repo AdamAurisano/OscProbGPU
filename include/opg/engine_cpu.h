@@ -91,25 +91,7 @@ namespace opg {
                                               B.nodesC[ic], nb == 1);
             store_probs<N, R>(S, base + k, npt);
           }
-          // Weighted reduction per (channel, C bin, E bin)
-          const long long nout = (long long)(N * N * B.nCb * B.nEb);
-#pragma omp parallel for schedule(static) num_threads(threads())
-          for (long long o = 0; o < nout; o++) {
-            size_t ieb = size_t(o) % B.nEb;
-            size_t icb = (size_t(o) / B.nEb) % B.nCb;
-            size_t ch  = size_t(o) / (B.nEb * B.nCb);
-            const R* pc = base + ch * npt;
-            R        acc = 0;
-            for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) {
-              R rowacc = 0;
-              for (int i = 0; i < B.nglE; i++) {
-                size_t ce = ieb * B.nglE + i;
-                rowacc += B.wE[ce] * pc[rc * nEn + ce];
-              }
-              acc += B.wC[rc] * rowacc;
-            }
-            fBinned[(nb * N * N) * B.nCb * B.nEb + size_t(o)] = acc;
-          }
+          reduce_nodes(base, N * N, fBinned.data() + (nb * N * N) * B.nCb * B.nEb);
         }
       }
 
@@ -119,6 +101,98 @@ namespace opg {
       using typename EngineBase<Model>::Chunks;
       using GT                = grad_traits<Model>;
       static constexpr int GK = GT::K;
+
+      void calculate_binned_grad(const Prepared& P, const Chunks& chunks, int npar,
+                                 Flavor which) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          require_earth();
+          const EarthView<R> earth = fTable->view();
+          const auto&        B     = fBins;
+          const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size(), npt = nEn * nCn;
+          const size_t nbin = B.nCb * B.nEb;
+          fBinnedGrad.assign(2 * size_t(npar) * N * N * nbin, R(0));
+          std::vector<R> node(size_t(GK) * N * N * npt);
+          for (int nb = 0; nb < 2; nb++) {
+            if (!(int(which) & (1 << nb))) continue;
+            R* pbase = fNodeProbs.data() + nb * N * N * npt;
+            for (size_t c = 0; c < chunks.size(); c++) {
+              const auto&     ch = chunks[c];
+              const long long n  = (long long)npt;
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+              for (long long k = 0; k < n; k++) {
+                size_t    ic = size_t(k) / nEn, ie = size_t(k) % nEn;
+                Mat<N, R> S, dS[GK];
+                evolve_prem_grad<Model, R, GK>(P, ch.P, earth, B.nodesE[ie],
+                                               B.nodesC[ic], nb == 1, S, dS);
+                if (c == 0) store_probs<N, R>(S, pbase + k, npt);
+                store_grads<N, R, GK>(S, dS, ch.count, node.data() + k, npt);
+              }
+              reduce_nodes(node.data(), size_t(ch.count) * N * N,
+                           fBinnedGrad.data() +
+                               (size_t(nb) * npar + ch.offset) * N * N * nbin);
+            }
+            reduce_nodes(pbase, N * N, fBinned.data() + (nb * N * N) * nbin);
+          }
+        }
+      }
+
+      const R* host_binned_grad() override
+      {
+        if constexpr (!GT::enabled) this->no_grad();
+        return fBinnedGrad.data();
+      }
+
+      /// sum over bins of w_bin * (GL average of dP) = sum over nodes of
+      /// (w_bin wC wE) dP: contracted per node, nothing stored.
+      void weighted_grad_binned(const Prepared& P, const Chunks& chunks, int npar,
+                                Flavor which, const R* w, R* g) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          require_earth();
+          const EarthView<R> earth = fTable->view();
+          const auto&        B     = fBins;
+          const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size();
+          const size_t nbin = B.nCb * B.nEb;
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          std::vector<size_t> binOfRow(nCn);
+          for (size_t icb = 0; icb < B.nCb; icb++)
+            for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) binOfRow[rc] = icb;
+          std::vector<R> part(nCn * GK);
+          for (int nb = 0; nb < 2; nb++) {
+            if (!(int(which) & (1 << nb))) continue;
+            const R* wbase = w + size_t(nb) * N * N * nbin;
+            for (const auto& ch : chunks) {
+              const long long nrow = (long long)nCn;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+              for (long long rc = 0; rc < nrow; rc++) {
+                const size_t icb         = binOfRow[size_t(rc)];
+                R            rowacc[GK] = {};
+                R            wn[N * N];
+                for (size_t ie = 0; ie < nEn; ie++) {
+                  const size_t ieb = ie / size_t(B.nglE);
+                  for (int ab = 0; ab < N * N; ab++)
+                    wn[ab] = wbase[(ab * B.nCb + icb) * B.nEb + ieb] * B.wC[size_t(rc)] *
+                             B.wE[ie];
+                  Mat<N, R> S, dS[GK];
+                  evolve_prem_grad<Model, R, GK>(P, ch.P, earth, B.nodesE[ie],
+                                                 B.nodesC[size_t(rc)], nb == 1, S, dS);
+                  R acc[GK];
+                  contract_grads<N, R, GK>(S, dS, wn, 1, acc);
+                  for (int k = 0; k < GK; k++) rowacc[k] += acc[k];
+                }
+                for (int k = 0; k < GK; k++) part[size_t(rc) * GK + k] = rowacc[k];
+              }
+              for (size_t rc = 0; rc < nCn; rc++)  // fixed summation order
+                for (int k = 0; k < ch.count; k++) g[ch.offset + k] += part[rc * GK + k];
+            }
+          }
+        }
+      }
+
+      // --- gradients (grid) --------------------------------------------------
 
       void calculate_grad(const Prepared& P, const Chunks& chunks, int npar,
                           Flavor which) override
@@ -251,6 +325,37 @@ namespace opg {
         }
       }
 
+      void weighted_grad_points_binned(const Prepared& P, const Chunks& chunks,
+                                       int npar, const R* E, const R* cosZ,
+                                       const uint8_t* nubar, size_t n, const R* w,
+                                       const int* bin, int nbins, R* G) override
+      {
+        if constexpr (!GT::enabled) { this->no_grad(); }
+        else {
+          require_earth();
+          const EarthView<R> earth = fTable->view();
+          std::fill(G, G + size_t(nbins) * npar, R(0));
+          std::vector<R> contrib(n * GK);
+          for (const auto& ch : chunks) {
+            const long long nn = (long long)n;
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+            for (long long i = 0; i < nn; i++) {
+              if (bin[i] < 0 || bin[i] >= nbins) continue;
+              Mat<N, R> S, dS[GK];
+              evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
+                                             nubar[i] != 0, S, dS);
+              R acc[GK];
+              contract_grads<N, R, GK>(S, dS, w + i, n, acc);
+              for (int k = 0; k < GK; k++) contrib[size_t(i) * GK + k] = acc[k];
+            }
+            for (size_t i = 0; i < n; i++)  // fixed summation order
+              if (bin[i] >= 0 && bin[i] < nbins)
+                for (int k = 0; k < ch.count; k++)
+                  G[size_t(bin[i]) * npar + ch.offset + k] += contrib[i * GK + k];
+          }
+        }
+      }
+
       void prob_path_grad(const Prepared& P, const Chunks& chunks, int npar,
                           const R* E, size_t nE, const Segment<R>* path, int nseg,
                           bool nubar, R* outP, R* outG) override
@@ -301,6 +406,32 @@ namespace opg {
       }
 
     private:
+      /// Gauss-Legendre reduction of nch node-grid channels
+      /// [nch][nCn][nEn] into bin averages out[nch][nCb][nEb].
+      void reduce_nodes(const R* node, size_t nch, R* out) const
+      {
+        const auto&     B    = fBins;
+        const size_t    nEn  = B.nodesE.size(), npt = nEn * B.nodesC.size();
+        const long long nout = (long long)(nch * B.nCb * B.nEb);
+#pragma omp parallel for schedule(static) num_threads(threads())
+        for (long long o = 0; o < nout; o++) {
+          size_t   ieb = size_t(o) % B.nEb;
+          size_t   icb = (size_t(o) / B.nEb) % B.nCb;
+          size_t   ch  = size_t(o) / (B.nEb * B.nCb);
+          const R* pc  = node + ch * npt;
+          R        acc = 0;
+          for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) {
+            R rowacc = 0;
+            for (int i = 0; i < B.nglE; i++) {
+              size_t ce = ieb * B.nglE + i;
+              rowacc += B.wE[ce] * pc[rc * nEn + ce];
+            }
+            acc += B.wC[rc] * rowacc;
+          }
+          out[size_t(o)] = acc;
+        }
+      }
+
       int threads() const
       {
 #ifdef _OPENMP
@@ -319,7 +450,7 @@ namespace opg {
       std::unique_ptr<PremModel::HostTable<R>>     fTable;
       std::vector<R>                               fE, fC, fProbs;
       BinSpec<R>                                   fBins;
-      std::vector<R>                               fNodeProbs, fBinned;
+      std::vector<R>                               fNodeProbs, fBinned, fBinnedGrad;
       std::vector<R>                               fGrad;
   };
 

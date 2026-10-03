@@ -173,20 +173,22 @@ namespace opg {
   /// Segment step with derivatives. PD is the prepared state with dual
   /// numbers (value parts equal to P); the value eigensystem is that of
   /// hermitian3_step, and the derivative of H comes from evaluating the
-  /// model's hamiltonian() in dual arithmetic. In vacuum the same holds
-  /// with zero density, since there H = Hms / 2E.
+  /// model's hamiltonian() in dual arithmetic (Z/A of the segment possibly
+  /// seeded too). In vacuum the same holds with zero density, since there
+  /// H = Hms / 2E.
   template <class Model, class R, int K>
   OPG_HD OPG_INLINE void hermitian3_step_grad(
       const typename Model::Prepared&                         P,
       const typename Model::template PreparedT<Dual<R, K>>& PD, R E, bool nubar,
-      const Segment<R>& s, Mat<3, R>& S, Mat<3, R> (&dS)[K])
+      const SegmentZ<R, Dual<R, K>>& sz, Mat<3, R>& S, Mat<3, R> (&dS)[K])
   {
-    Mat<3, R> V;
-    R         lam[3];
+    const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
+    Mat<3, R>        V;
+    R                lam[3];
     hermitian3_eigen<Model, R>(P, E, nubar, s, V, lam);
 
-    Mat<3, Dual<R, K>> HD;
-    Segment<R>         sd = s;
+    Mat<3, Dual<R, K>>      HD;
+    SegmentZ<R, Dual<R, K>> sd = sz;
     if (s.density < R(1.0e-6)) sd.density = 0;
     Model::hamiltonian(PD, E, nubar, sd, HD);
 

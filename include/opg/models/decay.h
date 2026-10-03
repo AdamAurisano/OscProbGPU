@@ -148,10 +148,10 @@ namespace opg {
       }
 
       /// H for one segment in eV (port of PMNS_Decay::UpdateHam), scalar
-      /// type S of the prepared state.
-      template <class S>
+      /// type S of the prepared state, segment type Seg.
+      template <class S, class Seg>
       OPG_HD OPG_INLINE static Mat<3, S> hamiltonian(const PreparedT<S>& P, R E,
-                                                     bool nubar, const Segment<R>& s)
+                                                     bool nubar, const Seg& s)
       {
         const S lv = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
 
@@ -172,9 +172,8 @@ namespace opg {
       }
 
       /// -i H L (the argument of the evolution operator exp(-i H L)).
-      template <class S>
-      OPG_HD OPG_INLINE static Mat<3, S> exponent(const Mat<3, S>& Hin,
-                                                  const Segment<R>& s)
+      template <class S, class Seg>
+      OPG_HD OPG_INLINE static Mat<3, S> exponent(const Mat<3, S>& Hin, const Seg& s)
       {
         Mat<3, S>        H = Hin;
         const Complex<S> mil(S(0), S(-length_in_eV(s.length)));
@@ -218,17 +217,18 @@ namespace opg {
       OPG_HD OPG_INLINE static void step_grad(const Prepared&               P,
                                               const PreparedT<Dual<R, K>>& PD,
                                               R E, bool nubar,
-                                              const Segment<R>& s, Mat<3, R>& S,
-                                              Mat<3, R> (&dS)[K])
+                                              const SegmentZ<R, Dual<R, K>>& sz,
+                                              Mat<3, R>& S, Mat<3, R> (&dS)[K])
       {
-        using D           = Dual<R, K>;
+        using D            = Dual<R, K>;
+        const Segment<R> s = {sz.length, sz.density, sz.zoa.v, sz.layer};
         const Mat<3, R> H = hamiltonian(P, E, nubar, s);
         const Mat<3, R> U = expm<3, R>(exponent(H, s));
 #ifndef OPG_DECAY_GRAD_PADE_ONLY
-        const Mat<3, D> HD = hamiltonian(PD, E, nubar, s);
+        const Mat<3, D> HD = hamiltonian(PD, E, nubar, sz);
         if (!general_eigen_step_grad<R, K>(H, length_in_eV(s.length), HD, U, S, dS))
 #endif
-          pade_step_grad<K>(PD, E, nubar, s, U, S, dS);
+          pade_step_grad<K>(PD, E, nubar, sz, U, S, dS);
         apply_operator<3, R>(U, S);
       }
 
@@ -238,7 +238,7 @@ namespace opg {
       template <int K>
       OPG_HD OPG_NOINLINE static void pade_step_grad(const PreparedT<Dual<R, K>>& PD,
                                                      R E, bool nubar,
-                                                     const Segment<R>& s,
+                                                     const SegmentZ<R, Dual<R, K>>& s,
                                                      const Mat<3, R>& U,
                                                      const Mat<3, R>& S,
                                                      Mat<3, R> (&dS)[K])
