@@ -180,7 +180,10 @@ Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
 | Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41` |
 | Decay   | mixing, `alpha2 alpha3` (eV²; at α = 0 the derivative is the one-sided one from α > 0) |
 
-Phases are differentiated at fixed magnitude, so derivatives are well defined
+`set_gradient_params()` without arguments selects `default_gradient_params`:
+all parameters except NSI's fermion couplings `coup_e coup_u coup_d`, which
+are rarely fitted and must be named explicitly. Phases are differentiated at
+fixed magnitude, so derivatives are well defined
 at zero couplings. In the NUNM high-scale scenario the derivatives include the
 row normalisation of α.
 
@@ -191,7 +194,8 @@ gradients are computed. `-DOPG_ENABLE_GRADIENTS=OFF` compiles them out.
 ```python
 p = opg.Fast(devices=[0])
 print(opg.Fast.parameter_names)   # ['th12', 'th13', 'th23', 'd13', 'dm21', 'dm31']
-p.set_gradient_params(["th23", "dm31", "d13"])   # [] turns gradients off
+p.set_gradient_params(["th23", "dm31", "d13"])   # [] turns gradients off;
+                                                 # no argument: defaults
 p.set_grid(E, cosZ)
 
 p.calculate_gradient()            # probabilities + gradients

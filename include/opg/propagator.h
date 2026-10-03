@@ -24,6 +24,7 @@
 #include <memory>
 #include <string>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "opg/avg/gauss_legendre.h"
@@ -38,6 +39,15 @@ namespace opg {
   template <class Model>
   std::unique_ptr<EngineBase<Model>> make_cuda_engine(const std::vector<int>& devices);
 #endif
+
+  namespace detail {
+    template <class Model, class = void>
+    struct has_default_param_names : std::false_type {};
+    template <class Model>
+    struct has_default_param_names<Model,
+                                   std::void_t<decltype(Model::default_param_names())>>
+        : std::true_type {};
+  } // namespace detail
 
   /// Number of CUDA devices visible (0 if built without CUDA).
   int cuda_device_count();
@@ -115,6 +125,22 @@ namespace opg {
         if constexpr (grad_traits<Model>::enabled) return Model::param_names();
         else return {};
       }
+
+      /// The parameters set_gradient_params() selects when called without
+      /// arguments: all of parameter_names() except those a model leaves
+      /// out by default (Model::default_param_names(), e.g. NSI's fermion
+      /// couplings, which are rarely fitted).
+      static std::vector<std::string> default_gradient_params()
+      {
+        if constexpr (!grad_traits<Model>::enabled) return {};
+        else if constexpr (detail::has_default_param_names<Model>::value)
+          return Model::default_param_names();
+        else
+          return Model::param_names();
+      }
+
+      /// Select the default parameters (see default_gradient_params()).
+      void set_gradient_params() { set_gradient_params(default_gradient_params()); }
 
       /// Select the parameters to differentiate with respect to, by name
       /// (see parameter_names()). An empty list turns gradients off and

@@ -131,3 +131,11 @@ def test_g3_parameter_names():
     assert opg.Sterile.parameter_names[-3:] == ["dm21", "dm31", "dm41"]
     assert len(opg.Sterile.parameter_names) == 12
     assert opg.Decay.parameter_names[-2:] == ["alpha2", "alpha3"]
+    # NSI fermion couplings are opt-in
+    assert opg.NSI.default_gradient_params == opg.NSI.parameter_names[:15]
+    assert opg.Fast.default_gradient_params == opg.Fast.parameter_names
+    p = opg.NSI()
+    p.set_gradient_params()
+    assert p.gradient_params == opg.NSI.parameter_names[:15]
+    p.set_gradient_params(["coup_d"])
+    assert p.gradient_params == ["coup_d"]

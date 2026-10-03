@@ -79,6 +79,16 @@ namespace opg {
         for (const char* f : {"e", "u", "d"}) n.push_back(std::string("coup_") + f);
         return n;
       }
+      /// Parameters differentiated by default (Propagator::
+      /// set_gradient_params() without arguments): all but the fermion
+      /// couplings coup_<f>, which can still be selected by name.
+      static std::vector<std::string> default_param_names()
+      {
+        auto n = param_names();
+        n.resize(n.size() - 3);
+        return n;
+      }
+
       template <class S> static S& param_ref(ParamsT<S>& p, int idx)
       {
         const int nmix = MixingRegistry<3>::count();

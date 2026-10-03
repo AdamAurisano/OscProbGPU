@@ -36,6 +36,21 @@ TEST_CASE("Gradient parameter registry")
         std::vector<std::string>{"th12", "th13", "th23", "d13", "dm21", "dm31", "alpha2",
                                  "alpha3"});
 
+  // defaults: everything except NSI's fermion couplings
+  CHECK(opg::Propagator<gradtest::Fast>::default_gradient_params() ==
+        gradtest::Fast::param_names());
+  auto nsi_def = opg::Propagator<opg::NSI<>>::default_gradient_params();
+  CHECK(nsi_def.size() == 15);
+  CHECK(std::find(nsi_def.begin(), nsi_def.end(), "coup_e") == nsi_def.end());
+  CHECK(nsi_def.back() == "ph_mutau");
+  {
+    opg::Propagator<opg::NSI<>> nsi;
+    nsi.set_gradient_params();
+    CHECK(nsi.gradient_params() == nsi_def);
+    nsi.set_gradient_params({"coup_u"});  // still selectable by name
+    CHECK(nsi.n_gradient_params() == 1);
+  }
+
   opg::Propagator<gradtest::Fast> prop;
   gradtest::Fast::Params          p;
   p.mix = variants::nominal_mix<3>();

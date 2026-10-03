@@ -7,9 +7,11 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/vector.h>
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -229,12 +231,22 @@ namespace {
                             "Names of the differentiable parameters.")
         .def_prop_ro_static("has_gradients",
                             [](nb::handle) { return opg::Propagator<Model>::has_gradients(); })
+        .def_prop_ro_static("default_gradient_params",
+                            [](nb::handle) {
+                              return opg::Propagator<Model>::default_gradient_params();
+                            },
+                            "Parameters selected by set_gradient_params() without "
+                            "arguments (e.g. NSI leaves out the fermion couplings).")
         .def("set_gradient_params",
-             [](W& w, const std::vector<std::string>& names) {
-               w.prop.set_gradient_params(names);
+             [](W& w, std::optional<std::vector<std::string>> names) {
+               if (names)
+                 w.prop.set_gradient_params(*names);
+               else
+                 w.prop.set_gradient_params();
              },
-             "names"_a,
-             "Select parameters to differentiate (empty list = gradients off).")
+             "names"_a = nb::none(),
+             "Select parameters to differentiate (empty list = gradients off; "
+             "no argument = default_gradient_params).")
         .def_prop_ro("gradient_params", [](W& w) { return w.prop.gradient_params(); })
         .def("calculate_gradient",
              [](W& w, const std::string& fl) {
