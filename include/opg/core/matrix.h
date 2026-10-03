@@ -1,7 +1,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 /// \file matrix.h
 ///
-/// \brief Fixed-size complex matrices and vectors for host and device.
+/// \brief Fixed-size complex (and real) matrices and vectors for host and
+///        device.
 ///
 /// These are plain aggregates (trivially copyable) so they can be passed by
 /// value as CUDA kernel arguments and live in registers.
@@ -25,7 +26,9 @@ namespace opg {
   };
 
   template <int N, class Real> struct Mat {
-      Complex<Real> m[N][N];
+      static constexpr int dim = N;
+      using elem               = Complex<Real>;
+      Complex<Real>        m[N][N];
 
       OPG_HD OPG_INLINE Complex<Real>& operator()(int i, int j) { return m[i][j]; }
       OPG_HD OPG_INLINE const Complex<Real>& operator()(int i, int j) const
@@ -62,6 +65,44 @@ namespace opg {
       OPG_UNROLL
       for (int j = 0; j < N; j++) {
         Complex<R> s(0, 0);
+        OPG_UNROLL
+        for (int k = 0; k < N; k++) s += A.m[i][k] * B.m[k][j];
+        C.m[i][j] = s;
+      }
+    }
+    return C;
+  }
+
+  /// Fixed-size real matrix (scalar type S may be a dual number).
+  template <int N, class S> struct RMat {
+      static constexpr int dim = N;
+      using elem               = S;
+      S                    m[N][N];
+
+      OPG_HD OPG_INLINE S&       operator()(int i, int j) { return m[i][j]; }
+      OPG_HD OPG_INLINE const S& operator()(int i, int j) const { return m[i][j]; }
+
+      OPG_HD OPG_INLINE static RMat zero()
+      {
+        RMat a;
+        OPG_UNROLL
+        for (int i = 0; i < N; i++)
+          OPG_UNROLL
+        for (int j = 0; j < N; j++) a.m[i][j] = S(0);
+        return a;
+      }
+  };
+
+  /// C = A * B (real)
+  template <int N, class S>
+  OPG_HD OPG_INLINE RMat<N, S> matmul(const RMat<N, S>& A, const RMat<N, S>& B)
+  {
+    RMat<N, S> C;
+    OPG_UNROLL
+    for (int i = 0; i < N; i++) {
+      OPG_UNROLL
+      for (int j = 0; j < N; j++) {
+        S s(0);
         OPG_UNROLL
         for (int k = 0; k < N; k++) s += A.m[i][k] * B.m[k][j];
         C.m[i][j] = s;
