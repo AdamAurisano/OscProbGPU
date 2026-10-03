@@ -1,6 +1,6 @@
 """OscProbGPU: CUDA port of selected OscProb neutrino oscillation calculators.
 
-Models: Fast, NSI, NUNM, Sterile (3+1), Decay. Each model exposes OscProb-style
+Models: Fast, NSI, NUNM, Sterile (3+1), Decay, LIV (SME), SNSI (scalar NSI). Each model exposes OscProb-style
 parameter setters and a batched API::
 
     import numpy as np
@@ -32,8 +32,10 @@ examples/gradient_fit.py for a binned likelihood fit with exact Jacobians.
 """
 
 from ._oscprobgpu import (  # noqa: F401
+    LIV,
     NSI,
     NUNM,
+    SNSI,
     Decay,
     Fast,
     PremModel,
@@ -43,7 +45,7 @@ from ._oscprobgpu import (  # noqa: F401
     has_cuda,
 )
 
-__all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "PremModel",
+__all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "PremModel",
            "DeviceArray", "cuda_device_count", "has_cuda", "default_devices"]
 
 
@@ -97,7 +99,7 @@ def _device_binned(self):
     return DeviceArray(self, *self._device_view("binned"))
 
 
-for _cls in (Fast, NSI, NUNM, Sterile, Decay):
+for _cls in (Fast, NSI, NUNM, Sterile, Decay, LIV, SNSI):
     _cls.device_probs = _device_probs
     _cls.device_binned = _device_binned
 

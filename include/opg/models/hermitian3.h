@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <complex>
+#include <type_traits>
 
 #include "opg/core/constants.h"
 #include "opg/linalg/kopp/zheevh3.h"
@@ -134,6 +135,18 @@ namespace opg {
     }
   }
 
+  /// Whether a model uses PMNS_Fast's analytic vacuum eigensystem for
+  /// densities below 1e-6 g/cm^3 (models whose Hamiltonian has
+  /// matter-independent extra terms, e.g. LIV, set
+  /// `static constexpr bool vacuum_shortcut = false`).
+  template <class Model, class = void> struct uses_vacuum_shortcut {
+      static constexpr bool value = true;
+  };
+  template <class Model>
+  struct uses_vacuum_shortcut<Model, std::void_t<decltype(Model::vacuum_shortcut)>> {
+      static constexpr bool value = Model::vacuum_shortcut;
+  };
+
   /// Value eigensystem of one segment (vacuum shortcut or zheevh3).
   template <class Model, class R>
   OPG_HD OPG_INLINE void hermitian3_eigen(const typename Model::Prepared& P,
@@ -141,7 +154,7 @@ namespace opg {
                                           Mat<3, R>& V, R lam[3])
   {
     // PMNS_Fast::SolveHam: do vacuum oscillation in low density
-    if (s.density < R(1.0e-6)) {
+    if (uses_vacuum_shortcut<Model>::value && s.density < R(1.0e-6)) {
       V      = P.common.Uvac[nubar ? 1 : 0];
       lam[0] = 0;
       lam[1] = P.common.dm[1] / (2 * R(constants::kGeV2eV) * E);
@@ -189,7 +202,7 @@ namespace opg {
 
     Mat<3, Dual<R, K>>      HD;
     SegmentZ<R, Dual<R, K>> sd = sz;
-    if (s.density < R(1.0e-6)) sd.density = 0;
+    if (uses_vacuum_shortcut<Model>::value && s.density < R(1.0e-6)) sd.density = 0;
     Model::hamiltonian(PD, E, nubar, sd, HD);
 
     eigen_step_grad<3, R, K>(V, lam, length_in_eV(s.length), HD, S, dS);

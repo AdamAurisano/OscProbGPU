@@ -206,10 +206,17 @@ def _model(cls, devices):
         p.set_angle(2, 4, 0.15)
     elif cls is opg.Decay:
         p.set_alpha3(2e-4)
+    elif cls is opg.LIV:
+        p.set_aT(0, 1, 3, 1.5e-21, 0.7)
+        p.set_cT(1, 2, 4, 1e-22, 2.3)
+    elif cls is opg.SNSI:
+        p.set_lowest_mass(0.05)
+        p.set_eps(0, 1, 0.3, 0.4)
     return p
 
 
-@pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Decay],
+@pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Decay,
+                                 opg.LIV, opg.SNSI],
                          ids=lambda c: c.__name__)
 def test_all_models_grid_points_weighted_binned(cls, devices):
     if not cls.has_gradients:

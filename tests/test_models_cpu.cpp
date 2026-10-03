@@ -67,6 +67,24 @@ TEST_CASE("NSI (CPU) matches OscProb PMNS_NSI")
   check_all(prop, "nsi_phases", kTolCPU, true);
 }
 
+TEST_CASE("LIV (CPU) matches OscProb PMNS_LIV")
+{
+  opg::Propagator<opg::LIV<>> prop;
+  prop.set_params(variants::liv());
+  check_all(prop, "liv", kTolCPU, true);
+  prop.set_params(variants::liv_phases());
+  check_all(prop, "liv_phases", kTolCPU, true);
+}
+
+TEST_CASE("SNSI (CPU) matches OscProb PMNS_SNSI")
+{
+  opg::Propagator<opg::SNSI<>> prop;
+  prop.set_params(variants::snsi());
+  check_all(prop, "snsi", kTolCPU, true);
+  prop.set_params(variants::snsi_io());
+  check_all(prop, "snsi_io", kTolCPU, true);
+}
+
 TEST_CASE("NUNM (CPU) matches OscProb PMNS_NUNM")
 {
   opg::Propagator<opg::NUNM<>> prop;

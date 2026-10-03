@@ -10,6 +10,8 @@ neutrino oscillation calculators, with a batched C++ API and Python bindings.
 | `opg::NUNM`      | `PMNS_NUNM` (scale 0, 1) | non-unitary mixing                        |
 | `opg::Sterile`   | `PMNS_Sterile(4)`        | 3+1 sterile neutrino                      |
 | `opg::Decay`     | `PMNS_Decay`             | invisible decay (non-hermitian H)         |
+| `opg::LIV`       | `PMNS_LIV`               | Lorentz invariance violation (SME, d = 3..8) |
+| `opg::SNSI`      | `PMNS_SNSI`              | scalar non-standard interactions          |
 
 Every model runs on the GPU (one or more devices) or on a multi-threaded CPU
 backend that executes the *same* `__host__ __device__` physics code. Results
@@ -48,7 +50,10 @@ avg = p.avg_path(edges, 8, np.array([[1285.0, 2.84, 0.5]]))
 
 Model-specific setters: `NSI.set_eps(i, j, value, phase)`,
 `NSI.set_ferm_coup(e, u, d)`, `NUNM(scale=0|1)`, `NUNM.set_alpha(i, j, value,
-phase)`, `NUNM.set_frac_vnc(f)`, `Decay.set_alpha2/3(a)`. All models start
+phase)`, `NUNM.set_frac_vnc(f)`, `Decay.set_alpha2/3(a)`,
+`LIV.set_aT(i, j, dim, value, phase)` (dim 3, 5, 7), `LIV.set_cT(i, j, dim,
+value, phase)` (dim 4, 6, 8), `SNSI.set_eps(i, j, value, phase)` (MeV⁻²),
+`SNSI.set_ferm_coup(e, u, d)`, `SNSI.set_lowest_mass(m)` (eV). All models start
 from OscProb's PDG defaults (`set_std_pars()`). See `python/examples/`:
 `oscillogram.py`, `lbl_spectrum.py`, and `gradient_fit.py` (a binned
 atmospheric likelihood fit with exact Jacobians from `binned_grad()`,
@@ -145,7 +150,7 @@ flavour indices 0 = e, 1 = μ, 2 = τ, 3 = s.
 
 | Model | Per-segment evolution |
 |-------|-----------------------|
-| Fast, NSI, NUNM | Kopp's `zheevh3` (Cardano + QL fallback), ported bit-exactly; vacuum (ρ < 1e-6) uses the analytic PMNS eigensystem as OscProb |
+| Fast, NSI, NUNM, SNSI, LIV | Kopp's `zheevh3` (Cardano + QL fallback), ported bit-exactly; vacuum (ρ < 1e-6) uses the analytic PMNS eigensystem as OscProb (not for LIV, whose terms persist in vacuum) |
 | Sterile (4x4) | cyclic complex Jacobi with Numerical Recipes' stable update, fully unrolled (register-resident) |
 | Decay | `exp(-iHL)` by scaling and squaring with Padé degree 3–13 and Eigen's thresholds (Higham 2005), LU with partial pivoting |
 
@@ -209,6 +214,8 @@ row normalisation of α.
 
 Gradients are **off unless requested**: probability-only calls run the same
 code as before and are unaffected, and gradient buffers are only allocated when
+| LIV     | mixing, `aT<d>_<ab>` / `cT<d>_<ab>` magnitudes and `ph_aT<d>_<ab>` / `ph_cT<d>_<ab>` phases for d = 3..8 (60 in total; default: mixing, aT3, cT4) |
+| SNSI    | NSI's, plus `mlight` (lightest mass, eV; one-sided at 0); default as NSI |
 gradients are computed. `-DOPG_ENABLE_GRADIENTS=OFF` compiles them out.
 
 ```python
@@ -239,6 +246,9 @@ A, dA = p.avg_path_grad(E_edges, 5, path)            # 1D averages, fixed path
 G = p.weighted_gradient_points_binned(E_ev, cosZ_ev, nubar_ev, w_ev, bin_ev, nbins)
 
 p.set_gradient_params(["dm31", "zoa_0", "zoa_1"])   # inner/outer core Z/A
+                                  # w may be a CUDA array (CuPy, PyTorch, ...)
+                                  # on the propagator's GPU: no upload
+d = p.device_probs()              # zero-copy DeviceArray of the GPU results
 ```
 
 C++: `set_gradient_params()`, `calculate(Flavor, /*gradient=*/true)`, `grad()`,
@@ -249,9 +259,6 @@ C++: `set_gradient_params()`, `calculate(Flavor, /*gradient=*/true)`, `grad()`,
 `weighted_gradient_device()` / `weighted_gradient_binned_device()` (weights in
 GPU memory, one pointer per device in the layout of `device_probs(k)` /
 `device_binned(k)`) on `opg::Propagator`.
-                                  # w may be a CUDA array (CuPy, PyTorch, ...)
-                                  # on the propagator's GPU: no upload
-d = p.device_probs()              # zero-copy DeviceArray of the GPU results
 
 **Weighted mode.** A fit needs the gradient of a scalar such as χ², not every
 dP/dp: dχ²/dp = Σ w · dP/dp with w = ∂χ²/∂P (e.g. flux × cross-section ×
@@ -341,6 +348,8 @@ brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
 * **Rescaled 3x3 eigensolver.** OscProb calls Kopp's `zheevh3` on the raw
   Hamiltonian in eV (~1e-12); its error test, designed for O(1) matrices,
   then *always* takes the iterative QL fallback. We rescale H to O(1) first
+| LIV | 7.9e-12 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
+| SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
   (2.2x faster on V100; P agrees to ~1e-13). `OPG_OSCPROB_BITWISE=ON` restores
   OscProb's exact call.
 * **NUNM high-scale normalisation** is applied once when parameters are set.

@@ -5,11 +5,13 @@
 # sources (default: ../OscProb next to this repository).
 #
 # Usage: reference/make_reference.sh [path/to/OscProb] [nsub for bin averages]
+#                                   [comma-separated variant tags to dump]
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OSCPROB_SRC=${1:-$HERE/../OscProb}
 NSUB=${2:-400}
+ONLY=${3:-}
 BUILD=$HERE/build-ref
 
 if ! command -v root-config >/dev/null; then
@@ -29,4 +31,4 @@ g++ -O2 -std=c++17 "$HERE/reference/dump_reference.cxx" -o "$BUILD/dump_referenc
   $(root-config --libs)
 
 mkdir -p "$HERE/tests/data"
-"$BUILD/dump_reference" "$HERE/tests/data" "$NSUB"
+"$BUILD/dump_reference" "$HERE/tests/data" "$NSUB" $ONLY

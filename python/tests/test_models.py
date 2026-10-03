@@ -63,13 +63,40 @@ def make(tag, devices):
         else:
             p.set_alpha2(3e-5)
             p.set_alpha3(2e-4)
+    elif tag.startswith("liv"):
+        p = set_nominal(opg.LIV(devices=devices))
+        if tag == "liv":
+            p.set_aT(0, 0, 3, 1e-21); p.set_aT(0, 1, 3, 2e-21)
+            p.set_aT(1, 2, 3, -1e-21); p.set_cT(1, 1, 4, 5e-23)
+            p.set_cT(0, 2, 4, 1e-22); p.set_aT(1, 2, 5, 1e-24)
+            p.set_cT(2, 2, 6, 2e-26); p.set_aT(0, 1, 7, 1e-28)
+            p.set_cT(1, 2, 8, 1e-30)
+        else:
+            p.set_aT(0, 1, 3, 1.5e-21, 0.7); p.set_aT(0, 2, 3, 8e-22, -1.9)
+            p.set_aT(2, 2, 3, -6e-22); p.set_cT(1, 2, 4, 1e-22, 2.3)
+            p.set_cT(0, 0, 4, -4e-23); p.set_cT(0, 1, 6, 3e-26, 1.1)
+    elif tag.startswith("snsi"):
+        p = set_nominal(opg.SNSI(devices=devices))
+        if tag == "snsi":
+            p.set_lowest_mass(0.05)
+            for (i, j), v in {(0, 0): .5, (0, 1): .3, (1, 1): -.2,
+                              (1, 2): .4, (2, 2): .1}.items():
+                p.set_eps(i, j, v, 0)
+        else:
+            p.set_dm(3, -2.465e-3 + 7.41e-5)
+            p.set_lowest_mass(0)
+            p.set_eps(0, 1, 0.4, 0.9)
+            p.set_eps(0, 2, 0.2, -2.1)
+            p.set_eps(1, 1, 0.3, 0)
+            p.set_ferm_coup(0.5, 1.0, 0.8)
     else:
         raise ValueError(tag)
     return p
 
 
 TAGS = ["fast", "fast_io", "nsi", "nsi_phases", "nunm", "nunm_phases",
-        "nunm_high", "sterile", "sterile_phases", "decay", "decay_both"]
+        "nunm_high", "sterile", "sterile_phases", "decay", "decay_both",
+        "liv", "liv_phases", "snsi", "snsi_io"]
 
 
 @pytest.mark.parametrize("tag", TAGS)

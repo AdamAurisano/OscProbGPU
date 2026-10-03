@@ -80,6 +80,17 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   1.8x slower on the CPU, so Decay keeps Padé for values.
 * Publish `tests/data` (OscProb references, ~22 MB) as a release asset.
 
+## More OscProb calculators
+* Done: LIV (`PMNS_LIV`, SME d = 3..8) and SNSI (`PMNS_SNSI`), bit-identical to
+  OscProb with `OPG_OSCPROB_BITWISE`, with gradients (Z/A, binned, weighted).
+  Pending: timing and `grad_chunk` tuning on a quiet GPU.
+* Next: absorption (column depth / transmission), then PMNS_Deco
+  (density-matrix evolution) and PMNS_SiderealLIV (direction and
+  sidereal-time dependent SME).
+* Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast),
+  PMNS_Maltoni (alternative bin averaging); PMNS_OQS and EarthModelBinned on
+  request.
+
 ## Working notes
 * Local: `cmake -S . -B build -DOPG_ENABLE_CUDA=OFF -DOPG_ENABLE_PYTHON=ON`;
   references: `reference/make_reference.sh ../OscProb` (needs ROOT; set

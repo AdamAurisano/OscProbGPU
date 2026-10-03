@@ -40,8 +40,10 @@
 
 #include "PMNS_Decay.h"
 #include "PMNS_Fast.h"
+#include "PMNS_LIV.h"
 #include "PMNS_NSI.h"
 #include "PMNS_NUNM.h"
+#include "PMNS_SNSI.h"
 #include "PMNS_Sterile.h"
 #include "PremModel.h"
 
@@ -277,6 +279,69 @@ vector<Variant> GetVariants()
                },
                get_hms<PMNS_Decay>});
 
+  // LIV: all dimensions, real coefficients
+  v.push_back({"liv", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_LIV>();
+                 SetNominalPars(p);
+                 p->SetaT(0, 0, 3, 1e-21, 0);
+                 p->SetaT(0, 1, 3, 2e-21, 0);
+                 p->SetaT(1, 2, 3, -1e-21, 0);
+                 p->SetcT(1, 1, 4, 5e-23, 0);
+                 p->SetcT(0, 2, 4, 1e-22, 0);
+                 p->SetaT(1, 2, 5, 1e-24, 0);
+                 p->SetcT(2, 2, 6, 2e-26, 0);
+                 p->SetaT(0, 1, 7, 1e-28, 0);
+                 p->SetcT(1, 2, 8, 1e-30, 0);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_LIV>});
+
+  // LIV: complex coefficients (phases) in the minimal sector
+  v.push_back({"liv_phases", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_LIV>();
+                 SetNominalPars(p);
+                 p->SetaT(0, 1, 3, 1.5e-21, 0.7);
+                 p->SetaT(0, 2, 3, 8e-22, -1.9);
+                 p->SetaT(2, 2, 3, -6e-22, 0);
+                 p->SetcT(1, 2, 4, 1e-22, 2.3);
+                 p->SetcT(0, 0, 4, -4e-23, 0);
+                 p->SetcT(0, 1, 6, 3e-26, 1.1);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_LIV>});
+
+  // Scalar NSI with a non-zero lightest mass
+  v.push_back({"snsi", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_SNSI>();
+                 SetNominalPars(p);
+                 p->SetLowestMass(0.05);
+                 p->SetEps(0, 0, 0.5, 0);
+                 p->SetEps(0, 1, 0.3, 0);
+                 p->SetEps(1, 1, -0.2, 0);
+                 p->SetEps(1, 2, 0.4, 0);
+                 p->SetEps(2, 2, 0.1, 0);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_SNSI>});
+
+  // Scalar NSI, inverted ordering, massless lightest, phases and couplings
+  v.push_back({"snsi_io", 3,
+               [] {
+                 auto p = new HmsPeek<PMNS_SNSI>();
+                 SetNominalPars(p);
+                 p->SetDm(3, -2.465e-3 + 7.41e-5);
+                 p->SetLowestMass(0);
+                 p->SetEps(0, 1, 0.4, 0.9);
+                 p->SetEps(0, 2, 0.2, -2.1);
+                 p->SetEps(1, 1, 0.3, 0);
+                 p->SetFermCoup(0.5, 1.0, 0.8);
+                 return (PMNS_Base*)p;
+               },
+               get_hms<PMNS_SNSI>});
+
   return v;
 }
 
@@ -404,6 +469,9 @@ int main(int argc, char** argv)
 {
   string dir  = argc > 1 ? argv[1] : "tests/data";
   int    nsub = argc > 2 ? atoi(argv[2]) : 400;
+  // optional comma-separated list of variant tags: dump only those (and
+  // skip the shared averaging references)
+  string only = argc > 3 ? string(",") + argv[3] + "," : "";
 
   vector<double> Etest = logspace(0.1, 10, 100);
   vector<double> Eprem = logspace(0.5, 100, 120);
@@ -444,6 +512,7 @@ int main(int argc, char** argv)
   }
 
   for (auto& v : GetVariants()) {
+    if (!only.empty() && only.find("," + v.tag + ",") == string::npos) continue;
     cout << "Dumping " << v.tag << endl;
     PMNS_Base* p = v.make();
     // OscProbGPU has no eigensystem cache; compare against uncached values.
@@ -455,6 +524,8 @@ int main(int argc, char** argv)
     dump_prem(p, v.N, prem, C, Eprem, dir + "/" + v.tag + "_prem.npy");
     delete p;
   }
+
+  if (!only.empty()) return 0;
 
   dump_avgprob_1d(dir);
 

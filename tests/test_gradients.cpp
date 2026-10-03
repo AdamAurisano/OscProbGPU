@@ -131,7 +131,7 @@ TEST_CASE("Grid, event-list and weighted gradients are consistent (CPU)")
 
 TEST_CASE_TEMPLATE("G3/G4 gradients match long-double finite differences (CPU)", M,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
-                   gradtest::Decay)
+                   gradtest::Decay, gradtest::LIV, gradtest::SNSI)
 {
   opg::Propagator<M> prop;
   gradtest::check_against_ld(prop, 1e-9);
@@ -139,7 +139,7 @@ TEST_CASE_TEMPLATE("G3/G4 gradients match long-double finite differences (CPU)",
 
 TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU)", M,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
-                   gradtest::Decay)
+                   gradtest::Decay, gradtest::LIV, gradtest::SNSI)
 {
   opg::Propagator<M> prop;
   gradtest::check_values_unchanged(prop);
@@ -147,10 +147,40 @@ TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU
 
 TEST_CASE_TEMPLATE("G3/G4 grid, event-list and weighted gradients are consistent (CPU)", M,
                    gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
-                   gradtest::Decay)
+                   gradtest::Decay, gradtest::LIV, gradtest::SNSI)
 {
   opg::Propagator<M> prop;
   gradtest::check_grid_and_weighted(prop, 1e-13);
+}
+
+TEST_CASE("SNSI gradients at a massless lightest state (inverted ordering)")
+{
+  // the lightest mass |M| is not differentiable at M = 0 (one-sided
+  // derivative); all other derivatives are finite and smooth there
+  using M = gradtest::SNSI;
+  opg::Propagator<M> prop;
+  auto               par   = variants::snsi_io();  // M = 0
+  auto               names = M::param_names();
+  names.pop_back();                                // all but mlight
+  prop.set_params(par);
+  prop.set_gradient_params(names);
+  std::vector<double> E;
+  for (int i = 0; i < 60; i++) E.push_back(std::pow(10.0, -1 + 2.0 * i / 59));
+  std::vector<double> P, dP;
+  prop.prob_path_grad(E, refcmp::test_path(), false, P, dP);
+  for (double x : dP) REQUIRE(std::isfinite(x));
+  gradtest::LDEval<M> ld(opg::PremModel(), refcmp::test_path());
+  std::vector<int>    nb(E.size(), 0);
+  std::vector<double> C(E.size(), 0.0);
+  size_t       w = 0;
+  const double e = gradtest::rel_err<M>(dP, ld.grads(par, names, E, C, nb), E.size(), 9,
+                                        names, &w);
+  MESSAGE("SNSI IO, M = 0: gradients vs long-double FD " << e << " (" << names[w] << ")");
+  CHECK(e < 1e-9);
+  // mlight: the derivative from M > 0
+  prop.set_gradient_params({"mlight"});
+  prop.prob_path_grad(E, refcmp::test_path(), false, P, dP);
+  for (double x : dP) REQUIRE(std::isfinite(x));
 }
 
 TEST_CASE("NSI/NUNM prepared values do not depend on the derivative seeds")
@@ -189,7 +219,8 @@ TEST_CASE("NSI/NUNM prepared values do not depend on the derivative seeds")
 
 
 TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay)
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay,
+                   gradtest::LIV, gradtest::SNSI)
 {
   opg::Propagator<M> prop;
   gradtest::check_binned(prop, 1e-6, 1e-13);
@@ -197,7 +228,7 @@ TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
 
 
 TEST_CASE_TEMPLATE("Earth Z/A gradients (CPU)", M, gradtest::Fast, gradtest::NSI, gradtest::NUNM,
-                   gradtest::Sterile, gradtest::Decay)
+                   gradtest::Sterile, gradtest::Decay, gradtest::LIV, gradtest::SNSI)
 {
   opg::Propagator<M> prop;
   gradtest::check_zoa(prop, 1e-9);

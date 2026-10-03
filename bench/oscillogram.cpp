@@ -2,8 +2,9 @@
 //
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
-//   model  : fast (default), nsi, nunm, sterile, decay, binned, grad,
-//            grad_nsi, grad_nunm, grad_sterile, grad_decay, grad_binned,
+//   model  : fast (default), nsi, nunm, sterile, decay, liv, snsi, binned, grad,
+//            grad_nsi, grad_nunm, grad_sterile, grad_decay, grad_liv,
+//            grad_snsi, grad_binned,
 //            grad_points, or all
 
 #include <chrono>
@@ -303,6 +304,30 @@ int main(int argc, char** argv)
     auto p = nominal_params<opg::Decay<double>>();
     p.SetAlpha3(1e-4);
     run<opg::Decay<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("liv")) {
+    auto p = nominal_params<opg::LIV<double>>();
+    p.SetaT(0, 1, 3, 1e-21, 0.5);
+    p.SetcT(1, 2, 4, 1e-22, 0);
+    run<opg::LIV<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("snsi")) {
+    auto p = nominal_params<opg::SNSI<double>>();
+    p.SetLowestMass(0.05);
+    p.SetEps(0, 1, 0.3, 0.4);
+    run<opg::SNSI<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad_liv")) {
+    auto p = nominal_params<opg::LIV<double>>();
+    p.SetaT(0, 1, 3, 1e-21, 0.5);
+    p.SetcT(1, 2, 4, 1e-22, 0);
+    run_grad<opg::LIV<double>>(p, nE, nC, dev, reps);
+  }
+  if (want("grad_snsi")) {
+    auto p = nominal_params<opg::SNSI<double>>();
+    p.SetLowestMass(0.05);
+    p.SetEps(0, 1, 0.3, 0.4);
+    run_grad<opg::SNSI<double>>(p, nE, nC, dev, reps);
   }
   if (want("grad")) {
     run_grad<opg::Fast<double>>(nominal_params<opg::Fast<double>>(), nE, nC, dev, reps);

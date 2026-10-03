@@ -176,6 +176,21 @@ TEST_CASE("Decay effective mass matrix matches OscProb PMNS_Decay fHms")
   }
 }
 
+TEST_CASE("SNSI mass matrix matches OscProb PMNS_SNSI fHms")
+{
+  for (auto tag : {"snsi", "snsi_io"}) {
+    auto ref = npy::load<double>(std::string(tag) + "_hms.npy");
+    auto P   = opg::SNSI<>::prepare(std::string(tag) == "snsi" ? variants::snsi()
+                                                               : variants::snsi_io());
+    for (int i = 0; i < 3; i++)
+      for (int j = i; j < 3; j++) {
+        INFO(tag << " M(" << i << "," << j << ")");
+        CHECK(P.common.Hms(i, j).re == ref[(i * 3 + j) * 2 + 0]);
+        CHECK(P.common.Hms(i, j).im == ref[(i * 3 + j) * 2 + 1]);
+      }
+  }
+}
+
 TEST_CASE("build_hms is bit-identical to OscProb fHms")
 {
   check_hms<3>("fast", variants::nominal_mix<3>());

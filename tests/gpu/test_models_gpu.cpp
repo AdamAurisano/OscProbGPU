@@ -94,6 +94,18 @@ TEST_CASE("GPU NSI matches OscProb and the CPU backend")
   check_model<opg::NSI<>>(variants::nsi_phases(), "nsi_phases");
 }
 
+TEST_CASE("GPU LIV matches OscProb and the CPU backend")
+{
+  check_model<opg::LIV<>>(variants::liv(), "liv");
+  check_model<opg::LIV<>>(variants::liv_phases(), "liv_phases");
+}
+
+TEST_CASE("GPU SNSI matches OscProb and the CPU backend")
+{
+  check_model<opg::SNSI<>>(variants::snsi(), "snsi");
+  check_model<opg::SNSI<>>(variants::snsi_io(), "snsi_io");
+}
+
 TEST_CASE("GPU NUNM matches OscProb and the CPU backend")
 {
   check_model<opg::NUNM<>>(variants::nunm(0), "nunm");

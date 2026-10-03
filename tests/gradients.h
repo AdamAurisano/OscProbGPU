@@ -136,10 +136,63 @@ namespace gradtest {
     return v;
   }
 
+  /// Natural size of a parameter: 1 except for the LIV coefficients, whose
+  /// dimension-d magnitudes are of order 10^(-21 - ...) GeV^(4-d).
+  inline double param_scale(const std::string& name)
+  {
+    if (name.size() > 3 && (name.rfind("aT", 0) == 0 || name.rfind("cT", 0) == 0)) {
+      static const double s[6] = {1e-21, 1e-22, 1e-24, 1e-26, 1e-28, 1e-30};
+      return s[name[2] - '3'];
+    }
+    return 1.0;
+  }
+
+  /// Natural size of a parameter for a given model (finite-difference step
+  /// and error floor scale with it).
+  template <class Model> double model_scale(const std::string& name)
+  {
+    return param_scale(name);
+  }
+  /// SNSI: with absolute masses of a few 1e-2 eV, the probabilities vary on
+  /// scales ~1e-2 of eps (MeV^-2), the couplings and mlight (eV).
+  template <> inline double model_scale<opg::SNSI<double>>(const std::string& name)
+  {
+    if (name == "mlight" || name.rfind("eps_", 0) == 0 || name.rfind("coup_", 0) == 0)
+      return 1e-2;
+    return param_scale(name);
+  }
+
   /// Parameters in eV^2 (mass splittings, Decay's alpha_j).
   inline bool is_ev2(const std::string& name)
   {
     return name.rfind("dm", 0) == 0 || name == "alpha2" || name == "alpha3";
+  }
+
+  using LIV = opg::LIV<double>;
+  template <> inline std::vector<std::pair<std::string, LIV::Params>> param_points<LIV>()
+  {
+    std::vector<std::pair<std::string, LIV::Params>> v;
+    v.push_back({"liv", variants::liv()});
+    v.push_back({"liv_phases", variants::liv_phases()});
+    LIV::Params p;
+    p.mix = variants::nominal_mix<3>();
+    v.push_back({"no LIV", p});
+    return v;
+  }
+
+  using SNSI = opg::SNSI<double>;
+  template <> inline std::vector<std::pair<std::string, SNSI::Params>> param_points<SNSI>()
+  {
+    std::vector<std::pair<std::string, SNSI::Params>> v;
+    v.push_back({"snsi", variants::snsi()});
+    auto io = variants::snsi_io();
+    io.SetLowestMass(0.02);  // (at 0 the mlight derivative is one-sided)
+    v.push_back({"snsi_io,m=0.02", io});
+    SNSI::Params p;
+    p.mix = variants::nominal_mix<3>();
+    p.SetLowestMass(0.05);
+    v.push_back({"eps=0", p});
+    return v;
   }
 
   /// Step for each parameter: 1e-4 absolute for angles, phases and
@@ -148,11 +201,11 @@ namespace gradtest {
   /// splittings, capped at 3e-8 eV^2 so that the oscillation phase changes
   /// by at most ~1e-3 rad over the Earth even for dm41 ~ 1 eV^2; 3e-8 eV^2
   /// absolute for decay constants.
-  inline LD step(const std::string& name, LD value)
+  template <class Model> LD step(const std::string& name, LD value)
   {
     if (name.rfind("dm", 0) == 0) return std::min(std::fabs(value) * 1e-5L, 3e-8L);
     if (is_ev2(name)) return 3e-8L;  // decay constants (may be 0)
-    return 1e-4L;
+    return 1e-4L * LD(model_scale<Model>(name));
   }
 
   /// P[a][b] for a list of points through either the PREM model or a
@@ -200,7 +253,7 @@ namespace gradtest {
           int  idx = int(std::find(all.begin(), all.end(), n) - all.begin());
           auto base = Model::template cast<LD>(p0);
           LD   x0   = FL::param_ref(base, idx);
-          LD   h    = step(n, x0);
+          LD   h    = step<Model>(n, x0);
           auto at   = [&](LD dx) {
             auto q                 = base;
             FL::param_ref(q, idx)  = x0 + dx;
@@ -225,12 +278,13 @@ namespace gradtest {
   /// angles, phases and couplings (typical derivatives O(1e-2..1)) and 10
   /// eV^-2 for mass splittings, whose derivatives scale with L/E (up to
   /// ~5e4 eV^-2 through the Earth at 0.3 GeV); likewise for decay constants.
-  inline double grad_floor(const std::string& name)
+  template <class Model = opg::Fast<double>> double grad_floor(const std::string& name)
   {
-    return is_ev2(name) ? 10.0 : 1e-3;
+    return is_ev2(name) ? 10.0 : 1e-3 / model_scale<Model>(name);
   }
 
-  inline double rel_err(const std::vector<double>& g /*[p][a][b][i]*/,
+  template <class Model = opg::Fast<double>>
+  double rel_err(const std::vector<double>& g /*[p][a][b][i]*/,
                         const std::vector<std::vector<LD>>& ref /*[p][i][a][b]*/,
                         size_t n, int NN, const std::vector<std::string>& names,
                         size_t* which = nullptr)
@@ -245,7 +299,7 @@ namespace gradtest {
           m         = std::max(m, std::fabs(gg - gr));
           r         = std::max(r, std::fabs(gr));
         }
-      const double e = m / std::max(r, grad_floor(names[p]));
+      const double e = m / std::max(r, grad_floor<Model>(names[p]));
       if (e > worst && which) *which = p;
       worst = std::max(worst, e);
     }
@@ -294,17 +348,17 @@ namespace gradtest {
       prop.prob_points_grad(pts.E, pts.C, pts.nb, P, dP);
       auto   ref = ldprem.grads(par, names, pts.E, pts.C, pts.nbi);
       size_t w1 = 0;
-      double e1  = rel_err(dP, ref, pts.E.size(), NN, names, &w1);
+      double e1  = rel_err<Model>(dP, ref, pts.E.size(), NN, names, &w1);
       // fixed paths (test path, vacuum), nu and nubar
       double e2 = 0, e3 = 0;
       for (int b = 0; b < 2; b++) {
         std::vector<int> nbv(Ep.size(), b);
         std::vector<double> Cdummy(Ep.size(), 0.0);
         prop.prob_path_grad(Ep, refcmp::test_path(), b, P, dP);
-        e2 = std::max(e2, rel_err(dP, ldpath.grads(par, names, Ep, Cdummy, nbv),
+        e2 = std::max(e2, rel_err<Model>(dP, ldpath.grads(par, names, Ep, Cdummy, nbv),
                                   Ep.size(), NN, names));
         prop.prob_path_grad(Ep, refcmp::vacuum_path(), b, P, dP);
-        e3 = std::max(e3, rel_err(dP, ldvac.grads(par, names, Ep, Cdummy, nbv),
+        e3 = std::max(e3, rel_err<Model>(dP, ldvac.grads(par, names, Ep, Cdummy, nbv),
                                   Ep.size(), NN, names));
       }
       MESSAGE(std::string(Model::name)
@@ -471,7 +525,7 @@ namespace gradtest {
   }
 
   /// Bin-averaged gradients: values unchanged, finite differences of
-  /// binned(), weighted mode, and avg_path_grad.
+  /// binned() (4-point, double precision), weighted mode, and avg_path_grad.
   template <class Model>
   void check_binned(opg::Propagator<Model>& prop, double tol_fd, double tol_w)
   {
@@ -510,19 +564,19 @@ namespace gradtest {
       auto         q0 = Model::template cast<double>(par);
       const double x0 = Model::param_ref(q0, idx);
       const double h  = is_ev2(names[p]) ? std::min(std::max(std::fabs(x0), 1e-4) * 1e-6, 3e-9)
-                                         : 1e-6;  // eV^2: small phase change
-      auto         pl = at(h), mi = at(-h);
+                                         : 1e-4 * model_scale<Model>(names[p]);
+      auto         pl = at(h), mi = at(-h), p2 = at(2 * h), m2 = at(-2 * h);
       double       m = 0, r = 0;
       for (int b = 0; b < 2; b++)
         for (int ab = 0; ab < NN; ab++)
           for (size_t k = 0; k < nbin; k++) {
-            const double fd = (pl[(b * NN + ab) * nbin + k] - mi[(b * NN + ab) * nbin + k]) /
-                              (2 * h);
+            const size_t i  = (b * NN + ab) * nbin + k;
+            const double fd = (8 * (pl[i] - mi[i]) - (p2[i] - m2[i])) / (12 * h);
             const double g  = G[((b * np + p) * NN + ab) * nbin + k];
             m               = std::max(m, std::fabs(g - fd));
             r               = std::max(r, std::fabs(fd));
           }
-      worst = std::max(worst, m / std::max(r, grad_floor(names[p])));
+      worst = std::max(worst, m / std::max(r, grad_floor<Model>(names[p])));
     }
     MESSAGE(std::string(Model::name) << " binned gradients vs double FD: " << worst);
     CHECK(worst < tol_fd);
@@ -556,7 +610,7 @@ namespace gradtest {
       auto         q0 = Model::template cast<double>(par);
       const double x0 = Model::param_ref(q0, idx);
       const double h  = is_ev2(names[p]) ? std::min(std::max(std::fabs(x0), 1e-4) * 1e-6, 3e-9)
-                                         : 1e-6;  // eV^2: small phase change
+                                         : 1e-4 * model_scale<Model>(names[p]);
       auto         at = [&](double dx) {
         auto q                    = Model::template cast<double>(par);
         Model::param_ref(q, idx) += dx;
@@ -564,14 +618,14 @@ namespace gradtest {
         pp.set_params(q);
         return pp.avg_path(edges, 5, refcmp::test_path(), false);
       };
-      auto   pl = at(h), mi = at(-h);
+      auto   pl = at(h), mi = at(-h), p2 = at(2 * h), m2 = at(-2 * h);
       double m = 0, r = 0;
       for (size_t k = 0; k < NN * nb1; k++) {
-        const double fd = (pl[k] - mi[k]) / (2 * h);
+        const double fd = (8 * (pl[k] - mi[k]) - (p2[k] - m2[k])) / (12 * h);
         m               = std::max(m, std::fabs(dA[p * NN * nb1 + k] - fd));
         r               = std::max(r, std::fabs(fd));
       }
-      wa = std::max(wa, m / std::max(r, grad_floor(names[p])));
+      wa = std::max(wa, m / std::max(r, grad_floor<Model>(names[p])));
     }
     MESSAGE(std::string(Model::name) << " avg_path gradients vs double FD: " << wa);
     CHECK(wa < tol_fd);
@@ -621,7 +675,7 @@ namespace gradtest {
       }));
     }
     size_t       w1 = 0;
-    const double e1 = rel_err(dP, ref, pts.E.size(), NN, names, &w1);
+    const double e1 = rel_err<Model>(dP, ref, pts.E.size(), NN, names, &w1);
 
     // fixed test path (all segments of layer type 0)
     std::vector<double> Ep;
@@ -635,7 +689,7 @@ namespace gradtest {
       for (auto& sg : path) sg.zoa = double(LD(sg.zoa) + dx);
       return LDEval<Model>(prem, path).probs(PL, Ep, Cd, nbv);
     })};
-    const double e2 = rel_err(dP, refp, Ep.size(), NN, {"zoa_0"});
+    const double e2 = rel_err<Model>(dP, refp, Ep.size(), NN, {"zoa_0"});
     prop.prob_path_grad(Ep, refcmp::vacuum_path(), false, P, dP);
     double vmax = 0;
     for (double x : dP) vmax = std::max(vmax, std::fabs(x));

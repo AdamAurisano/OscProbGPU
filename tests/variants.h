@@ -127,6 +127,62 @@ namespace variants {
     return p;
   }
 
+  //...........................................................................
+  inline opg::LIV<>::Params liv()
+  {
+    opg::LIV<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetaT(0, 0, 3, 1e-21, 0);
+    p.SetaT(0, 1, 3, 2e-21, 0);
+    p.SetaT(1, 2, 3, -1e-21, 0);
+    p.SetcT(1, 1, 4, 5e-23, 0);
+    p.SetcT(0, 2, 4, 1e-22, 0);
+    p.SetaT(1, 2, 5, 1e-24, 0);
+    p.SetcT(2, 2, 6, 2e-26, 0);
+    p.SetaT(0, 1, 7, 1e-28, 0);
+    p.SetcT(1, 2, 8, 1e-30, 0);
+    return p;
+  }
+
+  inline opg::LIV<>::Params liv_phases()
+  {
+    opg::LIV<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetaT(0, 1, 3, 1.5e-21, 0.7);
+    p.SetaT(0, 2, 3, 8e-22, -1.9);
+    p.SetaT(2, 2, 3, -6e-22, 0);
+    p.SetcT(1, 2, 4, 1e-22, 2.3);
+    p.SetcT(0, 0, 4, -4e-23, 0);
+    p.SetcT(0, 1, 6, 3e-26, 1.1);
+    return p;
+  }
+
+  inline opg::SNSI<>::Params snsi()
+  {
+    opg::SNSI<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.SetLowestMass(0.05);
+    p.SetEps(0, 0, 0.5, 0);
+    p.SetEps(0, 1, 0.3, 0);
+    p.SetEps(1, 1, -0.2, 0);
+    p.SetEps(1, 2, 0.4, 0);
+    p.SetEps(2, 2, 0.1, 0);
+    return p;
+  }
+
+  inline opg::SNSI<>::Params snsi_io()
+  {
+    opg::SNSI<>::Params p;
+    p.mix = nominal_mix<3>();
+    p.mix.SetDm(3, -2.465e-3 + 7.41e-5);
+    p.SetLowestMass(0);
+    p.SetEps(0, 1, 0.4, 0.9);
+    p.SetEps(0, 2, 0.2, -2.1);
+    p.SetEps(1, 1, 0.3, 0);
+    p.SetFermCoup(0.5, 1.0, 0.8);
+    return p;
+  }
+
 } // namespace variants
 
 #endif

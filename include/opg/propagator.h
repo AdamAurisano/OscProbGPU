@@ -239,7 +239,6 @@ namespace opg {
         return g;
       }
 
-      const Prepared& prepared() const { return fPrepared; }
       /// weighted_gradient() with the weights already on the GPU (e.g.
       /// computed there by the caller), avoiding their upload: w[k] points to
       /// device memory on devices()[k] holding that device's share of the
@@ -269,6 +268,7 @@ namespace opg {
       }
 
 
+      const Prepared& prepared() const { return fPrepared; }
       /// Launch the grid computation (asynchronous on GPU).
       void calculate(Flavor which = Flavor::Both)
       {

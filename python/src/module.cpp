@@ -559,6 +559,48 @@ NB_MODULE(_oscprobgpu, m)
   auto cs = bind_model<Sterile>(m, "Sterile", "3+1 oscillations (PMNS_Sterile with 4 flavours).");
   bind_ctor<Sterile>(cs);
 
+  using LIV  = opg::LIV<double>;
+  using SNSI = opg::SNSI<double>;
+
+  auto cl = bind_model<LIV>(m, "LIV", "3 flavours with SME Lorentz invariance violation (PMNS_LIV).");
+  bind_ctor<LIV>(cl);
+  cl.def("set_aT",
+         [](PyModel<LIV>& w, int i, int j, int dim, double v, double ph) {
+           w.dirty = true;
+           w.params.SetaT(i, j, dim, v, ph);
+         },
+         "flvi"_a, "flvj"_a, "dim"_a, "value"_a, "phase"_a = 0.0,
+         "Set aT_ij of dimension 3, 5 or 7 (GeV^(4-dim); 0-based flavours).")
+      .def("set_cT",
+           [](PyModel<LIV>& w, int i, int j, int dim, double v, double ph) {
+             w.dirty = true;
+             w.params.SetcT(i, j, dim, v, ph);
+           },
+           "flvi"_a, "flvj"_a, "dim"_a, "value"_a, "phase"_a = 0.0,
+           "Set cT_ij of dimension 4, 6 or 8 (GeV^(4-dim); 0-based flavours).");
+
+  auto cs2 = bind_model<SNSI>(m, "SNSI", "3 flavours with scalar NSI (PMNS_SNSI).");
+  bind_ctor<SNSI>(cs2);
+  cs2.def("set_eps",
+          [](PyModel<SNSI>& w, int i, int j, double v, double ph) {
+            w.dirty = true;
+            w.params.SetEps(i, j, v, ph);
+          },
+          "flvi"_a, "flvj"_a, "value"_a, "phase"_a = 0.0,
+          "Set eps_ij in MeV^-2 (0-based flavours, i <= j).")
+      .def("set_ferm_coup",
+           [](PyModel<SNSI>& w, double e, double u, double d) {
+             w.dirty = true;
+             w.params.SetFermCoup(e, u, d);
+           },
+           "e"_a, "u"_a, "d"_a)
+      .def("set_lowest_mass",
+           [](PyModel<SNSI>& w, double mass) {
+             w.dirty = true;
+             w.params.SetLowestMass(mass);
+           },
+           "m"_a, "Lightest neutrino mass in eV.");
+
   auto cd = bind_model<Decay>(m, "Decay", "3 flavours with invisible decay (PMNS_Decay).");
   bind_ctor<Decay>(cd);
   cd.def("set_alpha2",
