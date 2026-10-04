@@ -327,9 +327,21 @@ G = L(Mᵀ, Σₐ λₐRₐᵀ) (adjoint Fréchet derivative of the 8x8 exponent
 dual exponential per segment) is contracted with ∂M/∂p for every parameter.
 The cost no longer grows with the number of parameters (43 parameters on a
 500 x 500 grid, V100: 1.6 s instead of 49 s; CPU 10x). It agrees with forward
-mode to ~1e-13 and is used for paths up to 256 segments and up to 64
+mode to ~1e-13 and is used for paths up to 256 segments and up to 96
 parameters (else forward mode); `set_adjoint_gradients(false)` (Python:
 `p.adjoint_gradients = False`) forces forward mode.
+
+**Reverse mode (hermitian models).** Fast, NSI, Sterile, LIV, SNSI and
+SiderealLIV use the same reverse-mode weighted gradients. The backward step
+is shared: from the segment's eigensystem it gives the cotangent H̄ of the
+hamiltonian (the adjoint of the eigen-decomposition derivative), and the
+parameters are obtained by contracting H̄ with ∂H/∂p. Where the hamiltonian
+is affine in the segment's density and density · Z/A (Fast, NSI, LIV,
+SiderealLIV), the cotangents are first summed over the path into
+Σ H̄, Σ ρH̄ and Σ ρ(Z/A)H̄, so the model parameters are contracted once per
+point instead of once per segment. Sterile contracts per segment: the sums
+lose about a digit at Δm²41 ~ 1 eV² for ~12% speed. Agreement with forward
+mode is ≤ 5e-13 (Sterile ≤ 3.2e-12).
 
 Parameters are processed in
 passes of K directions (K = 2; K = 1 for Sterile and Deco, whose kernels
@@ -354,14 +366,14 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 
 | Model | Parameters | P + full gradients | Weighted mode | per parameter |
 |-------|-----------:|-------------------:|--------------:|--------------:|
-| Fast    | 6  | 10.5x (0.26 s) | 12.6x (0.31 s) | 1.8 |
-| NSI     | 18 | 33x (0.81 s)   | 38x (0.93 s)   | 1.8 |
+| Fast    | 6  | 10.5x (0.26 s) | 10.8x (0.28 s; 13x forward) | 1.8 |
+| NSI     | 18 | 33x (0.81 s)   | 11x (0.28 s; 35x forward) | 1.8 |
 | NUNM    | 16 | 32x (0.85 s)   | 36x (0.95 s)   | 2.0 |
-| Sterile | 12 | 18x (3.0 s)    | 20x (3.2 s)    | 1.5 |
+| Sterile | 12 | 18x (3.0 s)    | 12x (2.0 s; 19x forward) | 1.5 |
 | Decay   | 8  | 17x (1.15 s)   | 18x (1.24 s)   | 2.1 |
-| LIV     | 60 | 123x (3.5 s)   | 131x (3.7 s)   | 2.1 |
-| SNSI    | 19 | 42x (1.1 s)    | 47x (1.2 s)    | 2.2 |
-| SiderealLIV | 54 | 104x (2.9 s) | 109x (3.0 s)  | 1.9 |
+| LIV     | 60 | 123x (3.5 s)   | 20x (0.59 s; 122x forward) | 2.1 |
+| SNSI    | 19 | 42x (1.1 s)    | 32x (0.87 s; 44x forward) | 2.2 |
+| SiderealLIV | 54 | 104x (2.9 s) | 17x (0.49 s; 105x forward) | 1.9 |
 | Deco    | 10 | 54x (2.8 s)    | 56x (2.9 s)    | 5.4 |
 | OQS     | 43 | 377x (180 s)   | 13x (reverse mode; 378x forward) | 8.8 (weighted: 0.3) |
 
@@ -371,8 +383,10 @@ parameter: comparable to central finite differences (2 per parameter), but
 exact. Deco (5.4) and OQS (8.8; 3.3 on the CPU) are the exceptions: Deco
 carries three density matrices and their derivatives; OQS differentiates an
 8x8 matrix exponential per segment in dual arithmetic, whose GPU kernels spill
-~17 KB of registers. OQS's weighted modes use reverse mode instead (see
-above): ~13 probability evaluations in total for all 43 parameters.
+~17 KB of registers. The weighted modes of OQS and the hermitian models use
+reverse mode (see above), whose cost grows only weakly with the number of
+parameters: ~13 probability evaluations in total for all 43 OQS parameters,
+~20 for all 60 LIV parameters. NUNM, Decay and Deco use forward mode.
 
 ## Validation
 

@@ -125,7 +125,7 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   (microbenchmark: <= 1.3x, 15x slower when groups in a warp diverge).
   Adopted: reverse-mode weighted gradients (physics/adjoint.h; models opt in
   with has_adjoint and adj_* hooks; engines use it for <= 256 segments and
-  <= 64 parameters; Propagator::set_adjoint_gradients). V100, 43 params:
+  <= 96 parameters; Propagator::set_adjoint_gradients). V100, 43 params:
   13 P-evals in total instead of 378 (30x); CPU 10x; agrees with forward mode
   to ~1e-13. Candidates: other models (LIV with 60 params, Sterile, Decay).
 * Done: Earth density derivatives per layer type, rho_<t> (after the
@@ -133,9 +133,15 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   (dP/d ln rho_t; PremModel::ScaleLayerDensity). SegmentZ carries a dual
   density as well as Z/A; seed_segment seeds d(rho) = rho. All models, all
   gradient modes (incl. OQS reverse mode); vs long-double FD <= 3.3e-11.
-* Next: shared reverse-mode step for the hermitian 3x3 models (Fast, NSI,
-  LIV, SNSI, SiderealLIV; LIV/SiderealLIV gain most), then EarthModelBinned
-  (uses the per-event azimuth).
+* Done: shared reverse mode for the hermitian models (eigen_step_adj,
+  hermitian3_adj_step, OPG_HERMITIAN3_ADJOINT): Fast, NSI, LIV, SNSI,
+  SiderealLIV, Sterile. Affine models (H = H0 + rho H1 + rho zoa H2: Fast,
+  NSI, LIV, SiderealLIV) sum the segment cotangents and contract the model
+  parameters once per point; Sterile does not (a digit lost at dm41 ~ 1 eV^2
+  for ~12%). V100 1000 x 1000 weighted, reverse vs forward: Fast 0.28/0.33 s,
+  NSI 0.28/0.90, Sterile 2.0/3.2, LIV 0.59/3.6, SNSI 0.87/1.2, SiderealLIV
+  0.49/3.0. Agrees with forward mode to <= 5e-13 (Sterile 3.2e-12).
+* Next: EarthModelBinned (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,
