@@ -221,7 +221,7 @@ namespace opg {
                                               Mat<3, R>& S, Mat<3, R> (&dS)[K])
       {
         using D            = Dual<R, K>;
-        const Segment<R> s = {sz.length, sz.density, sz.zoa.v, sz.layer};
+        const Segment<R> s = {sz.length, sz.density.v, sz.zoa.v, sz.layer};
         const Mat<3, R> H = hamiltonian(P, E, nubar, s);
         const Mat<3, R> U = expm<3, R>(exponent(H, s));
 #ifndef OPG_DECAY_GRAD_PADE_ONLY

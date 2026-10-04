@@ -233,9 +233,13 @@ the model parameters and the Earth model's Z/A per layer type (see
 | Deco    | mixing, `gamma21 gamma31` (GeV), `deco_angle`, `deco_power` (default: all but `deco_power`). Where the Γ₃₂ square-root argument vanishes (e.g. Γ₂₁ = 0) its derivative is taken as 0, so gradients stay finite at Γ = 0 |
 | OQS     | mixing, `a1` .. `a8`, the angles `ang<i><j>` (1 ≤ i < j ≤ 8, e.g. `ang38`), `power` (default: mixing and `a1` .. `a8`). The 8x8 exponential is differentiated in dual arithmetic through the Padé approximant |
 
-Earth parameters (`earth_parameter_names`, per propagator): `zoa_<t>` for each
-layer type t of the Earth model, i.e. the Z/A of all layers of that type
-(`PremModel::SetLayerZoA`); for fixed paths, the Z/A of segments with
+Earth parameters (`earth_parameter_names`, per propagator), for each layer
+type t of the Earth model: `zoa_<t>`, the Z/A of all layers of that type
+(`PremModel::SetLayerZoA`), and `rho_<t>`, a common relative scale of the
+densities of all layers of that type: the gradient is dP/d ln ρ_t, i.e. the
+change per unit fractional change of those densities (`PremModel::ScaleLayerDensity`
+applies such a scale), so a 2% density uncertainty on layer type t enters a
+fit as 0.02 × dP/d(rho_t). For fixed paths they apply to segments with
 `layer == t`. `gradient_parameter_names` lists model and Earth parameters.
 
 `set_gradient_params()` without arguments selects `default_gradient_params`:

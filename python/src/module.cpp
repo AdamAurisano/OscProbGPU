@@ -424,8 +424,10 @@ namespace {
              "Fixed path: returns (P[a, b, iE], dP[p, a, b, iE]).")
         .def_prop_ro("earth_parameter_names",
                      [](W& w) { return w.prop.earth_parameter_names(); },
-                     "Earth Z/A gradient parameters zoa_<layer type> of this "
-                     "propagator's Earth model (never selected by default).")
+                     "Earth gradient parameters of this propagator's Earth model: "
+                     "zoa_<layer type> (Z/A of all layers of the type), then "
+                     "rho_<layer type> (common relative scale of their densities, "
+                     "dP/d ln rho); never selected by default.")
         .def_prop_ro("gradient_parameter_names",
                      [](W& w) { return w.prop.gradient_parameter_names(); },
                      "All selectable gradient parameters (model, then Earth).")

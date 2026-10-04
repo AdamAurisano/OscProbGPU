@@ -34,11 +34,12 @@ namespace opg {
       int  layer;    ///< layer type index (informational)
   };
 
-  /// A segment whose Z/A has scalar type Z (e.g. a dual number carrying
-  /// derivatives with respect to the Z/A of its layer type).
+  /// A segment whose density and Z/A have scalar type Z (e.g. dual numbers
+  /// carrying derivatives with respect to the density scale and the Z/A of
+  /// its layer type).
   template <class Real, class Z> struct SegmentZ {
       Real length;
-      Real density;
+      Z    density;
       Z    zoa;
       int  layer;
   };
@@ -194,6 +195,14 @@ namespace opg {
       {
         for (auto& l : fLayers)
           if (l.type == type) l.zoa = zoa;
+      }
+
+      /// Multiply the density of all layers of a given type by factor (not in
+      /// OscProb; the derivative parameter rho_<type> is d/d ln(factor)).
+      void ScaleLayerDensity(int type, double factor)
+      {
+        for (auto& l : fLayers)
+          if (l.type == type) l.density *= factor;
       }
 
       double GetLayerZoA(int type) const

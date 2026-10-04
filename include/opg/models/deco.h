@@ -437,7 +437,7 @@ namespace opg {
         using std::exp;
         using std::log;
         using std::pow;
-        const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
+        const Segment<R> s{sz.length, sz.density.v, sz.zoa.v, sz.layer};
         Mat<3, R>        V;
         R                lam[3];
         hermitian3_eigen<Deco, R>(P, E, nubar, s, V, lam);

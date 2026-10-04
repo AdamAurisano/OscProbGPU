@@ -93,7 +93,7 @@ namespace opg {
                                                 bool nubar, const Seg& s,
                                                 Mat<4, S>& H)
       {
-        const R    rho = s.density;
+        const auto rho = s.density;
         const auto zoa = s.zoa;
         const S lv  = S(2 * R(constants::kGeV2eV) * E);  // 2E in eV
 
@@ -167,7 +167,7 @@ namespace opg {
                                               const SegmentZ<R, Dual<R, K>>& sz,
                                               Mat<4, R>& S, Mat<4, R> (&dS)[K])
       {
-        const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
+        const Segment<R> s{sz.length, sz.density.v, sz.zoa.v, sz.layer};
         Mat<4, R>        H, V;
         R                lam[4];
         hamiltonian(P, E, nubar, s, H);

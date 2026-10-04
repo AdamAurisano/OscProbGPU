@@ -195,7 +195,7 @@ namespace opg {
       const typename Model::template PreparedT<Dual<R, K>>& PD, R E, bool nubar,
       const SegmentZ<R, Dual<R, K>>& sz, Mat<3, R>& S, Mat<3, R> (&dS)[K])
   {
-    const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
+    const Segment<R> s{sz.length, sz.density.v, sz.zoa.v, sz.layer};
     Mat<3, R>        V;
     R                lam[3];
     hermitian3_eigen<Model, R>(P, E, nubar, s, V, lam);

@@ -144,15 +144,19 @@ namespace opg {
         else return {};
       }
 
-      /// Z/A parameters of the Earth model: zoa_<type> for each layer type
-      /// (PremModel::SetLayerZoA). The derivative with respect to zoa_<t> is
-      /// that of changing the Z/A of all layers of type t together; for
-      /// fixed paths it applies to segments whose `layer` is t.
+      /// Earth-model parameters: zoa_<type> for each layer type
+      /// (PremModel::SetLayerZoA), then rho_<type> for each layer type. The
+      /// derivative with respect to zoa_<t> is that of changing the Z/A of
+      /// all layers of type t together; rho_<t> is a common relative scale
+      /// of the densities of all layers of type t (dP/d ln rho_t, as
+      /// PremModel::ScaleLayerDensity). For fixed paths they apply to
+      /// segments whose `layer` is t.
       std::vector<std::string> earth_parameter_names() const
       {
         if constexpr (!grad_traits<Model>::enabled) return {};
         std::vector<std::string> n;
         for (int t : fZoaTypes) n.push_back("zoa_" + std::to_string(t));
+        for (int t : fZoaTypes) n.push_back("rho_" + std::to_string(t));
         return n;
       }
 
@@ -641,13 +645,16 @@ namespace opg {
               auto pd = Model::template cast<D>(fParams);
               int  cnt = int(std::min<size_t>(K, fGradIdx.size() - off));
               GradChunk<Model> c;
-              for (int k = 0; k < K; k++) c.P.zoa_type[k] = -1;
+              const int ntypes = int(fZoaTypes.size());
+              for (int k = 0; k < K; k++) c.P.zoa_type[k] = c.P.rho_type[k] = -1;
               for (int k = 0; k < cnt; k++) {
                 const int idx = fGradIdx[off + k];
                 if (idx < nmodel)
                   Model::template param_ref<D>(pd, idx).d[k] += R(1);
-                else
+                else if (idx < nmodel + ntypes)
                   c.P.zoa_type[k] = fZoaTypes[idx - nmodel];
+                else
+                  c.P.rho_type[k] = fZoaTypes[idx - nmodel - ntypes];
               }
               c.P.P    = Model::template prepare_generic<D>(pd);
               c.offset = int(off);

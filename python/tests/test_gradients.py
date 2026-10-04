@@ -146,6 +146,8 @@ def test_binned_and_earth_gradients(devices):
         pytest.skip("gradients disabled at build time")
     p = set_nominal(opg.Fast(devices=devices))
     assert p.earth_parameter_names[0] == "zoa_0"
+    nt = len(p.earth_parameter_names) // 2
+    assert p.earth_parameter_names[nt] == "rho_0"
     assert p.gradient_parameter_names == (opg.Fast.parameter_names +
                                           p.earth_parameter_names)
     p.set_gradient_params(["dm31", "zoa_2"])

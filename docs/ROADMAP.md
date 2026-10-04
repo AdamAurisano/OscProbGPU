@@ -128,8 +128,14 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   <= 64 parameters; Propagator::set_adjoint_gradients). V100, 43 params:
   13 P-evals in total instead of 378 (30x); CPU 10x; agrees with forward mode
   to ~1e-13. Candidates: other models (LIV with 60 params, Sterile, Decay).
-* Next: per-layer density derivatives (Earth-model systematic; requested),
-  then EarthModelBinned (uses the per-event azimuth).
+* Done: Earth density derivatives per layer type, rho_<t> (after the
+  zoa_<t>): a common relative scale of the densities of all layers of type t
+  (dP/d ln rho_t; PremModel::ScaleLayerDensity). SegmentZ carries a dual
+  density as well as Z/A; seed_segment seeds d(rho) = rho. All models, all
+  gradient modes (incl. OQS reverse mode); vs long-double FD <= 3.3e-11.
+* Next: shared reverse-mode step for the hermitian 3x3 models (Fast, NSI,
+  LIV, SNSI, SiderealLIV; LIV/SiderealLIV gain most), then EarthModelBinned
+  (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,

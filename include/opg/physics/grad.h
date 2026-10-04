@@ -28,21 +28,27 @@ namespace opg {
 
   /// The state of one gradient pass: the model's prepared state in dual
   /// numbers, plus, for each derivative direction k, the layer type whose
-  /// Z/A it differentiates (-1: none; the Z/A of segments of that type is
-  /// seeded in direction k).
+  /// Z/A (zoa_type) or density scale (rho_type) it differentiates (-1: none;
+  /// the Z/A, or the density, of segments of that type is seeded in
+  /// direction k; density seeds are relative: d(rho)/d(ln scale) = rho).
   template <class Model, int K> struct GradPrepared {
       typename Model::template PreparedT<Dual<typename Model::Real, K>> P;
       int zoa_type[K];
+      int rho_type[K];
   };
 
-  /// Segment with Z/A seeded according to G.zoa_type.
+  /// Segment with Z/A and density seeded according to G.zoa_type and
+  /// G.rho_type.
   template <class Model, class R, int K>
   OPG_HD OPG_INLINE SegmentZ<R, Dual<R, K>> seed_segment(const GradPrepared<Model, K>& G,
                                                          const Segment<R>& s)
   {
-    SegmentZ<R, Dual<R, K>> sd{s.length, s.density, Dual<R, K>(s.zoa), s.layer};
+    SegmentZ<R, Dual<R, K>> sd{s.length, Dual<R, K>(s.density), Dual<R, K>(s.zoa), s.layer};
     OPG_UNROLL
-    for (int k = 0; k < K; k++) sd.zoa.d[k] = G.zoa_type[k] == s.layer ? R(1) : R(0);
+    for (int k = 0; k < K; k++) {
+      sd.zoa.d[k]     = G.zoa_type[k] == s.layer ? R(1) : R(0);
+      sd.density.d[k] = G.rho_type[k] == s.layer ? s.density : R(0);
+    }
     return sd;
   }
 

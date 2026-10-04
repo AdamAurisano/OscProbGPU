@@ -374,7 +374,7 @@ namespace opg {
                                               const SegmentZ<R, Dual<R, K>>& sz,
                                               State& st, State (&dS)[K])
       {
-        const Segment<R> s{sz.length, sz.density, sz.zoa.v, sz.layer};
+        const Segment<R> s{sz.length, sz.density.v, sz.zoa.v, sz.layer};
         Mat<3, R>        V;
         R                lam[3];
         eigen(P, st, E, nubar, s, V, lam);

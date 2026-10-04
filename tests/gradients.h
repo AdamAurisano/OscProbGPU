@@ -819,12 +819,16 @@ namespace gradtest {
     LDEval<Model> base(prem);
     std::vector<std::vector<LD>> ref;
     ref.push_back(base.grads(par, {"dm31"}, pts.E, pts.C, pts.nbi)[0]);
-    for (auto& z : zoas) {
-      const int    t  = std::stoi(z.substr(4));
-      const double z0 = prem.GetLayerZoA(t);
+    for (auto& z : zoas) {  // zoa_<t>, then rho_<t> (relative density scale)
+      const int    t   = std::stoi(z.substr(4));
+      const bool   rho = z.rfind("rho_", 0) == 0;
+      const double z0  = prem.GetLayerZoA(t);
       ref.push_back(fd([&](LD dx) {
         opg::PremModel m = prem;
-        m.SetLayerZoA(t, double(z0 + dx));
+        if (rho)
+          m.ScaleLayerDensity(t, double(1 + dx));
+        else
+          m.SetLayerZoA(t, double(z0 + dx));
         return LDEval<Model>(m).probs(PL, pts.E, pts.C, pts.nbi);
       }));
     }
@@ -844,15 +848,25 @@ namespace gradtest {
       return LDEval<Model>(prem, path).probs(PL, Ep, Cd, nbv);
     })};
     const double e2 = rel_err<Model>(dP, refp, Ep.size(), NN, {"zoa_0"});
+    prop.set_gradient_params({"rho_0"});
+    prop.prob_path_grad(Ep, refcmp::test_path(), false, P, dP);
+    std::vector<std::vector<LD>> refr = {fd([&](LD dx) {
+      auto path = refcmp::test_path();
+      for (auto& sg : path) sg.density = double(LD(sg.density) * (1 + dx));
+      return LDEval<Model>(prem, path).probs(PL, Ep, Cd, nbv);
+    })};
+    const double e3 = rel_err<Model>(dP, refr, Ep.size(), NN, {"rho_0"});
+    prop.set_gradient_params({"zoa_0", "rho_0"});
     prop.prob_path_grad(Ep, refcmp::vacuum_path(), false, P, dP);
     double vmax = 0;
     for (double x : dP) vmax = std::max(vmax, std::fabs(x));
 
-    MESSAGE(std::string(Model::name) << " Z/A gradients vs long-double FD: PREM " << e1
-                                     << " (" << names[w1] << "), test path " << e2
-                                     << ", vacuum max |dP| " << vmax);
+    MESSAGE(std::string(Model::name) << " Earth (Z/A, density) gradients vs long-double FD: PREM "
+                                     << e1 << " (" << names[w1] << "), test path Z/A " << e2
+                                     << ", density " << e3 << ", vacuum max |dP| " << vmax);
     CHECK(e1 < tol);
     CHECK(e2 < tol);
+    CHECK(e3 < tol);
     CHECK(vmax == 0);
   }
 

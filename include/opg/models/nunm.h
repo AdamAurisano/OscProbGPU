@@ -187,7 +187,7 @@ namespace opg {
                                                 bool nubar, const Seg& s,
                                                 Mat<3, S>& H)
       {
-        const R    rho = s.density;
+        const auto rho = s.density;
         const auto zoa = s.zoa;
         const S lv  = S(2 * R(constants::kGeV2eV) * E);  // 2*E in eV
 
