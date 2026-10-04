@@ -118,10 +118,18 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   references `oqs` (OscProb's test values) and `oqs_full` (all dissipator
   terms, power 1, IO); 2.9e-15 CPU, 4.3e-14 GPU. Gradients: dual Padé, K = 1,
   separate_probs; mixing, a1..a8 (default), 28 angles, power. V100: P-only
-  4.1e6 /s (stack 5 KB), gradients 8.8 P-evals/param (stack 17 KB) — a
-  candidate for optimisation (fewer live matrices in Padé 13, or an
-  eigenbasis/Fréchet formulation).
-* Next: EarthModelBinned (uses the per-event azimuth).
+  4.1e6 /s (stack 5 KB), gradients 8.8 P-evals/param (stack 17 KB).
+* Done: OQS GPU speed. Tried and dropped: Padé 13 with fewer live matrices
+  and squarings applied to the vectors (no gain: an 8x8 product per thread
+  cannot stay in 255 registers), and 8 lanes per point with warp shuffles
+  (microbenchmark: <= 1.3x, 15x slower when groups in a warp diverge).
+  Adopted: reverse-mode weighted gradients (physics/adjoint.h; models opt in
+  with has_adjoint and adj_* hooks; engines use it for <= 256 segments and
+  <= 64 parameters; Propagator::set_adjoint_gradients). V100, 43 params:
+  13 P-evals in total instead of 378 (30x); CPU 10x; agrees with forward mode
+  to ~1e-13. Candidates: other models (LIV with 60 params, Sterile, Decay).
+* Next: per-layer density derivatives (Earth-model systematic; requested),
+  then EarthModelBinned (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,

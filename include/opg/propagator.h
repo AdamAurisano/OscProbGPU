@@ -128,6 +128,15 @@ namespace opg {
       /// True if this model supports gradients (and they were compiled in).
       static constexpr bool has_gradients() { return grad_traits<Model>::enabled; }
 
+      /// Whether the weighted gradient modes of this model can use reverse
+      /// mode (adjoint): cost independent of the number of parameters.
+      static constexpr bool has_adjoint_gradients() { return has_adjoint_v<Model>; }
+      /// Use reverse mode for the weighted gradient modes where available
+      /// (default true; paths of more than kAdjMaxSeg segments or more than
+      /// kAdjMaxPar parameters use forward mode). false: forward mode.
+      void set_adjoint_gradients(bool on) { fEngine->set_adjoint(on); }
+      bool adjoint_gradients() const { return fEngine->adjoint(); }
+
       /// Names of the differentiable parameters of this model.
       static std::vector<std::string> parameter_names()
       {

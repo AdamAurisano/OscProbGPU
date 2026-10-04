@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "opg/earth/prem.h"
+#include "opg/physics/adjoint.h"
 #include "opg/physics/grad.h"
 
 namespace opg {
@@ -80,6 +81,30 @@ namespace opg {
       static constexpr int N = Model::N;
 
       virtual ~EngineBase() = default;
+
+      /// Weighted gradient modes use the reverse-mode (adjoint) path where
+      /// the model provides it (on by default; off: forward mode, e.g. for
+      /// cross-checks).
+      void set_adjoint(bool on) { fAdjoint = on; }
+      bool adjoint() const { return fAdjoint; }
+
+    protected:
+      bool fAdjoint = true;
+
+      /// Whether a weighted mode with npar parameters through the Earth
+      /// model e uses the adjoint path (model support, the switch, and the
+      /// bounds of adjoint_prem on parameters and path segments).
+      bool use_adjoint(int npar, const EarthView<R>& e) const
+      {
+        if constexpr (has_adjoint_v<Model>)
+          return fAdjoint && npar <= kAdjMaxPar && e.nlayers + e.det_layer <= kAdjMaxSeg;
+        else {
+          (void)npar, (void)e;
+          return false;
+        }
+      }
+
+    public:
 
       virtual void set_earth(const PremModel& earth) = 0;
 

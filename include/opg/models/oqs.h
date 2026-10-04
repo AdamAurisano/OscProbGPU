@@ -546,6 +546,150 @@ namespace opg {
           for (int k = 0; k < K; k++) acc[k] += wab * dS[k].R9[a][b];
         }
       }
+
+      // --- adjoint (reverse mode) weighted gradients -------------------------
+      // For g = sum_ab w_ab P(a -> b) the cotangents lam_a = dg/dR_a are
+      // propagated backwards: with X = exp(M) on a segment and
+      // Z = sum_a lam_a R_a^T (components 1..8, R before the segment),
+      // dg = <G, dM> with G = L(M^T, Z) (adjoint of the Frechet derivative of
+      // exp), and lam <- X^T lam. One dual exponential of M^T in direction Z
+      // gives both X^T and G, whatever the number of parameters; each
+      // parameter then costs a contraction <G, dM/dp>.
+      static constexpr bool has_adjoint = true;
+
+      /// Segment cotangent: G = dg/dM (8x8).
+      using AdjSeg = RMat<8, R>;
+
+      /// Cotangents of the final Gell-Mann vectors (S before finalize):
+      /// lam_a[i] = sum_b w_ab d|rho_a(b, b)|/dR_a[i] (rho linear in R).
+      OPG_HD OPG_INLINE static void adj_final(const Prepared& P, bool nubar, const State& S,
+                                              const R* w, size_t stride, State& lam)
+      {
+        const Mat<3, R>& U = P.common.Uvac[nubar ? 1 : 0];
+        OPG_UNROLL
+        for (int a = 0; a < 3; a++) {
+          OPG_UNROLL
+          for (int i = 0; i < 9; i++) lam.R9[a][i] = 0;
+          OPG_UNROLL
+          for (int b = 0; b < 3; b++) {
+            const R wab = w[(a * 3 + b) * stride];
+            if (wab == R(0)) continue;
+            const Complex<R> f = flavour_diag<R>(U, S.R9[a], b);
+            const R          m = abs(f);
+            if (!(m > R(0))) continue;
+            OPG_UNROLL
+            for (int i = 0; i < 9; i++) {
+              R e[9] = {};
+              e[i]   = 1;
+              const Complex<R> df = flavour_diag<R>(U, e, b);
+              lam.R9[a][i] += wab * (f.re * df.re + f.im * df.im) / m;
+            }
+          }
+        }
+      }
+
+      /// Backward step over a segment: from lam (after the segment) and S
+      /// (the state before it) computes G and lam before the segment.
+      OPG_HD OPG_INLINE static void adj_step(const Prepared& P, R E, bool nubar,
+                                             const Segment<R>& s, const State& S, State& lam,
+                                             AdjSeg& G)
+      {
+        using D                = Dual<R, 1>;
+        const RMat<8, R> M     = exponent(P, E, nubar, s);
+        RMat<8, D>       A;  // M^T + eps Z, Z(i, j) = sum_a lam_a[i] S_a[j]
+        OPG_UNROLL
+        for (int i = 0; i < 8; i++)
+          OPG_UNROLL
+        for (int j = 0; j < 8; j++) {
+          R z = 0;
+          OPG_UNROLL
+          for (int a = 0; a < 3; a++) z += lam.R9[a][i + 1] * S.R9[a][j + 1];
+          A(i, j).v    = M(j, i);
+          A(i, j).d[0] = z;
+        }
+        const RMat<8, D> XT = expm(A);
+        OPG_UNROLL
+        for (int i = 0; i < 8; i++)
+          OPG_UNROLL
+        for (int j = 0; j < 8; j++) G(i, j) = XT(i, j).d[0];
+        // lam <- X^T lam (component 0 is unchanged by the step)
+        OPG_UNROLL
+        for (int a = 0; a < 3; a++) {
+          R t[8];
+          OPG_UNROLL
+          for (int i = 0; i < 8; i++) {
+            R acc = 0;
+            OPG_UNROLL
+            for (int k = 0; k < 8; k++) acc += XT(i, k).v * lam.R9[a][k + 1];
+            t[i] = acc;
+          }
+          OPG_UNROLL
+          for (int i = 0; i < 8; i++) lam.R9[a][i + 1] = t[i];
+        }
+      }
+
+      /// acc[k] += <G, dM/dp_k> for the K directions of a chunk.
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_step(const PreparedT<Dual<R, K>>& PD, R E,
+                                                      bool nubar,
+                                                      const SegmentZ<R, Dual<R, K>>& sz,
+                                                      const AdjSeg& G, R (&acc)[K])
+      {
+        const RMat<8, Dual<R, K>> MD = exponent(PD, E, nubar, sz);
+        OPG_UNROLL
+        for (int i = 0; i < 8; i++)
+          OPG_UNROLL
+        for (int j = 0; j < 8; j++)
+          OPG_UNROLL
+        for (int k = 0; k < K; k++) acc[k] += G(i, j) * MD(i, j).d[k];
+      }
+
+      /// acc[k] += sum_a lam_a . dR_a(initial)/dp_k (lam before the first
+      /// segment).
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>& PD,
+                                                         bool nubar, const State& lam,
+                                                         R (&acc)[K])
+      {
+        using D = Dual<R, K>;
+        OPG_UNROLL
+        for (int a = 0; a < 3; a++) {
+          D v[9];
+          initial_gm<D>(PD.common.Uvac[nubar ? 1 : 0], a, v);
+          OPG_UNROLL
+          for (int i = 0; i < 9; i++)
+            OPG_UNROLL
+          for (int k = 0; k < K; k++) acc[k] += lam.R9[a][i] * v[i].d[k];
+        }
+      }
+
+      /// acc[k] += sum_ab w_ab d|rho_a(b, b)|/dp_k through the rotation back
+      /// to the flavour basis (final Gell-Mann vectors S held fixed).
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>& PD,
+                                                       bool nubar, const State& S, const R* w,
+                                                       size_t stride, R (&acc)[K])
+      {
+        using D            = Dual<R, K>;
+        const Mat<3, D>& U = PD.common.Uvac[nubar ? 1 : 0];
+        OPG_UNROLL
+        for (int a = 0; a < 3; a++) {
+          D v[9];
+          OPG_UNROLL
+          for (int i = 0; i < 9; i++) v[i] = D(S.R9[a][i]);
+          OPG_UNROLL
+          for (int b = 0; b < 3; b++) {
+            const R wab = w[(a * 3 + b) * stride];
+            if (wab == R(0)) continue;
+            const Complex<D> r = flavour_diag<D>(U, v, b);
+            const R          m = std::hypot(r.re.v, r.im.v);
+            if (!(m > R(0))) continue;
+            OPG_UNROLL
+            for (int k = 0; k < K; k++)
+              acc[k] += wab * (r.re.v * r.re.d[k] + r.im.v * r.im.d[k]) / m;
+          }
+        }
+      }
   };
 
 } // namespace opg

@@ -237,6 +237,16 @@ namespace {
                 "P+full grad %.4fs (%.1fx), weighted grad %.4fs (%.1fx)\n",
                 Model::name, dev.empty() ? "cpu" : "cuda", nE, nC, names.size(),
                 opg::grad_traits<Model>::K, tp, tfull, tfull / tp, tw, tw / tp);
+    if constexpr (opg::Propagator<Model>::has_adjoint_gradients()) {
+      // the weighted mode above is reverse mode; forward mode for comparison
+      prop.set_adjoint_gradients(false);
+      auto a = clk::now();
+      prop.weighted_gradient(w);
+      const double tf = std::chrono::duration<double>(clk::now() - a).count();
+      prop.set_adjoint_gradients(true);
+      std::printf("%-8s grad   weighted grad: adjoint %.4fs (%.1fx), forward mode %.4fs (%.1fx)\n",
+                  Model::name, tw, tw / tp, tf, tf / tp);
+    }
     if (!dev.empty()) {
       // weights already on the GPU (here: the device probabilities)
       prop.calculate();

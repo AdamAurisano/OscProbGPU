@@ -457,6 +457,84 @@ namespace gradtest {
     return v;
   }
 
+  /// Reverse-mode (adjoint) weighted gradients against forward mode, in all
+  /// weighted modes (grid, binned, event list, per-bin event list), for all
+  /// model and Earth Z/A parameters. Relative tolerance with a floor of
+  /// 1e-6 of the largest component.
+  template <class Model> void check_adjoint(opg::Propagator<Model>& prop, double tol)
+  {
+    if constexpr (opg::Propagator<Model>::has_adjoint_gradients()) {
+      constexpr int NN  = Model::N * Model::N;
+      auto          cmp = [&](const std::vector<double>& gf, const std::vector<double>& ga,
+                     const std::vector<std::string>& names, const char* mode) {
+        REQUIRE(gf.size() == ga.size());
+        double sc = 0, worst = 0;
+        size_t iw = 0;
+        for (double x : gf) sc = std::max(sc, std::fabs(x));
+        for (size_t i = 0; i < gf.size(); i++) {
+          const double r =
+              std::fabs(ga[i] - gf[i]) / std::max(std::fabs(gf[i]), 1e-6 * sc + 1e-300);
+          if (r > worst) worst = r, iw = i;
+        }
+        MESSAGE(std::string(Model::name) << " adjoint vs forward (" << std::string(mode) << "): " << worst
+                                         << " (" << names[iw % names.size()] << ")");
+        CHECK(worst < tol);
+      };
+      std::mt19937_64                        rng(9);
+      std::uniform_real_distribution<double> u(-1, 1);
+      for (int ip = 0; ip < 2; ip++) {
+        prop.set_params(param_points<Model>()[size_t(ip)].second);
+        const auto names = prop.gradient_parameter_names();
+        prop.set_gradient_params(names);
+        INFO(param_points<Model>()[size_t(ip)].first);
+
+        // grid
+        std::vector<double> E, C;
+        for (int i = 0; i < 13; i++) E.push_back(std::pow(10.0, -0.3 + 2.0 * i / 12));
+        for (int i = 0; i < 9; i++) C.push_back(-1 + 1.4 * i / 8);
+        prop.set_grid(E, C);
+        std::vector<double> w(2 * NN * E.size() * C.size());
+        for (auto& x : w) x = u(rng);
+        prop.set_adjoint_gradients(false);
+        auto gf = prop.weighted_gradient(w);
+        prop.set_adjoint_gradients(true);
+        cmp(gf, prop.weighted_gradient(w), names, "grid");
+
+        // binned
+        prop.set_bins({0.5, 2.0, 8.0, 30.0}, {-1.0, -0.6, -0.2, 0.3}, 3, 2);
+        std::vector<double> wb(2 * NN * prop.n_cosine_bins() * prop.n_energy_bins());
+        for (auto& x : wb) x = u(rng);
+        prop.set_adjoint_gradients(false);
+        gf = prop.weighted_gradient_binned(wb);
+        prop.set_adjoint_gradients(true);
+        cmp(gf, prop.weighted_gradient_binned(wb), names, "binned");
+
+        // event list, and per analysis bin
+        const size_t         n = 157;
+        std::vector<double>  e(n), c(n), wp(NN * n);
+        std::vector<uint8_t> nb(n);
+        std::vector<int>     bin(n);
+        for (size_t i = 0; i < n; i++) {
+          e[i]   = std::pow(10.0, 0.7 + 0.9 * u(rng));
+          c[i]   = 0.95 * u(rng);
+          nb[i]  = uint8_t(i % 2);
+          bin[i] = int(i % 5) - 1;  // -1: ignored
+        }
+        for (auto& x : wp) x = u(rng);
+        prop.set_adjoint_gradients(false);
+        gf = prop.weighted_gradient_points(e, c, nb, wp);
+        auto Gf = prop.weighted_gradient_points_binned(e, c, nb, wp, bin, 4);
+        prop.set_adjoint_gradients(true);
+        cmp(gf, prop.weighted_gradient_points(e, c, nb, wp), names, "points");
+        cmp(Gf, prop.weighted_gradient_points_binned(e, c, nb, wp, bin, 4), names,
+            "points per bin");
+      }
+    }
+    else {
+      (void)prop, (void)tol;
+    }
+  }
+
   /// Gradients on must not change probabilities.
   template <class Model> void check_values_unchanged(opg::Propagator<Model>& prop)
   {

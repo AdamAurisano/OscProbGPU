@@ -156,6 +156,12 @@ TEST_CASE_TEMPLATE("G3/G4 grid, event-list and weighted gradients are consistent
   gradtest::check_grid_and_weighted(prop, 1e-13);
 }
 
+TEST_CASE("OQS adjoint weighted gradients equal forward mode (CPU)")
+{
+  opg::Propagator<gradtest::OQS> prop;
+  gradtest::check_adjoint(prop, 1e-11);
+}
+
 TEST_CASE("SNSI gradients at a massless lightest state (inverted ordering)")
 {
   // the lightest mass |M| is not differentiable at M = 0 (one-sided

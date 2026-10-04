@@ -404,6 +404,137 @@ namespace opg {
       block_reduce_store<R, K, 128>(acc, out + size_t(b) * K);
     }
 
+    // --- reverse-mode (adjoint) weighted gradients (models with has_adjoint) --
+    // Every thread accumulates all npar <= kAdjMaxPar parameters (all
+    // gradient chunks at once, chunks[c] in global memory); blocks of
+    // kAdjBlockT threads reduce them to partial[blk][kAdjMaxPar]. *err is
+    // set if a path exceeds kAdjMaxSeg segments (checked on the host first).
+    constexpr int kAdjBlockT = 64;
+
+    template <class Model> struct AdjChunks {
+        using GP = typename grad_traits<Model>::Prepared;
+        const GP* p;
+        __device__ const GP& operator()(int c) const { return p[c]; }
+    };
+
+    template <class Model, class R, int K>
+    __global__ void grid_wadj_kernel(const typename Model::Prepared P,
+                                     const typename grad_traits<Model>::Prepared* chunks,
+                                     int npar, const EarthView<R> earth,
+                                     const R* __restrict__ E, int nE, const R* __restrict__ C,
+                                     int nC, int nb_first, const R* __restrict__ w,
+                                     R* __restrict__ partial, int* err)
+    {
+      constexpr int            N  = Model::N;
+      const AdjChunks<Model>   ch{chunks};
+      const int                nb = nb_first + blockIdx.z;
+      const int                ie = blockIdx.x * blockDim.x + threadIdx.x;
+      const size_t             stride = size_t(nC) * nE;
+      R                        acc[kAdjMaxPar] = {};
+      if (ie < nE) {
+        for (int ic = blockIdx.y; ic < nC; ic += gridDim.y)
+          if (!adjoint_prem<Model, R, K>(P, ch, npar, earth, E[ie], C[ic], nb == 1,
+                                         w + size_t(nb) * N * N * stride + size_t(ic) * nE + ie,
+                                         stride, acc))
+            *err = 1;
+      }
+      const size_t blk = (size_t(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+      block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc, partial + blk * kAdjMaxPar);
+    }
+
+    template <class Model, class R, int K>
+    __global__ void nodes_wadj_kernel(const typename Model::Prepared P,
+                                      const typename grad_traits<Model>::Prepared* chunks,
+                                      int npar, const EarthView<R> earth,
+                                      const R* __restrict__ E, int nE, const R* __restrict__ C,
+                                      int nC, const R* __restrict__ wE, const R* __restrict__ wC,
+                                      const int* __restrict__ binOfRow, int nglE, int nCb,
+                                      int nEb, int nb_first, const R* __restrict__ w,
+                                      R* __restrict__ partial, int* err)
+    {
+      constexpr int          N  = Model::N;
+      const AdjChunks<Model> ch{chunks};
+      const int              nb = nb_first + blockIdx.z;
+      const int              ie = blockIdx.x * blockDim.x + threadIdx.x;
+      R                      acc[kAdjMaxPar] = {};
+      if (ie < nE) {
+        const int ieb = ie / nglE;
+        for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+          const R   f   = wC[ic] * wE[ie];
+          const int icb = binOfRow[ic];
+          R         wn[N * N];
+          for (int ab = 0; ab < N * N; ab++)
+            wn[ab] = w[((size_t(nb) * N * N + ab) * nCb + icb) * nEb + ieb] * f;
+          if (!adjoint_prem<Model, R, K>(P, ch, npar, earth, E[ie], C[ic], nb == 1, wn, 1,
+                                         acc))
+            *err = 1;
+        }
+      }
+      const size_t blk = (size_t(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+      block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc, partial + blk * kAdjMaxPar);
+    }
+
+    template <class Model, class R, int K>
+    __global__ void points_wadj_kernel(const typename Model::Prepared P,
+                                       const typename grad_traits<Model>::Prepared* chunks,
+                                       int npar, const EarthView<R> earth,
+                                       const R* __restrict__ E, const R* __restrict__ C,
+                                       const uint8_t* __restrict__ nubar,
+                                       const R* __restrict__ extra, size_t n,
+                                       const R* __restrict__ w, R* __restrict__ partial,
+                                       int* err)
+    {
+      const AdjChunks<Model> ch{chunks};
+      R                      acc[kAdjMaxPar] = {};
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x) {
+        R ex[kMaxExtra];
+        if (!adjoint_prem<Model, R, K>(P, ch, npar, earth, E[i], C[i], nubar[i] != 0, w + i, n,
+                                       acc, gather_extra<Model, R>(extra, i, n, ex)))
+          *err = 1;
+      }
+      block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc, partial + size_t(blockIdx.x) * kAdjMaxPar);
+    }
+
+    /// Per-event contributions contrib[i][p] (stride npar; bin < 0 skipped).
+    template <class Model, class R, int K>
+    __global__ void points_adj_contrib_kernel(const typename Model::Prepared P,
+                                              const typename grad_traits<Model>::Prepared* chunks,
+                                              int npar, const EarthView<R> earth,
+                                              const R* __restrict__ E, const R* __restrict__ C,
+                                              const uint8_t* __restrict__ nubar,
+                                              const R* __restrict__ extra,
+                                              const int* __restrict__ bin, size_t n,
+                                              const R* __restrict__ w, R* __restrict__ contrib,
+                                              int* err)
+    {
+      const AdjChunks<Model> ch{chunks};
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x) {
+        if (bin[i] < 0) continue;
+        R acc[kAdjMaxPar] = {};
+        R ex[kMaxExtra];
+        if (!adjoint_prem<Model, R, K>(P, ch, npar, earth, E[i], C[i], nubar[i] != 0, w + i, n,
+                                       acc, gather_extra<Model, R>(extra, i, n, ex)))
+          *err = 1;
+        for (int p = 0; p < npar; p++) contrib[i * npar + p] = acc[p];
+      }
+    }
+
+    /// One block per analysis bin: sum contrib[i][p] (stride npar) over the
+    /// bin's events in a fixed order; out[b][kAdjMaxPar].
+    template <class R>
+    __global__ void bin_sum_adj_kernel(const R* __restrict__ contrib, int npar,
+                                       const int* __restrict__ perm,
+                                       const int* __restrict__ start, R* __restrict__ out)
+    {
+      const int b               = blockIdx.x;
+      R         acc[kAdjMaxPar] = {};
+      for (int j = start[b] + threadIdx.x; j < start[b + 1]; j += blockDim.x)
+        for (int p = 0; p < npar; p++) acc[p] += contrib[size_t(perm[j]) * npar + p];
+      block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc, out + size_t(b) * kAdjMaxPar);
+    }
+
     template <class Model, class R, int K>
     __global__ void path_grad_kernel(const typename Model::Prepared         P,
                                      const typename GradArg<Model>::type PDa,
@@ -791,7 +922,29 @@ namespace opg {
                           const std::vector<const R*>& w, R* g)
       {
         if constexpr (GT::enabled) {
-          const size_t nd = fDev.size();
+          const size_t nd   = fDev.size();
+          const int    npar = chunks.empty() ? 0 : chunks.back().offset + chunks.back().count;
+          if constexpr (has_adjoint_v<Model>)
+            if (use_adj(npar)) {
+              upload_adj_chunks(chunks);
+              for (size_t k = 0; k < nd; k++) {
+                Device& D = *fDev[k];
+                Slab&   G = D.grid;
+                if (G.rows.empty() || fNE == 0) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                const size_t nrow = G.C.n;
+                dim3 grid(unsigned((fNE + kAdjBlockT - 1) / kAdjBlockT),
+                          unsigned(std::min<size_t>(nrow, 4096)), unsigned(hi - lo + 1));
+                const size_t nblk = size_t(grid.x) * grid.y * grid.z;
+                D.partial.resize(D.id, nblk * kAdjMaxPar);
+                grid_wadj_kernel<Model, R, GK><<<grid, dim3(kAdjBlockT), 0, D.stream>>>(
+                    P, D.pd.ptr, npar, D.earth, G.E.ptr, int(fNE), G.C.ptr, int(nrow), lo,
+                    w[k], D.partial.ptr, D.adjErr.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+              sum_adj_partials(npar, g);
+              return;
+            }
           for (size_t c = 0; c < chunks.size(); c++) {
             std::vector<dim3> grids(nd);
             for (size_t k = 0; k < nd; k++) {
@@ -890,6 +1043,23 @@ namespace opg {
             D.wts.upload(D.id, loc.data(), loc.size(), D.stream);
             OPG_CUDA(cudaStreamSynchronize(D.stream));
           }
+          if constexpr (has_adjoint_v<Model>)
+            if (use_adj(npar)) {
+              upload_adj_chunks(chunks);
+              for (size_t k = 0; k < nd; k++) {
+                Device& D = *fDev[k];
+                if (!cnt[k]) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                const unsigned nblk = std::min(blocks_for(cnt[k], kAdjBlockT), 4096u);
+                D.partial.resize(D.id, size_t(nblk) * kAdjMaxPar);
+                points_wadj_kernel<Model, R, GK><<<nblk, kAdjBlockT, 0, D.stream>>>(
+                    P, D.pd.ptr, npar, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr,
+                    cnt[k], D.wts.ptr, D.partial.ptr, D.adjErr.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+              sum_adj_partials(npar, g);
+              return;
+            }
           for (size_t c = 0; c < chunks.size(); c++) {
             for (size_t k = 0; k < nd; k++) {
               Device& D = *fDev[k];
@@ -1090,6 +1260,29 @@ namespace opg {
             }
             D.binOfRow.upload(D.id, bor.data(), bor.size(), D.stream);
           }
+          const int npar = chunks.empty() ? 0 : chunks.back().offset + chunks.back().count;
+          if constexpr (has_adjoint_v<Model>)
+            if (use_adj(npar)) {
+              upload_adj_chunks(chunks);
+              for (size_t k = 0; k < nd; k++) {
+                Device& D = *fDev[k];
+                if (D.binned.rows.empty() || nEn == 0) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                const size_t nrow = D.nodes.C.n;
+                dim3 grid(unsigned((nEn + kAdjBlockT - 1) / kAdjBlockT),
+                          unsigned(std::min<size_t>(nrow, 4096)), unsigned(hi - lo + 1));
+                const size_t nblk = size_t(grid.x) * grid.y * grid.z;
+                D.partial.resize(D.id, nblk * kAdjMaxPar);
+                nodes_wadj_kernel<Model, R, GK><<<grid, dim3(kAdjBlockT), 0, D.stream>>>(
+                    P, D.pd.ptr, npar, D.earth, D.nodes.E.ptr, int(nEn), D.nodes.C.ptr,
+                    int(nrow), D.wE.ptr, D.wC.ptr, D.binOfRow.ptr, fBins.nglE,
+                    int(D.binned.rows.size()), int(nEb), lo, w[k], D.partial.ptr,
+                    D.adjErr.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+              sum_adj_partials(npar, g);
+              return;
+            }
           for (size_t c = 0; c < chunks.size(); c++) {
             for (size_t k = 0; k < nd; k++) {
               Device& D = *fDev[k];
@@ -1160,6 +1353,44 @@ namespace opg {
             D.contrib.resize(D.id, cnt[k] * GK);
             OPG_CUDA(cudaStreamSynchronize(D.stream));
           }
+          if constexpr (has_adjoint_v<Model>)
+            if (use_adj(npar)) {
+              upload_adj_chunks(chunks);
+              for (size_t k = 0; k < nd; k++) {
+                Device& D = *fDev[k];
+                if (!cnt[k]) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                D.contrib.resize(D.id, cnt[k] * size_t(npar));
+                points_adj_contrib_kernel<Model, R, GK>
+                    <<<blocks_for(cnt[k], kAdjBlockT), kAdjBlockT, 0, D.stream>>>(
+                        P, D.pd.ptr, npar, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr,
+                        D.pBin.ptr, cnt[k], D.wts.ptr, D.contrib.ptr, D.adjErr.ptr);
+                OPG_CUDA(cudaGetLastError());
+                D.partial.resize(D.id, size_t(nbins) * kAdjMaxPar);
+                if (D.binPerm.n)
+                  bin_sum_adj_kernel<R><<<unsigned(nbins), kAdjBlockT, 0, D.stream>>>(
+                      D.contrib.ptr, npar, D.binPerm.ptr, D.binStart.ptr, D.partial.ptr);
+                else
+                  OPG_CUDA(cudaMemsetAsync(D.partial.ptr, 0, D.partial.n * sizeof(R),
+                                           D.stream));
+                OPG_CUDA(cudaGetLastError());
+              }
+              for (size_t k = 0; k < nd; k++) {  // fixed order
+                Device& D = *fDev[k];
+                if (!cnt[k]) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                D.partialHost.resize(D.partial.n);
+                OPG_CUDA(cudaMemcpyAsync(D.partialHost.data(), D.partial.ptr,
+                                         D.partial.n * sizeof(R), cudaMemcpyDeviceToHost,
+                                         D.stream));
+                OPG_CUDA(cudaStreamSynchronize(D.stream));
+                for (int b = 0; b < nbins; b++)
+                  for (int p = 0; p < npar; p++)
+                    G[size_t(b) * npar + p] += D.partialHost[size_t(b) * kAdjMaxPar + p];
+              }
+              check_adj_err();
+              return;
+            }
           for (size_t c = 0; c < chunks.size(); c++) {
             for (size_t k = 0; k < nd; k++) {
               Device& D = *fDev[k];
@@ -1222,6 +1453,7 @@ namespace opg {
           DevBuf<int>        pBin, binStart, binPerm;  ///< per-bin event lists
           DevBuf<R>          contrib;   ///< per-event weighted contractions
           DevBuf<R>          pX;        ///< per-event extra inputs [x][cnt]
+          DevBuf<int>        adjErr;    ///< adjoint path overflow flag
           DevBuf<R>          wts;       ///< weights for weighted gradients
           DevBuf<typename grad_traits<Model>::Prepared> pd;  ///< dual states (GradArg)
           PinnedBuf<R>       wtsHost;   ///< pinned staging for wts
@@ -1365,6 +1597,63 @@ namespace opg {
       /// Copy the dual states of all gradient passes to every device (only
       /// when they are passed by pointer). The copies are ordered on each
       /// device's stream, after any kernels still using the previous ones.
+      /// Whether weighted modes with npar parameters use the adjoint path.
+      bool use_adj(int npar) const
+      {
+        return !fDev.empty() && this->use_adjoint(npar, fDev[0]->earth);
+      }
+
+      /// Upload all gradient chunks to D.pd and clear D.adjErr (adjoint path).
+      void upload_adj_chunks(const Chunks& chunks)
+      {
+        fPDHost.resize(chunks.size());
+        for (size_t c = 0; c < chunks.size(); c++) fPDHost[c] = chunks[c].P;
+        for (auto& Dp : fDev) {
+          OPG_CUDA(cudaSetDevice(Dp->id));
+          Dp->pd.upload(Dp->id, fPDHost.data(), fPDHost.size(), Dp->stream);
+          Dp->adjErr.resize(Dp->id, 1);
+          OPG_CUDA(cudaMemsetAsync(Dp->adjErr.ptr, 0, sizeof(int), Dp->stream));
+        }
+      }
+
+      /// g[p] += partials (blocks of kAdjMaxPar) of all devices, in a fixed
+      /// order; throws if a kernel flagged a path too long for the adjoint.
+      void sum_adj_partials(int npar, R* g)
+      {
+        for (auto& Dp : fDev) {
+          Device& D = *Dp;
+          if (D.partial.n == 0) continue;
+          OPG_CUDA(cudaSetDevice(D.id));
+          D.partialHost.resize(D.partial.n);
+          OPG_CUDA(cudaMemcpyAsync(D.partialHost.data(), D.partial.ptr,
+                                   D.partial.n * sizeof(R), cudaMemcpyDeviceToHost, D.stream));
+        }
+        for (auto& Dp : fDev) {
+          Device& D = *Dp;
+          if (D.partial.n == 0) continue;
+          OPG_CUDA(cudaSetDevice(D.id));
+          OPG_CUDA(cudaStreamSynchronize(D.stream));
+          const size_t nblk = D.partial.n / kAdjMaxPar;
+          for (size_t b = 0; b < nblk; b++)
+            for (int p = 0; p < npar; p++) g[p] += D.partialHost[b * kAdjMaxPar + p];
+          D.partial.release();
+        }
+        check_adj_err();
+      }
+
+      void check_adj_err()
+      {
+        for (auto& Dp : fDev) {
+          int err = 0;
+          OPG_CUDA(cudaSetDevice(Dp->id));
+          if (Dp->adjErr.n)
+            OPG_CUDA(cudaMemcpy(&err, Dp->adjErr.ptr, sizeof(int), cudaMemcpyDeviceToHost));
+          if (err)
+            throw std::runtime_error("CudaEngine: path longer than kAdjMaxSeg segments in "
+                                     "the adjoint gradient (use set_adjoint_gradients(false))");
+        }
+      }
+
       void upload_chunks(const Chunks& chunks)
       {
         if constexpr (GradArg<Model>::by_pointer) {

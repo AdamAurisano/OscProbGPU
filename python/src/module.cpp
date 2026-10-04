@@ -289,6 +289,16 @@ namespace {
              "Select parameters to differentiate (empty list = gradients off; "
              "no argument = default_gradient_params).")
         .def_prop_ro("gradient_params", [](W& w) { return w.prop.gradient_params(); })
+        .def_prop_ro_static("has_adjoint_gradients",
+                            [](nb::handle) {
+                              return opg::Propagator<Model>::has_adjoint_gradients();
+                            },
+                            "Whether the weighted gradient modes can use reverse mode.")
+        .def_prop_rw(
+            "adjoint_gradients", [](W& w) { return w.prop.adjoint_gradients(); },
+            [](W& w, bool on) { w.prop.set_adjoint_gradients(on); },
+            "Use reverse mode (cost independent of the number of parameters) in the "
+            "weighted gradient modes where the model supports it (default True).")
         .def("calculate_gradient",
              [](W& w, const std::string& fl) {
                w.sync();

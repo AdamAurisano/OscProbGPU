@@ -160,6 +160,32 @@ namespace opg {
           std::vector<size_t> binOfRow(nCn);
           for (size_t icb = 0; icb < B.nCb; icb++)
             for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) binOfRow[rc] = icb;
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+            auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
+            std::vector<R> part(2 * nCn * size_t(npar), R(0));
+            const long long nrow = (long long)nCn;
+            for (int nb = 0; nb < 2; nb++) {
+              if (!(int(which) & (1 << nb))) continue;
+              const R* wbase = w + size_t(nb) * N * N * nbin;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+              for (long long rc = 0; rc < nrow; rc++) {
+                const size_t icb = binOfRow[size_t(rc)];
+                R*           acc = &part[(size_t(nb) * nCn + size_t(rc)) * size_t(npar)];
+                R            wn[N * N];
+                for (size_t ie = 0; ie < nEn; ie++) {
+                  const size_t ieb = ie / size_t(B.nglE);
+                  for (int ab = 0; ab < N * N; ab++)
+                    wn[ab] = wbase[(ab * B.nCb + icb) * B.nEb + ieb] * B.wC[size_t(rc)] *
+                             B.wE[ie];
+                  adjoint_prem<Model, R, GK>(P, chunk, npar, earth, B.nodesE[ie],
+                                             B.nodesC[size_t(rc)], nb == 1, wn, 1, acc);
+                }
+              }
+            }
+            for (size_t r = 0; r < 2 * nCn; r++)  // fixed summation order
+              for (int p = 0; p < npar; p++) g[p] += part[r * size_t(npar) + size_t(p)];
+            return;
+          }
           std::vector<R> part(nCn * GK);
           for (int nb = 0; nb < 2; nb++) {
             if (!(int(which) & (1 << nb))) continue;
@@ -240,6 +266,25 @@ namespace opg {
           const EarthView<R> earth = fTable->view();
           const size_t       nE = fE.size(), nC = fC.size(), npt = nE * nC;
           for (int p = 0; p < npar; p++) g[p] = 0;
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+            auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
+            std::vector<R> part(2 * nC * size_t(npar), R(0));
+            const long long nrow = (long long)nC;
+            for (int nb = 0; nb < 2; nb++) {
+              if (!(int(which) & (1 << nb))) continue;
+              const R* wbase = w + size_t(nb) * N * N * npt;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+              for (long long ic = 0; ic < nrow; ic++) {
+                R* acc = &part[(size_t(nb) * nC + size_t(ic)) * size_t(npar)];
+                for (size_t ie = 0; ie < nE; ie++)
+                  adjoint_prem<Model, R, GK>(P, chunk, npar, earth, fE[ie], fC[ic], nb == 1,
+                                             wbase + ic * nE + ie, npt, acc);
+              }
+            }
+            for (size_t r = 0; r < 2 * nC; r++)  // fixed summation order
+              for (int p = 0; p < npar; p++) g[p] += part[r * size_t(npar) + size_t(p)];
+            return;
+          }
           std::vector<R> part(nC * GK);
           for (int nb = 0; nb < 2; nb++) {
             if (!(int(which) & (1 << nb))) continue;
@@ -305,6 +350,24 @@ namespace opg {
           const EarthView<R> earth = fTable->view();
           for (int p = 0; p < npar; p++) g[p] = 0;
           const size_t   bs = 256, nblk = (n + bs - 1) / bs;
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+            auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
+            std::vector<R>  part(nblk * size_t(npar), R(0));
+            const long long nb_ = (long long)nblk;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+            for (long long b = 0; b < nb_; b++) {
+              R* acc = &part[size_t(b) * size_t(npar)];
+              for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++) {
+                R ex[kMaxExtra];
+                adjoint_prem<Model, R, GK>(P, chunk, npar, earth, E[i], cosZ[i], nubar[i] != 0,
+                                           w + i, n, acc,
+                                           gather_extra<Model, R>(extra, i, n, ex));
+              }
+            }
+            for (size_t b = 0; b < nblk; b++)
+              for (int p = 0; p < npar; p++) g[p] += part[b * size_t(npar) + size_t(p)];
+            return;
+          }
           std::vector<R> part(nblk * GK);
           for (const auto& ch : chunks) {
             const long long nb_ = (long long)nblk;
@@ -340,6 +403,24 @@ namespace opg {
           require_earth();
           const EarthView<R> earth = fTable->view();
           std::fill(G, G + size_t(nbins) * npar, R(0));
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+            auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
+            std::vector<R>  contrib(n * size_t(npar), R(0));
+            const long long nn = (long long)n;
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+            for (long long i = 0; i < nn; i++) {
+              if (bin[i] < 0 || bin[i] >= nbins) continue;
+              R ex[kMaxExtra];
+              adjoint_prem<Model, R, GK>(P, chunk, npar, earth, E[i], cosZ[i], nubar[i] != 0,
+                                         w + i, n, &contrib[size_t(i) * size_t(npar)],
+                                         gather_extra<Model, R>(extra, size_t(i), n, ex));
+            }
+            for (size_t i = 0; i < n; i++)  // fixed summation order
+              if (bin[i] >= 0 && bin[i] < nbins)
+                for (int p = 0; p < npar; p++)
+                  G[size_t(bin[i]) * npar + p] += contrib[i * size_t(npar) + size_t(p)];
+            return;
+          }
           std::vector<R> contrib(n * GK);
           for (const auto& ch : chunks) {
             const long long nn = (long long)n;

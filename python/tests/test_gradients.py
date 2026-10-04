@@ -285,3 +285,19 @@ def test_device_weights(devices):
     db = p.device_binned()
     assert np.array_equal(p.weighted_gradient_binned(db),
                           p.weighted_gradient_binned(p.binned()))
+
+
+def test_oqs_adjoint_weighted_gradient(devices):
+    """Reverse-mode weighted gradients equal forward mode (all parameters)."""
+    if not opg.OQS.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    assert opg.OQS.has_adjoint_gradients and not opg.Fast.has_adjoint_gradients
+    p = _model(opg.OQS, devices)
+    p.set_gradient_params(p.gradient_parameter_names)   # model and Earth Z/A
+    p.set_grid(np.geomspace(0.5, 30, 9), np.linspace(-1, 0.4, 7))
+    w = np.random.default_rng(3).normal(size=(2, 3, 3, 7, 9))
+    assert p.adjoint_gradients
+    ga = p.weighted_gradient(w)
+    p.adjoint_gradients = False
+    gf = p.weighted_gradient(w)
+    assert np.all(np.abs(ga - gf) <= 1e-11 * (np.abs(gf) + 1e-6 * np.abs(gf).max()))

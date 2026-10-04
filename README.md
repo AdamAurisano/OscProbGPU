@@ -313,7 +313,21 @@ Newton steps, eigenvectors from cross products). Each segment checks that
 X diag(e^{−iλL}) X⁻¹ reproduces the Padé operator to 1e-11; otherwise
 (degenerate or ill-conditioned eigenvectors) it falls back to differentiating
 the Padé exponential in dual arithmetic. Over 1.2M PREM segments of the test
-parameter sets the fallback never triggered. Parameters are processed in
+parameter sets the fallback never triggered.
+
+**Reverse mode (OQS).** For OQS the weighted modes (`weighted_gradient`,
+`weighted_gradient_binned`, `weighted_gradient_points(_binned)`, and the
+device-resident variants) run in reverse mode: a forward pass with
+checkpoints every 16 segments, then a backward pass whose segment cotangent
+G = L(Mᵀ, Σₐ λₐRₐᵀ) (adjoint Fréchet derivative of the 8x8 exponential, one
+dual exponential per segment) is contracted with ∂M/∂p for every parameter.
+The cost no longer grows with the number of parameters (43 parameters on a
+500 x 500 grid, V100: 1.6 s instead of 49 s; CPU 10x). It agrees with forward
+mode to ~1e-13 and is used for paths up to 256 segments and up to 64
+parameters (else forward mode); `set_adjoint_gradients(false)` (Python:
+`p.adjoint_gradients = False`) forces forward mode.
+
+Parameters are processed in
 passes of K directions (K = 2; K = 1 for Sterile and Deco, whose kernels
 would otherwise spill registers; K = 8 for Decay, whose passes share the value
 exponential and the eigensystem).
@@ -345,7 +359,7 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | SNSI    | 19 | 42x (1.1 s)    | 47x (1.2 s)    | 2.2 |
 | SiderealLIV | 54 | 104x (2.9 s) | 109x (3.0 s)  | 1.9 |
 | Deco    | 10 | 54x (2.8 s)    | 56x (2.9 s)    | 5.4 |
-| OQS     | 43 | 377x (180 s)   | 382x (183 s)   | 8.8 |
+| OQS     | 43 | 377x (180 s)   | 13x (reverse mode; 378x forward) | 8.8 (weighted: 0.3) |
 
 The weighted times include uploading the weights. On the CPU the factors are
 9x, 28x, 28x, 17x and 6x. This is about 1.5–2 probability evaluations per
@@ -353,7 +367,8 @@ parameter: comparable to central finite differences (2 per parameter), but
 exact. Deco (5.4) and OQS (8.8; 3.3 on the CPU) are the exceptions: Deco
 carries three density matrices and their derivatives; OQS differentiates an
 8x8 matrix exponential per segment in dual arithmetic, whose GPU kernels spill
-~17 KB of registers.
+~17 KB of registers. OQS's weighted modes use reverse mode instead (see
+above): ~13 probability evaluations in total for all 43 parameters.
 
 ## Validation
 
