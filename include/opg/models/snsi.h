@@ -270,6 +270,8 @@ namespace opg {
                                                   Mat<3, R> (&)[K])
       {
       }
+
+      OPG_HERMITIAN3_ADJOINT(SNSI, false)
   };
 
 } // namespace opg

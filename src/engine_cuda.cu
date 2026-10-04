@@ -409,7 +409,7 @@ namespace opg {
     // gradient chunks at once, chunks[c] in global memory); blocks of
     // kAdjBlockT threads reduce them to partial[blk][kAdjMaxPar]. *err is
     // set if a path exceeds kAdjMaxSeg segments (checked on the host first).
-    constexpr int kAdjBlockT = 64;
+    constexpr int kAdjBlockT = 32;
 
     template <class Model> struct AdjChunks {
         using GP = typename grad_traits<Model>::Prepared;

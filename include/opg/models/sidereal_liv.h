@@ -420,6 +420,73 @@ namespace opg {
         for (int k = 0; k < K; k++) d[k] = dS[k].S;
         opg::contract_grads<3, R, K>(S.S, d, w, stride, acc);
       }
+
+      // --- reverse mode (physics/adjoint.h) ------------------------------------
+      // The hamiltonian depends on the path state (direction, sidereal
+      // phase), which the segment cotangent keeps for the contractions.
+      static constexpr bool has_adjoint = true;
+      struct AdjSeg {
+          Mat<3, R> Hb;
+          State     st;
+      };
+      // affine in density and density * Z/A, except on vacuum segments
+      // (no sidereal terms there), which are contracted per segment
+      static constexpr bool adj_affine = true;
+      OPG_HD OPG_INLINE static const Mat<3, R>& adj_hbar(const AdjSeg& G) { return G.Hb; }
+      OPG_HD OPG_INLINE static bool adj_affine_segment(const Segment<R>& s, R& rho)
+      {
+        rho = s.density;
+        return !(s.density < R(1.0e-6));
+      }
+      template <class S>
+      OPG_HD OPG_INLINE static void adj_hamiltonian(const PreparedT<S>& P, const State& st,
+                                                    R E, bool nubar, S rho, S zoa,
+                                                    Mat<3, S>& H)
+      {
+        const SegmentZ<R, S> s{R(0), rho, zoa, -1};
+        hamiltonian(P, st, E, nubar, s, H, true);
+      }
+      OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const State& S,
+                                              const R* w, size_t stride, State& lam)
+      {
+        lam = S;
+        amplitude_adj_final<3, R>(S.S, w, stride, lam.S);
+      }
+      OPG_HD OPG_INLINE static void adj_step(const Prepared& P, R E, bool nubar,
+                                             const Segment<R>& s, const State& S, State& lam,
+                                             AdjSeg& G)
+      {
+        Mat<3, R> V;
+        R         l[3];
+        eigen(P, S, E, nubar, s, V, l);
+        eigen_step_adj<3, R>(V, l, length_in_eV(s.length), S.S, lam.S, G.Hb);
+        G.st = S;
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_step(const PreparedT<Dual<R, K>>& PD, R E,
+                                                      bool nubar,
+                                                      const SegmentZ<R, Dual<R, K>>& sz,
+                                                      const AdjSeg& G, R (&acc)[K])
+      {
+        // as step_grad: in vacuum H = Hms/2E (no sidereal terms)
+        const bool              vac = sz.density.v < R(1.0e-6);
+        SegmentZ<R, Dual<R, K>> sd  = sz;
+        if (vac) sd.density = 0;
+        Mat<3, Dual<R, K>> HD;
+        hamiltonian(PD, G.st, E, nubar, sd, HD, !vac);
+        contract_hbar<3, R, K>(G.Hb, HD, acc);
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>&, bool,
+                                                         const State&, R (&)[K])
+      {
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>&, bool,
+                                                       const State&, const R*, size_t,
+                                                       R (&)[K])
+      {
+      }
   };
 
 } // namespace opg

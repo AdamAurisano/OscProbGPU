@@ -277,6 +277,9 @@ namespace opg {
         static const char* fl[3] = {"e", "mu", "tau"};
         return std::string(fl[i]) + fl[j];
       }
+
+    public:
+      OPG_HERMITIAN3_ADJOINT(LIV, true)
   };
 
 } // namespace opg

@@ -170,6 +170,128 @@ namespace opg {
     apply_eigen_step<N, R>(V, lam, LengthIneV, S);
   }
 
+  // --- reverse mode -----------------------------------------------------------
+  // Cotangents are complex matrices X-bar with dg = Re tr(Xbar^dag dX).
+
+  /// Reverse of the step S' = U S of eigen_step_grad. On entry Sb is the
+  /// cotangent of S' and S the state before the step; on exit Sb is the
+  /// cotangent of S (U^dag Sb) and Hb that of H:
+  ///   Hb = V [ (Y W^dag) o conj(Gamma) ] V^dag,  Y = V^dag Sb', W = V^dag S.
+  template <int N, class R>
+  OPG_HD inline void eigen_step_adj(const Mat<N, R>& V, const R lam[N], R LengthIneV,
+                                    const Mat<N, R>& S, Mat<N, R>& Sb, Mat<N, R>& Hb)
+  {
+    Complex<R> G[N][N], phi[N];
+    dk_gamma<N, R>(lam, LengthIneV, G, phi);
+    Mat<N, R> W, Y;  // V^dag S, V^dag Sb
+    OPG_UNROLL
+    for (int i = 0; i < N; i++)
+      OPG_UNROLL
+    for (int a = 0; a < N; a++) {
+      Complex<R> w(0, 0), y(0, 0);
+      OPG_UNROLL
+      for (int l = 0; l < N; l++) {
+        w += conj(V(l, i)) * S(l, a);
+        y += conj(V(l, i)) * Sb(l, a);
+      }
+      W(i, a) = w;
+      Y(i, a) = y;
+    }
+    // B = (Y W^dag) o conj(Gamma); Hb = V B V^dag
+    Mat<N, R> B;
+    OPG_UNROLL
+    for (int i = 0; i < N; i++)
+      OPG_UNROLL
+    for (int j = 0; j < N; j++) {
+      Complex<R> c(0, 0);
+      OPG_UNROLL
+      for (int a = 0; a < N; a++) c += Y(i, a) * conj(W(j, a));
+      B(i, j) = c * conj(G[i][j]);
+    }
+    OPG_UNROLL
+    for (int i = 0; i < N; i++) {
+      Complex<R> t[N];  // row i of V B
+      OPG_UNROLL
+      for (int j = 0; j < N; j++) {
+        Complex<R> acc(0, 0);
+        OPG_UNROLL
+        for (int l = 0; l < N; l++) acc += V(i, l) * B(l, j);
+        t[j] = acc;
+      }
+      OPG_UNROLL
+      for (int j = 0; j < N; j++) {
+        Complex<R> acc(0, 0);
+        OPG_UNROLL
+        for (int l = 0; l < N; l++) acc += t[l] * conj(V(j, l));
+        Hb(i, j) = acc;
+      }
+    }
+    // Sb = V (conj(phi) o Y)
+    OPG_UNROLL
+    for (int a = 0; a < N; a++)
+      OPG_UNROLL
+    for (int i = 0; i < N; i++) {
+      Complex<R> acc(0, 0);
+      OPG_UNROLL
+      for (int l = 0; l < N; l++) acc += V(i, l) * (conj(phi[l]) * Y(l, a));
+      Sb(i, a) = acc;
+    }
+  }
+
+  /// acc[k] += Re tr(Hb^dag dH_k), with dH_k the hermitian matrix of the
+  /// derivative parts of HD as eigen_step_grad reads them (upper triangle,
+  /// real diagonal).
+  template <int N, class R, int K>
+  OPG_HD OPG_INLINE void contract_hbar(const Mat<N, R>& Hb, const Mat<N, Dual<R, K>>& HD,
+                                       R (&acc)[K])
+  {
+    OPG_UNROLL
+    for (int i = 0; i < N; i++) {
+      OPG_UNROLL
+      for (int k = 0; k < K; k++) acc[k] += Hb(i, i).re * HD(i, i).re.d[k];
+      OPG_UNROLL
+      for (int j = i + 1; j < N; j++) {
+        const Complex<R> g = conj(Hb(i, j)) + Hb(j, i);
+        OPG_UNROLL
+        for (int k = 0; k < K; k++)
+          acc[k] += g.re * HD(i, j).re.d[k] - g.im * HD(i, j).im.d[k];
+      }
+    }
+  }
+
+  /// Re tr(Hb^dag X) for a hermitian X given by its upper triangle (real
+  /// diagonal), as contract_hbar for values.
+  template <int N, class R>
+  OPG_HD OPG_INLINE R hbar_dot(const Mat<N, R>& Hb, const Mat<N, R>& X)
+  {
+    R s = 0;
+    OPG_UNROLL
+    for (int i = 0; i < N; i++) {
+      s += Hb(i, i).re * X(i, i).re;
+      OPG_UNROLL
+      for (int j = i + 1; j < N; j++) {
+        const Complex<R> g = conj(Hb(i, j)) + Hb(j, i);
+        s += g.re * X(i, j).re - g.im * X(i, j).im;
+      }
+    }
+    return s;
+  }
+
+  /// Cotangent of the final amplitudes for g = sum_ab w_ab |S_ba|^2:
+  /// Sb_ba = 2 w_ab S_ba (w read as w[(a*N + b)*stride]).
+  template <int N, class R>
+  OPG_HD OPG_INLINE void amplitude_adj_final(const Mat<N, R>& S, const R* w, size_t stride,
+                                             Mat<N, R>& Sb)
+  {
+    OPG_UNROLL
+    for (int a = 0; a < N; a++)
+      OPG_UNROLL
+    for (int b = 0; b < N; b++) {
+      const R f = 2 * w[(a * N + b) * stride];
+      Sb(b, a)  = Complex<R>(f * S(b, a).re, f * S(b, a).im);
+    }
+  }
+
   /// Write dP(a -> b)/dp_k = 2 Re(conj(S_ba) dS_k,ba) for k < count to
   /// out[((k * N + a) * N + b) * stride].
   template <int N, class R, int K>

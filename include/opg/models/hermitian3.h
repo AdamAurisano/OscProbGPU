@@ -208,6 +208,86 @@ namespace opg {
     eigen_step_grad<3, R, K>(V, lam, length_in_eV(s.length), HD, S, dS);
   }
 
+  // --- reverse mode (see physics/adjoint.h) ----------------------------------
+
+  /// Reverse of hermitian3_step: Sb <- U^dag Sb, Hb = cotangent of H.
+  template <class Model, class R>
+  OPG_HD OPG_INLINE void hermitian3_adj_step(const typename Model::Prepared& P, R E,
+                                             bool nubar, const Segment<R>& s,
+                                             const Mat<3, R>& S, Mat<3, R>& Sb, Mat<3, R>& Hb)
+  {
+    Mat<3, R> V;
+    R         lam[3];
+    hermitian3_eigen<Model, R>(P, E, nubar, s, V, lam);
+    eigen_step_adj<3, R>(V, lam, length_in_eV(s.length), S, Sb, Hb);
+  }
+
+  /// acc[k] += Re tr(Hb^dag dH_k) with dH_k from the dual hamiltonian (as
+  /// hermitian3_step_grad, vacuum shortcut included).
+  template <class Model, class R, int K>
+  OPG_HD OPG_INLINE void hermitian3_adj_contract(
+      const typename Model::template PreparedT<Dual<R, K>>& PD, R E, bool nubar,
+      const SegmentZ<R, Dual<R, K>>& sz, const Mat<3, R>& Hb, R (&acc)[K])
+  {
+    SegmentZ<R, Dual<R, K>> sd = sz;
+    if (uses_vacuum_shortcut<Model>::value && sz.density.v < R(1.0e-6)) sd.density = 0;
+    Mat<3, Dual<R, K>> HD;
+    Model::hamiltonian(PD, E, nubar, sd, HD);
+    contract_hbar<3, R, K>(Hb, HD, acc);
+  }
+
 } // namespace opg
+
+/// Reverse-mode members (physics/adjoint.h) of a hermitian 3-flavour model
+/// whose state is the amplitude matrix (identity initial state, no final
+/// step); MODEL is the model class name, AFFINE whether its hamiltonian is
+/// affine in density and density * Z/A (see physics/adjoint.h).
+#define OPG_HERMITIAN3_ADJOINT(MODEL, AFFINE)                                             \
+  static constexpr bool has_adjoint = true;                                              \
+  static constexpr bool adj_affine  = AFFINE;                                            \
+  using AdjSeg                      = Mat<3, R>;                                         \
+  OPG_HD OPG_INLINE static const Mat<3, R>& adj_hbar(const Mat<3, R>& G) { return G; }   \
+  OPG_HD OPG_INLINE static bool adj_affine_segment(const Segment<R>& s, R& rho)          \
+  {                                                                                      \
+    rho = uses_vacuum_shortcut<MODEL>::value && s.density < R(1.0e-6) ? R(0) : s.density; \
+    return true;                                                                         \
+  }                                                                                      \
+  template <class S>                                                                     \
+  OPG_HD OPG_INLINE static void adj_hamiltonian(const PreparedT<S>& P, const Mat<3, R>&, \
+                                                R E, bool nubar, S rho, S zoa,           \
+                                                Mat<3, S>& H)                            \
+  {                                                                                      \
+    const SegmentZ<R, S> s{R(0), rho, zoa, -1};                                          \
+    hamiltonian(P, E, nubar, s, H);                                                      \
+  }                                                                                      \
+  OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const Mat<3, R>& S,     \
+                                          const R* w, size_t stride, Mat<3, R>& Sb)      \
+  {                                                                                      \
+    amplitude_adj_final<3, R>(S, w, stride, Sb);                                         \
+  }                                                                                      \
+  OPG_HD OPG_INLINE static void adj_step(const Prepared& P, R E, bool nubar,             \
+                                         const Segment<R>& s, const Mat<3, R>& S,        \
+                                         Mat<3, R>& Sb, Mat<3, R>& Hb)                   \
+  {                                                                                      \
+    hermitian3_adj_step<MODEL, R>(P, E, nubar, s, S, Sb, Hb);                            \
+  }                                                                                      \
+  template <int K>                                                                       \
+  OPG_HD OPG_INLINE static void adj_contract_step(                                       \
+      const PreparedT<Dual<R, K>>& PD, R E, bool nubar,                                  \
+      const SegmentZ<R, Dual<R, K>>& sz, const Mat<3, R>& Hb, R (&acc)[K])                \
+  {                                                                                      \
+    hermitian3_adj_contract<MODEL, R, K>(PD, E, nubar, sz, Hb, acc);                     \
+  }                                                                                      \
+  template <int K>                                                                       \
+  OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>&, bool, \
+                                                     const Mat<3, R>&, R (&)[K])         \
+  {                                                                                      \
+  }                                                                                      \
+  template <int K>                                                                       \
+  OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>&, bool,   \
+                                                   const Mat<3, R>&, const R*, size_t,   \
+                                                   R (&)[K])                             \
+  {                                                                                      \
+  }
 
 #endif

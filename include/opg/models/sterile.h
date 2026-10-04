@@ -186,6 +186,48 @@ namespace opg {
                                                   Mat<4, R> (&)[K])
       {
       }
+
+      // --- reverse mode (physics/adjoint.h) ------------------------------------
+      static constexpr bool has_adjoint = true;
+      // Not adj_affine: the summed cotangents lose about a digit at
+      // dm41 ~ 1 eV^2 for only ~12% speed.
+      using AdjSeg                      = Mat<4, R>;
+      OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const Mat<4, R>& S,
+                                              const R* w, size_t stride, Mat<4, R>& Sb)
+      {
+        amplitude_adj_final<4, R>(S, w, stride, Sb);
+      }
+      OPG_HD OPG_INLINE static void adj_step(const Prepared& P, R E, bool nubar,
+                                             const Segment<R>& s, const Mat<4, R>& S,
+                                             Mat<4, R>& Sb, Mat<4, R>& Hb)
+      {
+        Mat<4, R> H, V;
+        R         lam[4];
+        hamiltonian(P, E, nubar, s, H);
+        jacobi_hermitian<4, R>(H, V, lam);
+        eigen_step_adj<4, R>(V, lam, length_in_eV(s.length), S, Sb, Hb);
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_step(const PreparedT<Dual<R, K>>& PD, R E,
+                                                      bool nubar,
+                                                      const SegmentZ<R, Dual<R, K>>& sz,
+                                                      const Mat<4, R>& Hb, R (&acc)[K])
+      {
+        Mat<4, Dual<R, K>> HD;
+        hamiltonian(PD, E, nubar, sz, HD);
+        contract_hbar<4, R, K>(Hb, HD, acc);
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>&, bool,
+                                                         const Mat<4, R>&, R (&)[K])
+      {
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>&, bool,
+                                                       const Mat<4, R>&, const R*, size_t,
+                                                       R (&)[K])
+      {
+      }
   };
 
 } // namespace opg
