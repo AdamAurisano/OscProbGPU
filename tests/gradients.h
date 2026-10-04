@@ -485,6 +485,7 @@ namespace gradtest {
       for (int ip = 0; ip < 2; ip++) {
         prop.set_params(param_points<Model>()[size_t(ip)].second);
         const auto names = prop.gradient_parameter_names();
+        REQUIRE(names.size() <= size_t(opg::kAdjMaxPar));  // else forward mode
         prop.set_gradient_params(names);
         INFO(param_points<Model>()[size_t(ip)].first);
 
@@ -570,6 +571,9 @@ namespace gradtest {
     constexpr int NN  = Model::N * Model::N;
     auto          par = param_points<Model>()[0].second;
     prop.set_params(par);
+    // forward mode: reverse mode only agrees to round-off (check_adjoint)
+    const bool adjoint = prop.adjoint_gradients();
+    prop.set_adjoint_gradients(false);
     std::vector<std::string> names = some_params<Model>();
     prop.set_gradient_params(names);
     const size_t        np = names.size();
@@ -676,6 +680,7 @@ namespace gradtest {
     MESSAGE(std::string(Model::name) << " per-bin weighted gradients vs explicit: " << rb);
     CHECK(rb < tol_w);
     CHECK(prop.weighted_gradient_points_binned(e, c, nb, wp, bin, nbins) == Gb);
+    prop.set_adjoint_gradients(adjoint);
   }
 
   /// Bin-averaged gradients: values unchanged, finite differences of

@@ -251,7 +251,9 @@ def test_all_models_grid_points_weighted_binned(cls, devices):
     nb_ = np.zeros(EE.size, np.uint8)
     _, dP = p.prob_points_grad(EE.ravel(), CC.ravel(), nb_)
     assert np.max(np.abs(dP.reshape(G[0].shape) - G[0])) <= 1e-13 * np.max(np.abs(G[0]))
-    # weighted grid mode
+    # weighted grid mode (forward mode: reverse mode only agrees to
+    # round-off, see test_adjoint_weighted_gradient)
+    p.adjoint_gradients = False
     w = np.random.default_rng(5).normal(size=p.probs().shape)
     ref = np.einsum("nabce,npabce->p", w, G)
     sc = np.einsum("nabce,npabce->p", np.abs(w), np.abs(G))
@@ -289,15 +291,21 @@ def test_device_weights(devices):
                           p.weighted_gradient_binned(p.binned()))
 
 
-def test_oqs_adjoint_weighted_gradient(devices):
+ADJOINT_MODELS = [opg.Fast, opg.NSI, opg.Sterile, opg.LIV, opg.SNSI, opg.SiderealLIV, opg.OQS]
+
+
+@pytest.mark.parametrize("cls", ADJOINT_MODELS, ids=lambda c: c.__name__)
+def test_adjoint_weighted_gradient(cls, devices):
     """Reverse-mode weighted gradients equal forward mode (all parameters)."""
-    if not opg.OQS.has_gradients:
+    if not cls.has_gradients:
         pytest.skip("gradients disabled at build time")
-    assert opg.OQS.has_adjoint_gradients and not opg.Fast.has_adjoint_gradients
-    p = _model(opg.OQS, devices)
+    assert cls.has_adjoint_gradients
+    assert not any(c.has_adjoint_gradients for c in (opg.NUNM, opg.Decay, opg.Deco))
+    p = _model(cls, devices)
     p.set_gradient_params(p.gradient_parameter_names)   # model and Earth Z/A
     p.set_grid(np.geomspace(0.5, 30, 9), np.linspace(-1, 0.4, 7))
-    w = np.random.default_rng(3).normal(size=(2, 3, 3, 7, 9))
+    n = 4 if cls is opg.Sterile else 3
+    w = np.random.default_rng(3).normal(size=(2, n, n, 7, 9))
     assert p.adjoint_gradients
     ga = p.weighted_gradient(w)
     p.adjoint_gradients = False

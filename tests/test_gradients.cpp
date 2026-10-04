@@ -156,9 +156,12 @@ TEST_CASE_TEMPLATE("G3/G4 grid, event-list and weighted gradients are consistent
   gradtest::check_grid_and_weighted(prop, 1e-13);
 }
 
-TEST_CASE("OQS adjoint weighted gradients equal forward mode (CPU)")
+TEST_CASE_TEMPLATE("Reverse-mode weighted gradients equal forward mode (CPU)", M,
+                   gradtest::Fast, gradtest::NSI, gradtest::Sterile, gradtest::LIV,
+                   gradtest::SNSI, gradtest::SiderealLIV, gradtest::OQS)
 {
-  opg::Propagator<gradtest::OQS> prop;
+  static_assert(opg::Propagator<M>::has_adjoint_gradients());
+  opg::Propagator<M> prop;
   gradtest::check_adjoint(prop, 1e-11);
 }
 

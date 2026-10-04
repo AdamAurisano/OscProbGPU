@@ -164,11 +164,14 @@ TEST_CASE_TEMPLATE("GPU Earth Z/A gradients", M, gradtest::Fast, gradtest::NSI, 
 }
 
 
-TEST_CASE("GPU OQS adjoint weighted gradients equal forward mode; multi-GPU")
+TEST_CASE_TEMPLATE("GPU reverse-mode weighted gradients equal forward mode; multi-GPU", M,
+                   gradtest::Fast, gradtest::NSI, gradtest::Sterile, gradtest::LIV,
+                   gradtest::SNSI, gradtest::SiderealLIV, gradtest::OQS)
 {
+  static_assert(opg::Propagator<M>::has_adjoint_gradients());
   for (auto d : {devs("OPG_TEST_DEVICES", "0"), devs("OPG_TEST_MULTI_DEVICES", "0,1")}) {
     if (opg::cuda_device_count() < int(d.size())) continue;
-    opg::Propagator<gradtest::OQS> prop(opg::PremModel(), d);
+    opg::Propagator<M> prop(opg::PremModel(), d);
     gradtest::check_adjoint(prop, 1e-11);
   }
 }
