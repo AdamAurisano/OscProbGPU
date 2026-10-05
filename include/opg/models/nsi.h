@@ -54,6 +54,8 @@ namespace opg {
       using Real                        = R;
       static constexpr int         N    = 3;
       static constexpr const char* name = "NSI";
+      /// Hermitian and affine in 1/E: analytic bin averages (avg/analytic.h).
+      static constexpr bool analytic_avg = true;
 
       /// Derivative directions per gradient pass (see opg::grad_traits).
 #ifdef OPG_NSI_GRAD_CHUNK

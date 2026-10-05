@@ -40,6 +40,8 @@ namespace opg {
       using Real                        = R;
       static constexpr int         N    = 4;
       static constexpr const char* name = "Sterile";
+      /// Hermitian and affine in 1/E: analytic bin averages (avg/analytic.h).
+      static constexpr bool analytic_avg = true;
 
       /// Derivative directions per gradient pass (see opg::grad_traits).
 #ifdef OPG_STERILE_GRAD_CHUNK

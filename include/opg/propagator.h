@@ -27,6 +27,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "opg/avg/analytic.h"
 #include "opg/avg/gauss_legendre.h"
 #include "opg/earth/absorption.h"
 #include "opg/engine.h"
@@ -482,6 +483,89 @@ namespace opg {
         prob_path_grad(nodes, path, nubar, pn, dpn);
         out  = average_nodes(pn, size_t(N) * N, nb, nglE, wts);
         dout = average_nodes(dpn, fGradIdx.size() * N * N, nb, nglE, wts);
+      }
+
+      //.......................................................................
+      // Analytic bin averages for fixed paths (avg/analytic.h; Fast, NSI,
+      // Sterile): first-order expansion of the evolution operator in 1/E on
+      // sub-bins, after OscProb's PMNS_Maltoni; fast oscillations are
+      // averaged exactly. Computed on the host with either backend.
+
+      /// Bin averages out[a][b][bin]. edges: ascending, in E (GeV) or in L/E
+      /// (km/GeV, L = total path length) according to var; measure: the
+      /// averaging weight is uniform in E (Linear), log E (Log) or 1/E, i.e.
+      /// L/E (InvE).
+      std::vector<R> avg_path_analytic(const std::vector<double>&   edges,
+                                       const std::vector<Segment<R>>& path, bool nubar,
+                                       EMeasure measure = EMeasure::Linear,
+                                       BinVar var = BinVar::E,
+                                       const AnalyticAvgOptions& opt = {})
+      {
+        const auto sub = analytic_subbins(edges, path, measure, var, opt);
+        return avg_path_analytic_subbins(sub, edges.size() - 1, path, nubar, opt);
+      }
+
+      /// avg_path_analytic with gradients: out[a][b][bin] and
+      /// dout[p][a][b][bin] for the parameters of set_gradient_params().
+      void avg_path_analytic_grad(const std::vector<double>&   edges,
+                                  const std::vector<Segment<R>>& path, bool nubar,
+                                  std::vector<R>& out, std::vector<R>& dout,
+                                  EMeasure measure = EMeasure::Linear,
+                                  BinVar var = BinVar::E,
+                                  const AnalyticAvgOptions& opt = {})
+      {
+        const auto sub = analytic_subbins(edges, path, measure, var, opt);
+        avg_path_analytic_subbins_grad(sub, edges.size() - 1, path, nubar, out, dout, opt);
+      }
+
+      /// Analytic averages over explicit sub-bins (each uniform in 1/E with
+      /// a linear weight, see AnalyticSubBin), normalised per bin by the
+      /// sum of the sub-bin weights: out[a][b][bin], bin < nbins. Only
+      /// opt.fast_begin, fast_end and threads are used.
+      std::vector<R> avg_path_analytic_subbins(const std::vector<AnalyticSubBin>& sub,
+                                               size_t nbins,
+                                               const std::vector<Segment<R>>& path,
+                                               bool nubar, const AnalyticAvgOptions& opt = {})
+      {
+        require_params();
+        std::vector<R> out;
+        analytic::average<Model>(fPrepared, nullptr, 0, sub, nbins, path, nubar, opt, out,
+                                 nullptr);
+        return out;
+      }
+
+      void avg_path_analytic_subbins_grad(const std::vector<AnalyticSubBin>& sub,
+                                          size_t nbins, const std::vector<Segment<R>>& path,
+                                          bool nubar, std::vector<R>& out,
+                                          std::vector<R>& dout,
+                                          const AnalyticAvgOptions& opt = {})
+      {
+        require_params();
+        analytic::average<Model>(fPrepared, &chunks(), int(fGradIdx.size()), sub, nbins,
+                                 path, nubar, opt, out, &dout);
+      }
+
+      /// The sub-bins avg_path_analytic uses for these edges and path.
+      static std::vector<AnalyticSubBin> analytic_subbins(const std::vector<double>& edges,
+                                                          const std::vector<Segment<R>>& path,
+                                                          EMeasure measure, BinVar var,
+                                                          const AnalyticAvgOptions& opt = {})
+      {
+        if (edges.size() < 2) throw std::invalid_argument("avg_path_analytic: bad binning");
+        double Ltot = 0;
+        for (const auto& s : path) Ltot += double(s.length);
+        if (var == BinVar::LoE && !(Ltot > 0))
+          throw std::invalid_argument("avg_path_analytic: L/E edges need a path length > 0");
+        std::vector<double> lo, hi;
+        for (size_t b = 0; b + 1 < edges.size(); b++) {
+          const double e0 = edges[b], e1 = edges[b + 1];
+          if (!(e1 > e0) || !(e0 > 0))
+            throw std::invalid_argument("avg_path_analytic: edges must be positive and "
+                                        "ascending");
+          if (var == BinVar::E) { lo.push_back(1 / e1); hi.push_back(1 / e0); }
+          else { lo.push_back(e0 / Ltot); hi.push_back(e1 / Ltot); }
+        }
+        return analytic::make_subbins(lo, hi, measure, analytic::subbin_width(path, opt), opt);
       }
 
       //.......................................................................
