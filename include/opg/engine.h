@@ -58,6 +58,41 @@ namespace opg {
       int                 nglE = 0;
   };
 
+  /// Variable of the bin edges given to the analytic averages.
+  enum class BinVar : int {
+    E   = 0,  ///< edges in E (GeV)
+    LoE = 1   ///< edges in L/E (km/GeV), L = total path length
+  };
+
+  /// Options of the analytic bin averages (avg/analytic.h).
+  struct AnalyticAvgOptions {
+      /// Target for the first-order error (sets the sub-bin width r from
+      /// the matter phase of the path: r = sqrt(tol / (0.005 sum V L)), V
+      /// at Z/A = 1); observed errors are about 0.5-1 tol. The cost grows
+      /// as 1/sqrt(tol).
+      double tol = 1e-6;
+      /// Largest relative sub-bin width r = u_hi / u_lo - 1.
+      double max_width = 0.1;
+      /// > 0: this many sub-bins per bin, uniform in 1/E (tol, max_width
+      /// unused).
+      int nsub = 0;
+      /// Fade-out of fully fast pairs, in |mu_n - mu_m| h (see analytic.h).
+      double fast_begin = 1e6;
+      double fast_end   = 1e7;
+      /// OpenMP threads of the host computation (0: default).
+      int threads = 0;
+      /// Compute on the host even with a GPU backend.
+      bool host = false;
+  };
+
+  /// One sub-bin of the analytic averages: uniform in u = 1/E (GeV^-1) on
+  /// [u0 - h, u0 + h] with weight weight * (1 + beta (u - u0) / h), added to
+  /// bin `bin`.
+  struct AnalyticSubBin {
+      int    bin;
+      double u0, h, weight, beta;
+  };
+
   /// One gradient pass: the prepared state in dual numbers, seeded with
   /// parameters offset .. offset+count-1 (count <= grad_traits<Model>::K).
   template <class Model> struct GradChunk {
@@ -132,6 +167,20 @@ namespace opg {
       // with w in the layout of the corresponding probabilities, summed in
       // a fixed order (deterministic for a given device configuration).
       using Chunks = std::vector<GradChunk<Model>>;
+
+      /// Analytic averages on the device (avg/analytic.h): per-sub-bin
+      /// results sp[i][a][b] and, with chunks, sg[i][p][a][b], for the
+      /// vacuum term A = dH/du and its derivatives dA[p]. Returns false if
+      /// the backend has none (the caller then computes on the host).
+      virtual bool analytic_subbins(const Prepared&, const Chunks*, int /*npar*/,
+                                    const Mat<N, R>& /*A*/, const Mat<N, R>* /*dA*/,
+                                    const AnalyticSubBin*, size_t /*nsub*/,
+                                    const Segment<R>*, int /*nseg*/, bool /*nubar*/,
+                                    double /*fast_begin*/, double /*fast_end*/, R* /*sp*/,
+                                    R* /*sg*/)
+      {
+        return false;
+      }
 
       /// Grid probabilities and gradients (probs as in calculate()).
       virtual void calculate_grad(const Prepared&, const Chunks&, int /*npar*/,

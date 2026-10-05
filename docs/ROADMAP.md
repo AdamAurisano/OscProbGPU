@@ -159,9 +159,14 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   Host only (OpenMP). Matches OscProb's AvgProbLoE to 8e-14 on its
   sub-bins; NOvA FD/ND accuracy ~1e-6 at tol = 1e-6 (~1e-8 at 1e-8),
   gradients ~1e-8..1e-13 vs long-double FD (`tests/validate_analytic.cpp`).
-* Next for the analytic averages: CUDA version (PISCES moves to the GPU
-  later); Python bindings; models with E-dependent matter terms are out of
-  scope (the expansion needs H affine in 1/E).
+* Done: CUDA version of the analytic averages (EngineBase::analytic_subbins;
+  value kernel per sub-bin with per-segment/K data in global memory,
+  gradient kernel per sub-bin x pass, sub-bins split over devices, host
+  reduction). V100: FD 151 bins 0.45 ms, + 12 gradients 3.5 ms.
+* Next for the analytic averages: batched parameter points with
+  device-resident output (PISCES Phase 4; API sketch sent for
+  confirmation); Python bindings. Models with E-dependent matter terms are
+  out of scope (the expansion needs H affine in 1/E).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast).
 
 ## Working notes

@@ -38,7 +38,7 @@ set_tests_properties(cpu PROPERTIES LABELS "cpu")
 if(OPG_ENABLE_CUDA)
   add_executable(opg_tests_gpu test_main.cpp gpu/test_cuda_smoke.cu
                                gpu/test_models_gpu.cpp gpu/test_averaging_gpu.cpp
-                               gpu/test_gradients_gpu.cpp)
+                               gpu/test_gradients_gpu.cpp gpu/test_analytic_gpu.cpp)
   target_link_libraries(opg_tests_gpu PRIVATE oscprobgpu opg_doctest
                                               CUDA::cudart)
   target_compile_definitions(

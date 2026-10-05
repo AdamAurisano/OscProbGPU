@@ -210,7 +210,7 @@ path and `tol` only (never by the oscillation parameters), so the averages
 are smooth in the parameters:
 
 ```cpp
-opg::Propagator<opg::Sterile<>> prop;              // host computation, any backend
+opg::Propagator<opg::Sterile<>> prop;              // CPU (OpenMP), or GPUs with {devices}
 prop.set_params(par);
 prop.set_gradient_params();                          // th12 ... dm41
 std::vector<opg::Segment<double>> fd{{810, 2.84, 0.5, 0}};
@@ -263,7 +263,15 @@ relative (≤ 3e-4 in the clamped bin at Δm²₄₁ = 100 eV², where the tiny
 Time per call (16 channels; 151 FD bins → 1163 sub-bins, 400 ND bins → 400),
 one thread / 14 threads of an Intel Core Ultra 5 225H: FD 7.9 / 1.3 ms,
 with 12 gradients 68 / 8.7 ms; ND 2.5 / 0.55 ms, with gradients 24 / 3.2 ms
-(FD at tol 1e-8: 73 / 8.8 ms, with gradients 650 / 73 ms).
+(FD at tol 1e-8: 73 / 8.8 ms, with gradients 650 / 73 ms). With the CUDA
+backend the sub-bins run on the GPUs (one thread per sub-bin for the values,
+one per sub-bin and gradient pass for the derivatives; the per-bin
+reduction stays on the host, in a fixed order; `AnalyticAvgOptions::host`
+forces the host): on one V100 (shared with another job) FD 0.45 ms, with
+gradients 3.5 ms; ND 0.30 / 2.7 ms; FD at tol 1e-8: 2.9 / 20 ms. GPU and host
+agree to ≤ 1e-10 in P̄ (phases up to 10⁶ rad at Δm²₄₁ = 100 eV²; ~1e-13 at
+Δm²₄₁ ≤ 1 eV²) and 1e-9 relative in dP̄; in the clamped bin, where phases
+reach 10¹⁰ rad, to 5e-11 and 1e-6.
 
 ## Absorption
 

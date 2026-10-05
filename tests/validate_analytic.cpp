@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -371,5 +372,41 @@ int main(int argc, char** argv)
 #ifdef _OPENMP
   std::printf("\n(all = %d OpenMP threads)\n", omp_get_max_threads());
 #endif
+  // GPUs: OPG_VALIDATE_DEVICES=0 (or 0,1, ...) with a CUDA build
+  if (const char* env = std::getenv("OPG_VALIDATE_DEVICES")) {
+    std::vector<int> devs;
+    for (const char* q = env; *q;) {
+      devs.push_back(std::atoi(q));
+      while (*q && *q != ',') q++;
+      if (*q) q++;
+    }
+    Propagator<M> gpu(PremModel(), devs);
+    gpu.set_params(nova(1.0, 0.1, false));
+    gpu.set_gradient_params();
+    std::printf("\n| case | GPUs (%s) | value [ms] | value + gradients [ms] |\n|---|---|---|---|\n",
+                env);
+    for (int c = 0; c < 3; c++) {
+      AnalyticAvgOptions o;
+      if (c == 2) o.tol = 1e-8;
+      const bool   isfd  = c != 1;
+      const auto&  edges = isfd ? fe : ne;
+      const auto&  path  = isfd ? fd : nd;
+      const BinVar var   = isfd ? BinVar::E : BinVar::LoE;
+      auto         time_it = [&](bool g) {
+        std::vector<double> P, dP;
+        double              best = 1e30;
+        for (int rep = 0; rep < 5; rep++) {
+          const double t0 = now_ms();
+          if (g) gpu.avg_path_analytic_grad(edges, path, false, P, dP, EMeasure::InvE, var, o);
+          else P = gpu.avg_path_analytic(edges, path, false, EMeasure::InvE, var, o);
+          best = std::min(best, now_ms() - t0);
+        }
+        return best;
+      };
+      const double tv = time_it(false), tg = time_it(true);
+      std::printf("| %s %zu bins, tol %g | %s | %.2f | %.1f |\n", isfd ? "FD" : "ND",
+                  edges.size() - 1, o.tol, env, tv, tg);
+    }
+  }
   return 0;
 }

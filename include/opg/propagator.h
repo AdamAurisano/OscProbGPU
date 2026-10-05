@@ -489,7 +489,9 @@ namespace opg {
       // Analytic bin averages for fixed paths (avg/analytic.h; Fast, NSI,
       // Sterile): first-order expansion of the evolution operator in 1/E on
       // sub-bins, after OscProb's PMNS_Maltoni; fast oscillations are
-      // averaged exactly. Computed on the host with either backend.
+      // averaged exactly. Sub-bins are computed on the GPUs with the CUDA
+      // backend (double precision; opt.host = true: on the host), else on
+      // the host with OpenMP.
 
       /// Bin averages out[a][b][bin]. edges: ascending, in E (GeV) or in L/E
       /// (km/GeV, L = total path length) according to var; measure: the
@@ -530,7 +532,7 @@ namespace opg {
         require_params();
         std::vector<R> out;
         analytic::average<Model>(fPrepared, nullptr, 0, sub, nbins, path, nubar, opt, out,
-                                 nullptr);
+                                 nullptr, fEngine.get());
         return out;
       }
 
@@ -542,7 +544,7 @@ namespace opg {
       {
         require_params();
         analytic::average<Model>(fPrepared, &chunks(), int(fGradIdx.size()), sub, nbins,
-                                 path, nubar, opt, out, &dout);
+                                 path, nubar, opt, out, &dout, fEngine.get());
       }
 
       /// The sub-bins avg_path_analytic uses for these edges and path.

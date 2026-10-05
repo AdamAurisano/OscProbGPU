@@ -554,6 +554,56 @@ namespace opg {
       }
     }
 
+    //.........................................................................
+    // Analytic bin averages (avg/analytic.h): one thread per sub-bin for the
+    // values (per-segment and K-eigenbasis data kept in global memory for
+    // the derivatives), one thread per (sub-bin, gradient pass) for the
+    // derivatives.
+    //.........................................................................
+
+    template <class Model, class R>
+    __global__ void analytic_value_kernel(const typename Model::Prepared P,
+                                          const Mat<Model::N, R> A,
+                                          const AnalyticSubBin* __restrict__ sub, size_t ns,
+                                          const Segment<R>* __restrict__ path, int nseg,
+                                          bool nubar, R fast_begin, R fast_end, bool want_grad,
+                                          R* __restrict__ sp,
+                                          analytic::SegData<Model::N, R>* __restrict__ seg,
+                                          analytic::KState<Model::N, R>* __restrict__ ks)
+    {
+      constexpr int N = Model::N;
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < ns;
+           i += size_t(gridDim.x) * blockDim.x) {
+        const AnalyticSubBin       s = sub[i];
+        const analytic::AvgFn<R>   fn{R(s.h), R(s.beta), fast_begin, fast_end};
+        analytic::subbin<Model>(P, A, path, nseg, nubar, R(s.u0), fn, sp + i * N * N,
+                                want_grad, seg + i * nseg, ks[i]);
+      }
+    }
+
+    template <class Model, class R, int K>
+    __global__ void analytic_grad_kernel(const GradPrepared<Model, K>* __restrict__ G,
+                                         const int* __restrict__ off,
+                                         const int* __restrict__ cnt, int nchunk,
+                                         const Mat<Model::N, R>* __restrict__ dA,
+                                         const AnalyticSubBin* __restrict__ sub, size_t ns,
+                                         const Segment<R>* __restrict__ path, int nseg,
+                                         bool nubar,
+                                         const analytic::SegData<Model::N, R>* __restrict__ seg,
+                                         const analytic::KState<Model::N, R>* __restrict__ ks,
+                                         int npar, R* __restrict__ sg)
+    {
+      constexpr int N = Model::N;
+      for (size_t t = blockIdx.x * size_t(blockDim.x) + threadIdx.x; t < ns * nchunk;
+           t += size_t(gridDim.x) * blockDim.x) {
+        const size_t i = t / nchunk;
+        const int    c = int(t % nchunk);
+        analytic::subbin_grad<Model, K>(G[c], off[c], cnt[c], dA, path, nseg, nubar,
+                                        R(sub[i].u0), seg + i * nseg, ks[i],
+                                        sg + i * size_t(npar) * N * N);
+      }
+    }
+
     unsigned blocks_for(size_t n, unsigned bs)
     {
       size_t b = (n + bs - 1) / bs;
@@ -1429,6 +1479,85 @@ namespace opg {
         }
       }
 
+      //.......................................................................
+      // Analytic bin averages
+      //.......................................................................
+      bool analytic_subbins(const Prepared& P, const Chunks* chunks, int npar,
+                            const Mat<N, R>& A, const Mat<N, R>* dA,
+                            const AnalyticSubBin* sub, size_t ns, const Segment<R>* path,
+                            int nseg, bool nubar, double fast_begin, double fast_end, R* sp,
+                            R* sg) override
+      {
+        if constexpr (!has_analytic_avg<Model>::value || !std::is_same<R, double>::value) {
+          return false;
+        }
+        else {
+          if (chunks && !GT::enabled) this->no_grad();
+          const bool   want_grad = chunks != nullptr;
+          const size_t nd = fDev.size(), per = (ns + nd - 1) / nd, nch = size_t(N) * N;
+          const size_t ng = want_grad ? size_t(npar) * nch : 0;
+          std::vector<int> coff, ccnt;
+          if constexpr (GT::enabled)
+            if (want_grad) {
+              fPDHost.resize(chunks->size());
+              for (size_t c = 0; c < chunks->size(); c++) {
+                fPDHost[c] = (*chunks)[c].P;
+                coff.push_back((*chunks)[c].offset);
+                ccnt.push_back((*chunks)[c].count);
+              }
+            }
+          std::vector<size_t> off(nd), cnt(nd);
+          for (size_t k = 0; k < nd; k++) {
+            off[k]     = std::min(ns, k * per);
+            cnt[k]     = std::min(ns, off[k] + per) - off[k];
+            Device& D  = *fDev[k];
+            if (!cnt[k]) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            D.anSub.upload(D.id, sub + off[k], cnt[k], D.stream);
+            D.path.upload(D.id, path, size_t(nseg), D.stream);
+            D.anSeg.resize(D.id, cnt[k] * size_t(nseg));
+            D.anKs.resize(D.id, cnt[k]);
+            D.pOut.resize(D.id, cnt[k] * nch);
+            analytic_value_kernel<Model, R><<<blocks_for(cnt[k], 64), 64, 0, D.stream>>>(
+                P, A, D.anSub.ptr, cnt[k], D.path.ptr, nseg, nubar, R(fast_begin),
+                R(fast_end), want_grad, D.pOut.ptr, D.anSeg.ptr, D.anKs.ptr);
+            OPG_CUDA(cudaGetLastError());
+            if constexpr (GT::enabled)
+              if (want_grad) {
+                const int nchunk = int(chunks->size());
+                D.anDA.upload(D.id, dA, size_t(npar), D.stream);
+                D.anG.upload(D.id, fPDHost.data(), fPDHost.size(), D.stream);
+                D.anOff.upload(D.id, coff.data(), coff.size(), D.stream);
+                D.anCnt.upload(D.id, ccnt.data(), ccnt.size(), D.stream);
+                D.pGrad.resize(D.id, cnt[k] * ng);
+                analytic_grad_kernel<Model, R, GK>
+                    <<<blocks_for(cnt[k] * size_t(nchunk), 64), 64, 0, D.stream>>>(
+                        D.anG.ptr, D.anOff.ptr, D.anCnt.ptr, nchunk, D.anDA.ptr, D.anSub.ptr,
+                        cnt[k], D.path.ptr, nseg, nubar, D.anSeg.ptr, D.anKs.ptr, npar,
+                        D.pGrad.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+          }
+          for (size_t k = 0; k < nd; k++) {
+            Device& D = *fDev[k];
+            if (!cnt[k]) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            OPG_CUDA(cudaMemcpyAsync(sp + off[k] * nch, D.pOut.ptr, cnt[k] * nch * sizeof(R),
+                                     cudaMemcpyDeviceToHost, D.stream));
+            if (want_grad)
+              OPG_CUDA(cudaMemcpyAsync(sg + off[k] * ng, D.pGrad.ptr,
+                                       cnt[k] * ng * sizeof(R), cudaMemcpyDeviceToHost,
+                                       D.stream));
+          }
+          for (size_t k = 0; k < nd; k++) {
+            if (!cnt[k]) continue;
+            OPG_CUDA(cudaSetDevice(fDev[k]->id));
+            OPG_CUDA(cudaStreamSynchronize(fDev[k]->stream));
+          }
+          return true;
+        }
+      }
+
     private:
       /// A (E x cosZ-rows) grid resident on one device.
       struct Slab {
@@ -1467,6 +1596,13 @@ namespace opg {
           DevBuf<uint8_t>    pNb;
           DevBuf<Segment<R>> path;
           std::vector<R>     pHost;
+          // analytic averages
+          DevBuf<AnalyticSubBin>                         anSub;
+          DevBuf<analytic::SegData<N, R>>               anSeg;
+          DevBuf<analytic::KState<N, R>>                anKs;
+          DevBuf<Mat<N, R>>                             anDA;
+          DevBuf<typename grad_traits<Model>::Prepared> anG;
+          DevBuf<int>                                   anOff, anCnt;
       };
 
       /// Launch the grid kernel on a slab.
