@@ -407,6 +407,32 @@ int main(int argc, char** argv)
       std::printf("| %s %zu bins, tol %g | %s | %.2f | %.1f |\n", isfd ? "FD" : "ND",
                   edges.size() - 1, o.tol, env, tv, tg);
     }
+    // batched points on the first GPU, 6 gradients (host output)
+    gpu.set_gradient_params({"th23", "th24", "th34", "d24", "dm31", "dm41"});
+    std::printf("\n| batch (GPU %d) | points | value [ms] | value + 6 gradients [ms] | "
+                "per point + grads [ms] |\n|---|---|---|---|---|\n", devs[0]);
+    for (int c = 0; c < 2; c++) {
+      const bool isfd = c == 0;
+      auto       b    = gpu.analytic_batch(isfd ? fe : ne, isfd ? fd : nd, false, EMeasure::InvE,
+                                           isfd ? BinVar::E : BinVar::LoE);
+      for (size_t np : {size_t(100), size_t(1000), size_t(3000)}) {
+        std::vector<M::Params> pts;
+        for (size_t i = 0; i < np; i++)
+          pts.push_back(nova(1e-3 * std::pow(1e5, double(i) / np), 0.1, false));
+        std::vector<double> out, dout;
+        double              tv = 1e30, tg = 1e30;
+        for (int rep = 0; rep < 2; rep++) {
+          double t0 = now_ms();
+          gpu.avg_path_analytic_batch(b, pts, out);
+          tv = std::min(tv, now_ms() - t0);
+          t0 = now_ms();
+          gpu.avg_path_analytic_batch(b, pts, out, &dout);
+          tg = std::min(tg, now_ms() - t0);
+        }
+        std::printf("| %s | %zu | %.1f | %.1f | %.3f |\n", isfd ? "FD" : "ND", np, tv, tg,
+                    tg / double(np));
+      }
+    }
   }
   return 0;
 }

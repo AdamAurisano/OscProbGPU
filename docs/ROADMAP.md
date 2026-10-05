@@ -163,9 +163,16 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   value kernel per sub-bin with per-segment/K data in global memory,
   gradient kernel per sub-bin x pass, sub-bins split over devices, host
   reduction). V100: FD 151 bins 0.45 ms, + 12 gradients 3.5 ms.
-* Next for the analytic averages: batched parameter points with
-  device-resident output (PISCES Phase 4; API sketch sent for
-  confirmation); Python bindings. Models with E-dependent matter terms are
+* Done: batched parameter points (PISCES Phase 4): `analytic_batch` handles
+  (sub-bins, path, per-bin lists on one device) and
+  `avg_path_analytic_batch` (device output on a stream, or host output;
+  host fallback on the CPU backend); kernels over points x sub-bins
+  (x gradient passes), per-point fixed-order device reduction; chunks of
+  points under a scratch budget; bit-identical per point for any batch.
+  V100: FD 0.39 ms per point with 6 gradients, ND 0.20 ms.
+* Possible: fewer register spills in the analytic kernels (~2 KB for
+  Sterile); batched fixed-node GL (not needed by PISCES now).
+* Next for the analytic averages: Python bindings. Models with E-dependent matter terms are
   out of scope (the expansion needs H affine in 1/E).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast).
 

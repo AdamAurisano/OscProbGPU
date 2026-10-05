@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -83,6 +84,9 @@ namespace opg {
       int threads = 0;
       /// Compute on the host even with a GPU backend.
       bool host = false;
+      /// Batched averages: per-(point, sub-bin) device scratch per chunk of
+      /// points (MB).
+      double batch_scratch_mb = 1024;
   };
 
   /// One sub-bin of the analytic averages: uniform in u = 1/E (GeV^-1) on
@@ -180,6 +184,34 @@ namespace opg {
                                     R* /*sg*/)
       {
         return false;
+      }
+
+      /// Batched analytic averages over parameter points
+      /// (Propagator::analytic_batch): device state of one batch handle on
+      /// device `device_index` for these sub-bins and path, with at most
+      /// scratch_bytes of per-(point, sub-bin) scratch; nullptr if the
+      /// backend has no device implementation.
+      virtual std::shared_ptr<void> analytic_batch_create(int /*device_index*/,
+                                                          const std::vector<AnalyticSubBin>&,
+                                                          size_t /*nbins*/,
+                                                          const std::vector<Segment<R>>&,
+                                                          size_t /*scratch_bytes*/)
+      {
+        return nullptr;
+      }
+      /// Run npts points of a batch: prepared states P[p], vacuum terms
+      /// A[p], gradient passes G[p * nchunk + c] and dA[p * npar + q] (none
+      /// without gradients). Writes out[p][a][b][bin] and, with gradients,
+      /// dout[p][q][a][b][bin], to device memory of the batch's device on
+      /// `stream` (device_out, asynchronous) or to host memory (blocking).
+      virtual void analytic_batch_run(void* /*state*/, bool /*nubar*/, double /*fast_begin*/,
+                                      double /*fast_end*/, size_t /*npts*/, const Prepared*,
+                                      const Mat<N, R>*, const GradChunk<Model>*, int /*nchunk*/,
+                                      const Mat<N, R>*, int /*npar*/, R* /*out*/, R* /*dout*/,
+                                      void* /*stream*/, bool /*device_out*/)
+      {
+        throw std::logic_error("OscProbGPU: no device implementation of batched analytic "
+                               "averages for this backend/model");
       }
 
       /// Grid probabilities and gradients (probs as in calculate()).

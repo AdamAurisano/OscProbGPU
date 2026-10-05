@@ -273,6 +273,30 @@ agree to ≤ 1e-10 in P̄ (phases up to 10⁶ rad at Δm²₄₁ = 100 eV²; ~1e
 Δm²₄₁ ≤ 1 eV²) and 1e-9 relative in dP̄; in the clamped bin, where phases
 reach 10¹⁰ rad, to 5e-11 and 1e-6.
 
+**Batched parameter points** (fits, scans): a handle fixes the path,
+binning and ν/ν̄ once; each call evaluates a list of parameter points, with
+the gradient parameters of `set_gradient_params()`:
+
+```cpp
+auto fdnu = prop.analytic_batch(E_edges, fd, /*nubar=*/false,
+                                opg::EMeasure::InvE, opg::BinVar::E,
+                                /*opt=*/{}, /*device index=*/0);
+// out[p][a][b][bin], dout[p][q][a][b][bin] in device memory of that GPU,
+// asynchronous on a cudaStream_t (nullptr: the propagator's stream)
+prop.avg_path_analytic_batch(fdnu, points, out_dev, dout_dev, stream);
+// or into host vectors (any backend; on the CPU one point at a time)
+prop.avg_path_analytic_batch(fdnu, points, out, &dout);
+```
+
+Each point's result depends only on its parameters: bit-identical for any
+batch size, order and internal chunking (points are processed in chunks
+whose per-(point, sub-bin) scratch stays below
+`AnalyticAvgOptions::batch_scratch_mb`, 1 GB by default). Per-point
+preparation runs on the host (OpenMP); each call needs exclusive use of its
+handle. V100 (shared), 6 gradients: FD 151 bins 0.39 ms per point (values
+only 0.19 ms), ND 400 bins 0.20 ms (0.07 ms); 3000 FD points in 1.2 s.
+Batch and per-point GPU results agree to ≤ 3e-16.
+
 ## Absorption
 
 `OscProb::Absorption` is available as flavour- and model-independent

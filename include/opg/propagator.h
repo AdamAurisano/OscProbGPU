@@ -571,6 +571,104 @@ namespace opg {
       }
 
       //.......................................................................
+      // Batched analytic averages over many parameter points (fixed path and
+      // binning). A handle holds the sub-bins and, with the CUDA backend,
+      // their device buffers on one device; each call evaluates a list of
+      // parameter points with the gradient parameters of
+      // set_gradient_params(). Each point's result depends only on its
+      // parameters (bit-identical for any batch size and position).
+
+      /// Handle of a batch configuration (sub-bins, path, nu/nubar, device).
+      struct AnalyticBatch {
+          std::vector<AnalyticSubBin> sub;
+          size_t                      nbins = 0;
+          std::vector<Segment<R>>     path;
+          bool                        nubar = false;
+          AnalyticAvgOptions          opt;
+          int                         device = -1;  ///< index into devices(); -1: host
+          std::shared_ptr<void>       state;        ///< device buffers (engine)
+          size_t n_bins() const { return nbins; }
+          bool   on_device() const { return state != nullptr; }
+      };
+
+      /// Batch handle for edges/path as avg_path_analytic. With the CUDA
+      /// backend (double precision, !opt.host) its buffers live on device
+      /// devices()[device].
+      AnalyticBatch analytic_batch(const std::vector<double>& edges,
+                                   const std::vector<Segment<R>>& path, bool nubar,
+                                   EMeasure measure = EMeasure::Linear, BinVar var = BinVar::E,
+                                   const AnalyticAvgOptions& opt = {}, int device = 0)
+      {
+        return analytic_batch(analytic_subbins(edges, path, measure, var, opt),
+                              edges.size() - 1, path, nubar, opt, device);
+      }
+
+      /// Batch handle for explicit sub-bins (as avg_path_analytic_subbins).
+      AnalyticBatch analytic_batch(const std::vector<AnalyticSubBin>& sub, size_t nbins,
+                                   const std::vector<Segment<R>>& path, bool nubar,
+                                   const AnalyticAvgOptions& opt = {}, int device = 0)
+      {
+        if (path.empty()) throw std::invalid_argument("analytic_batch: empty path");
+        for (const auto& s : sub)
+          if (s.bin < 0 || size_t(s.bin) >= nbins || !(s.u0 > 0) || !(s.h >= 0))
+            throw std::invalid_argument("analytic_batch: bad sub-bin");
+        AnalyticBatch b;
+        b.sub   = sub;
+        b.nbins = nbins;
+        b.path  = path;
+        b.nubar = nubar;
+        b.opt   = opt;
+        if (on_gpu() && !opt.host) {
+          if (device < 0 || size_t(device) >= fDevices.size())
+            throw std::invalid_argument("analytic_batch: bad device index");
+          b.state = fEngine->analytic_batch_create(
+              device, sub, nbins, path, size_t(opt.batch_scratch_mb * 1048576.0));
+          if (b.state) b.device = device;
+        }
+        return b;
+      }
+
+      /// Batched averages into device memory of the handle's device:
+      /// out[p][a][b][bin] (points.size() x N x N x nbins) and, if dout is
+      /// not null, dout[p][q][a][b][bin] for the parameters of
+      /// set_gradient_params(). Asynchronous on `stream` (a cudaStream_t;
+      /// nullptr: the propagator's stream for that device): the call
+      /// returns after enqueueing; synchronise the stream before reading.
+      void avg_path_analytic_batch(const AnalyticBatch& b, const std::vector<Params>& points,
+                                   R* out, R* dout, void* stream = nullptr)
+      {
+        if (!b.on_device())
+          throw std::logic_error("avg_path_analytic_batch: device output needs a batch "
+                                 "handle on a GPU (CUDA backend, double precision)");
+        run_batch(b, points, out, dout, stream, true);
+      }
+
+      /// Batched averages into host vectors (any backend): out[p][a][b][bin]
+      /// and, with dout, dout[p][q][a][b][bin]. Blocking.
+      void avg_path_analytic_batch(const AnalyticBatch& b, const std::vector<Params>& points,
+                                   std::vector<R>& out, std::vector<R>* dout = nullptr)
+      {
+        const size_t nq = dout ? fGradIdx.size() : 0, nch = size_t(N) * N;
+        out.assign(points.size() * nch * b.nbins, R(0));
+        if (dout) dout->assign(points.size() * nq * nch * b.nbins, R(0));
+        if (b.on_device()) {
+          run_batch(b, points, out.data(), dout ? dout->data() : nullptr, nullptr, false);
+          return;
+        }
+        // host: one point at a time
+        std::vector<GradChunk<Model>> ch;
+        std::vector<R>                o, d;
+        for (size_t p = 0; p < points.size(); p++) {
+          const Prepared P = Model::prepare(points[p]);
+          if (dout) build_chunks(points[p], ch);
+          analytic::average<Model>(P, dout ? &ch : nullptr, int(nq), b.sub, b.nbins, b.path,
+                                   b.nubar, b.opt, o, dout ? &d : nullptr);
+          std::copy(o.begin(), o.end(), out.begin() + p * nch * b.nbins);
+          if (dout) std::copy(d.begin(), d.end(), dout->begin() + p * nq * nch * b.nbins);
+        }
+      }
+
+      //.......................................................................
       // Absorption (OscProb::Absorption): flavour- and model-independent
       // attenuation exp(-sigma X / u) along the Earth path, X = column depth.
 
@@ -703,6 +801,41 @@ namespace opg {
       }
 
     private:
+      /// Prepare the points on the host (OpenMP) and run a batch on the device.
+      void run_batch(const AnalyticBatch& b, const std::vector<Params>& points, R* out, R* dout,
+                     void* stream, bool device_out)
+      {
+        const bool want = dout != nullptr;
+        if (want && fGradIdx.empty())
+          throw std::logic_error("avg_path_analytic_batch: gradients requested but no "
+                                 "parameters selected (set_gradient_params)");
+        const size_t np = points.size();
+        if (np == 0) return;
+        const int    npar = want ? int(fGradIdx.size()) : 0;
+        int          nchunk = 0;
+        if (want) {
+          std::vector<GradChunk<Model>> c0;
+          build_chunks(points[0], c0);
+          nchunk = int(c0.size());
+        }
+        std::vector<Prepared>         P(np);
+        std::vector<Mat<N, R>>        A(np), dA(np * size_t(npar));
+        std::vector<GradChunk<Model>> G(np * size_t(nchunk));
+#pragma omp parallel for schedule(static)
+        for (long p = 0; p < long(np); p++) {
+          std::vector<GradChunk<Model>> ch;
+          std::vector<Mat<N, R>>        da;
+          P[p] = Model::prepare(points[p]);
+          if (want) build_chunks(points[p], ch);
+          analytic::vacuum_term<Model>(P[p], want ? &ch : nullptr, npar, b.nubar, A[p], da);
+          for (int c = 0; c < nchunk; c++) G[size_t(p) * nchunk + c] = ch[c];
+          for (int q = 0; q < npar; q++) dA[size_t(p) * npar + q] = da[q];
+        }
+        fEngine->analytic_batch_run(b.state.get(), b.nubar, b.opt.fast_begin, b.opt.fast_end, np,
+                                    P.data(), A.data(), G.data(), nchunk, dA.data(), npar, out,
+                                    dout, stream, device_out);
+      }
+
       static void check_points(const std::vector<R>& E, const std::vector<R>& C,
                                const std::vector<uint8_t>& nb,
                                const std::vector<R>& extra = {})
@@ -721,36 +854,45 @@ namespace opg {
         if (fGradIdx.empty())
           throw std::logic_error("opg::Propagator: no gradient parameters "
                                  "selected (set_gradient_params)");
-        if constexpr (grad_traits<Model>::enabled) {
-          if (!fChunksValid) {
-            constexpr int K = grad_traits<Model>::K;
-            using D         = Dual<R, K>;
-            fChunks.clear();
-            const int nmodel = int(parameter_names().size());
-            for (size_t off = 0; off < fGradIdx.size(); off += K) {
-              auto pd = Model::template cast<D>(fParams);
-              int  cnt = int(std::min<size_t>(K, fGradIdx.size() - off));
-              GradChunk<Model> c;
-              const int ntypes = int(fZoaTypes.size());
-              for (int k = 0; k < K; k++) c.P.zoa_type[k] = c.P.rho_type[k] = -1;
-              for (int k = 0; k < cnt; k++) {
-                const int idx = fGradIdx[off + k];
-                if (idx < nmodel)
-                  Model::template param_ref<D>(pd, idx).d[k] += R(1);
-                else if (idx < nmodel + ntypes)
-                  c.P.zoa_type[k] = fZoaTypes[idx - nmodel];
-                else
-                  c.P.rho_type[k] = fZoaTypes[idx - nmodel - ntypes];
-              }
-              c.P.P    = Model::template prepare_generic<D>(pd);
-              c.offset = int(off);
-              c.count  = cnt;
-              fChunks.push_back(c);
-            }
-            fChunksValid = true;
-          }
+        if (!fChunksValid) {
+          build_chunks(fParams, fChunks);
+          fChunksValid = true;
         }
         return fChunks;
+      }
+
+      /// The gradient passes of the selected parameters at parameters p.
+      void build_chunks(const Params& p, std::vector<GradChunk<Model>>& out) const
+      {
+        out.clear();
+        if constexpr (grad_traits<Model>::enabled) {
+          constexpr int K = grad_traits<Model>::K;
+          using D         = Dual<R, K>;
+          const int nmodel = int(parameter_names().size());
+          for (size_t off = 0; off < fGradIdx.size(); off += K) {
+            auto pd  = Model::template cast<D>(p);
+            int  cnt = int(std::min<size_t>(K, fGradIdx.size() - off));
+            GradChunk<Model> c;
+            const int ntypes = int(fZoaTypes.size());
+            for (int k = 0; k < K; k++) c.P.zoa_type[k] = c.P.rho_type[k] = -1;
+            for (int k = 0; k < cnt; k++) {
+              const int idx = fGradIdx[off + k];
+              if (idx < nmodel)
+                Model::template param_ref<D>(pd, idx).d[k] += R(1);
+              else if (idx < nmodel + ntypes)
+                c.P.zoa_type[k] = fZoaTypes[idx - nmodel];
+              else
+                c.P.rho_type[k] = fZoaTypes[idx - nmodel - ntypes];
+            }
+            c.P.P    = Model::template prepare_generic<D>(pd);
+            c.offset = int(off);
+            c.count  = cnt;
+            out.push_back(c);
+          }
+        }
+        else {
+          (void)p;
+        }
       }
 
       /// Gauss-Legendre nodes and normalised weights for 1D E bins.

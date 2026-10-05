@@ -7,6 +7,8 @@
 #include <sstream>
 #include <string>
 
+#include <cuda_runtime.h>
+
 #include "doctest.h"
 
 #include "opg/propagator.h"
@@ -117,5 +119,97 @@ TEST_CASE("GPU analytic averages agree with the host computation")
     cn.set_gradient_params();
     compare(gn, cn, {0.5, 1.0, 2.0, 5.0, 20.0}, {{1300, 2.8, 0.5, 0}}, opg::EMeasure::Log,
             opg::BinVar::E, "NSI");
+  }
+}
+
+TEST_CASE("GPU batched analytic averages: per-point agreement, bit-identity across batches")
+{
+  const int dev = devs("OPG_TEST_DEVICES", "0").front();
+  using M       = opg::Sterile<>;
+  opg::Propagator<M> prop(opg::PremModel(), {dev});
+  const std::vector<std::string> q{"th23", "th24", "th34", "d24", "dm31", "dm41"};
+  prop.set_gradient_params(q);
+  std::vector<M::Params> pts;
+  for (double dm41 : {1e-3, 0.02, 0.3, 1.0, 3.0, 30.0, 100.0}) {
+    auto p = nova(dm41);
+    p.mix.SetAngle(2, 4, 0.1 + 0.3 * std::log10(1e4 * dm41) / 5);
+    pts.push_back(p);
+  }
+  std::vector<double> fe{1e-5};
+  for (double ie = 1 / 0.3; ie > 1 / 44.7; ie -= 0.02237) fe.push_back(1 / ie);
+  fe.push_back(44.7);
+  fe.push_back(120);
+  std::vector<double> ne;
+  for (int i = 0; i <= 400; i++) ne.push_back(0.005 * std::pow(1000.0, i / 400.0));
+  const std::vector<opg::Segment<double>> fd{{810, 2.84, 0.5, 0}}, nd{{1, 2.84, 0.5, 0}};
+
+  for (int cfg = 0; cfg < 4; cfg++) {
+    const bool  isfd  = cfg < 2, nubar = cfg % 2;
+    const auto& edges = isfd ? fe : ne;
+    const auto& path  = isfd ? fd : nd;
+    const auto  var   = isfd ? opg::BinVar::E : opg::BinVar::LoE;
+    auto b = prop.analytic_batch(edges, path, nubar, opg::EMeasure::InvE, var);
+    REQUIRE(b.on_device());
+    const size_t nb = b.n_bins(), n = 16 * nb, np = pts.size();
+
+    // device output
+    double *dout_d = nullptr, *dd_d = nullptr;
+    REQUIRE(cudaSetDevice(dev) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dout_d, np * n * sizeof(double)) == cudaSuccess);
+    REQUIRE(cudaMalloc(&dd_d, np * q.size() * n * sizeof(double)) == cudaSuccess);
+    cudaStream_t st;
+    REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+    prop.avg_path_analytic_batch(b, pts, dout_d, dd_d, st);
+    REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+    std::vector<double> out(np * n), dout(np * q.size() * n);
+    cudaMemcpy(out.data(), dout_d, out.size() * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(dout.data(), dd_d, dout.size() * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaFree(dout_d);
+    cudaFree(dd_d);
+    cudaStreamDestroy(st);
+
+    // host output: identical
+    std::vector<double> ho, hd;
+    prop.avg_path_analytic_batch(b, pts, ho, &hd);
+    CHECK(ho == out);
+    CHECK(hd == dout);
+
+    // per-point GPU calls (host reduction): round-off of the reduction only
+    double ep = 0, eg = 0;
+    for (size_t p = 0; p < np; p++) {
+      prop.set_params(pts[p]);
+      std::vector<double> P, dP;
+      prop.avg_path_analytic_grad(edges, path, nubar, P, dP, opg::EMeasure::InvE, var);
+      ep = std::max(ep, rel_diff(std::vector<double>(out.begin() + p * n, out.begin() + (p + 1) * n),
+                                 P, 1.0, nb, 0, nb));
+      eg = std::max(eg, rel_diff(std::vector<double>(dout.begin() + p * q.size() * n,
+                                                     dout.begin() + (p + 1) * q.size() * n),
+                                 dP, 1.0, nb, 0, nb));
+    }
+    MESSAGE("config " << cfg << ": batch vs per-point GPU: P " << ep << ", dP (rel) " << eg);
+    CHECK(ep < 1e-14);
+    CHECK(eg < 1e-13);
+
+    // bit-identity: single points, reversed order, and one point per chunk
+    auto one = b;
+    opg::AnalyticAvgOptions tiny;
+    tiny.batch_scratch_mb = 1e-6;
+    auto small = prop.analytic_batch(edges, path, nubar, opg::EMeasure::InvE, var, tiny);
+    std::vector<M::Params> rev(pts.rbegin(), pts.rend());
+    std::vector<double>    ro, rd, so, sd;
+    prop.avg_path_analytic_batch(b, rev, ro, &rd);
+    prop.avg_path_analytic_batch(small, pts, so, &sd);
+    CHECK(so == out);
+    CHECK(sd == dout);
+    bool same = true;
+    for (size_t p = 0; p < np; p++) {
+      std::vector<double> o1, d1;
+      prop.avg_path_analytic_batch(one, {pts[p]}, o1, &d1);
+      same = same && std::equal(o1.begin(), o1.end(), out.begin() + p * n) &&
+             std::equal(d1.begin(), d1.end(), dout.begin() + p * q.size() * n) &&
+             std::equal(o1.begin(), o1.end(), ro.begin() + (np - 1 - p) * n) &&
+             std::equal(d1.begin(), d1.end(), rd.begin() + (np - 1 - p) * q.size() * n);
+    }
+    CHECK(same);
   }
 }

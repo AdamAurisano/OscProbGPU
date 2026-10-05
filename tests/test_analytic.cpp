@@ -413,3 +413,32 @@ TEST_CASE("Analytic average gradients with respect to Earth density and Z/A")
   }
 }
 #endif
+
+#ifndef OPG_DISABLE_GRADIENTS
+TEST_CASE("Batched analytic averages on the host equal per-point calls")
+{
+  opg::Propagator<Sterile> prop;
+  prop.set_gradient_params({"th23", "th24", "th34", "d24", "dm31", "dm41"});
+  const Path<double>        fd{{810, 2.84, 0.5, 0}};
+  const std::vector<double> E{1e-5, 0.3, 0.5, 1.0, 2.0, 5.0, 44.7};
+  std::vector<Sterile::Params> pts;
+  for (double dm41 : {1e-3, 0.5, 30.0}) pts.push_back(nova_sterile(dm41, 0.1, dm41 > 1));
+  auto b = prop.analytic_batch(E, fd, true, EMeasure::InvE, BinVar::E);
+  CHECK_FALSE(b.on_device());
+  std::vector<double> out, dout;
+  prop.avg_path_analytic_batch(b, pts, out, &dout);
+  const size_t nb = E.size() - 1, n = 16 * nb, nq = 6;
+  for (size_t p = 0; p < pts.size(); p++) {
+    prop.set_params(pts[p]);
+    std::vector<double> P, dP;
+    prop.avg_path_analytic_grad(E, fd, true, P, dP, EMeasure::InvE, BinVar::E);
+    CHECK(std::equal(P.begin(), P.end(), out.begin() + p * n));
+    CHECK(std::equal(dP.begin(), dP.end(), dout.begin() + p * nq * n));
+  }
+  std::vector<double> v;
+  prop.avg_path_analytic_batch(b, pts, v);  // values only
+  CHECK(v == out);
+  double* none = nullptr;  // device output needs a handle on a GPU
+  CHECK_THROWS_AS(prop.avg_path_analytic_batch(b, pts, out.data(), none), std::logic_error);
+}
+#endif
