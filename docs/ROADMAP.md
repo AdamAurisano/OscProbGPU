@@ -146,8 +146,23 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,
   but P-only 1.3-2.2x slower).
-* Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast),
-  PMNS_Maltoni (alternative bin averaging).
+* Done (requested for the PISCES NOvA 3+1 fitter): analytic bin averages for
+  fixed paths after PMNS_Maltoni (`avg/analytic.h`,
+  `Propagator::avg_path_analytic[_grad]`, `avg_path_analytic_subbins[_grad]`):
+  first-order expansion of S in 1/E, K matrix per segment from the
+  eigensystem of H, sinc damping in the eigenbasis of K, linear weight for
+  E / log E measures; geometric sub-bins from the binning, the path's
+  sum(V L) and `tol` (parameter-independent, so averages are smooth); C2
+  fade-out of pairs sweeping > 1e6 rad per sub-bin. Exact forward-mode
+  gradients (model, zoa_<t>, rho_<t>) via divided differences (no
+  eigenvector derivatives). Fast, NSI, Sterile (`Model::analytic_avg`).
+  Host only (OpenMP). Matches OscProb's AvgProbLoE to 8e-14 on its
+  sub-bins; NOvA FD/ND accuracy ~1e-6 at tol = 1e-6 (~1e-8 at 1e-8),
+  gradients ~1e-8..1e-13 vs long-double FD (`tests/validate_analytic.cpp`).
+* Next for the analytic averages: CUDA version (PISCES moves to the GPU
+  later); Python bindings; models with E-dependent matter terms are out of
+  scope (the expansion needs H affine in 1/E).
+* Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast).
 
 ## Working notes
 * Local: `cmake -S . -B build -DOPG_ENABLE_CUDA=OFF -DOPG_ENABLE_PYTHON=ON`;

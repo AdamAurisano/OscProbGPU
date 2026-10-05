@@ -195,6 +195,76 @@ Measured on the reference bins (`tests/test_averaging.cpp`), error vs order:
 (The E column is dominated by a 1–1.5 GeV core-crossing bin spanning ~2
 oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 
+### Analytic averages (fixed paths)
+
+`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, Sterile;
+`include/opg/avg/analytic.h`) average P(a → b) over bins of E or L/E for a
+fixed path without resolving the oscillations, after OscProb's
+`PMNS_Maltoni` (arXiv:2308.00037). To first order in u = 1/E around a
+sub-bin centre, S(u₀ + δ) = S(u₀) exp(−iKδ) with K = Σ_seg T† ∫₀^L e^{iHs} (dH/du)
+e^{−iHs} ds T, so in the eigenbasis of K each pair of terms is damped by
+sinc((μₙ − μₘ)h). This is exact in vacuum however many periods fit in a bin;
+in matter the error is second order in the sub-bin width. Bins are split
+into geometric sub-bins (u_hi/u_lo = 1 + r) with r set by the binning, the
+path and `tol` only (never by the oscillation parameters), so the averages
+are smooth in the parameters:
+
+```cpp
+opg::Propagator<opg::Sterile<>> prop;              // host computation, any backend
+prop.set_params(par);
+prop.set_gradient_params();                          // th12 ... dm41
+std::vector<opg::Segment<double>> fd{{810, 2.84, 0.5, 0}};
+std::vector<double> P, dP;                           // P[a][b][bin], dP[p][a][b][bin]
+prop.avg_path_analytic_grad(E_edges, fd, /*nubar=*/false, P, dP,
+                            opg::EMeasure::InvE,     // uniform in L/E (or Linear, Log)
+                            opg::BinVar::E);         // edges in E (or LoE, km/GeV)
+```
+
+* Measures: uniform in E (`Linear`, the default as for `avg_path`), log E or
+  1/E (`InvE`, uniform in L/E); the measure's weight enters each sub-bin
+  exactly to first order.
+* `AnalyticAvgOptions`: `tol` (default 1e-6; sub-bin width
+  r = √(tol / (0.005 Σ V L)), V the matter potential at Z/A = 1, capped at
+  `max_width` = 0.1; the observed error is ≈ 0.5–1 × tol and the cost grows as
+  1/√tol), `nsub` (fixed sub-bins uniform in 1/E instead), `threads` (OpenMP).
+  `avg_path_analytic_subbins()` takes explicit sub-bins (e.g. OscProb's).
+* Pairs whose phase sweeps more than 10⁶ rad across a sub-bin fade out
+  smoothly (C² in log of the sweep) and are dropped beyond 10⁷ rad (their
+  average is below 10⁻⁶ and their phases are not resolved in double
+  precision), so fully fast pairs reach the incoherent limit smoothly, e.g.
+  in a bin reaching L/E ~ 10⁸ km/GeV.
+* Gradients are exact derivatives of the computed averages (forward mode
+  through both eigen-decompositions, written with divided differences of
+  smooth functions, so they stay accurate at degenerate eigenvalues), for
+  the model parameters and the Earth `zoa_<t>`/`rho_<t>`. The sub-bins depend
+  on the path's densities: when fitting a density scale, fix them with
+  `analytic_subbins()` at the nominal path and `avg_path_analytic_subbins*()`.
+* Validation (`tests/test_analytic.cpp`, `tests/validate_analytic.cpp`): with
+  OscProb's own sub-bins it reproduces `PMNS_Maltoni::AvgProbLoE` to 8e-14;
+  NOvA-like 3+1 configurations are in the table below.
+
+NOvA-like 3+1 (FD: 810 km, ND: 1 km, ρ = 2.84 g/cm³), max |ΔP̄| over all 16
+channels and bins, ν and ν̄, both orderings, θ₁₄ ∈ {0, 0.1}, against a
+converged reference uniform in L/E (FD: 150 bins, 148 of them uniform in 1/E
+between 0.3 and 44.7 GeV, plus the bin [10⁻⁵, 0.3] GeV reaching L/E =
+8.1·10⁷ km/GeV; ND: 400 log bins in L/E ∈ [0.005, 5] km/GeV):
+
+| Δm²₄₁ (eV²) | FD, tol 1e-6 | FD clamped bin | ND | FD, tol 1e-8 | FD, GL 5 nodes | FD, GL 20 nodes |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.001 | 9.6e-7 | 3.2e-9 | 7e-15 | 1.0e-8 | 2e-15 | 1e-15 |
+| 0.1   | 8.6e-7 | 3.4e-9 | 1.8e-10 | 1.2e-8 | 4.3e-7 | 2e-14 |
+| 1     | 6.2e-7 | 3.4e-9 | 1.9e-9 | 6.8e-9 | 0.18 | 4.9e-8 |
+| 3–100 | 6.2e-7 | 3.4e-9 | 1.9e-9 | 6.8e-9 | 0.06–0.23 | 0.06–0.14 |
+
+(GL: `avg_path` with nodes uniform in 1/E, excluding the clamped bin.)
+Gradients agree with 4-point long-double finite differences to ≤ 1e-9
+relative (≤ 3e-4 in the clamped bin at Δm²₄₁ = 100 eV², where the tiny
+Δm² steps the finite differences need there are limited by round-off).
+Time per call (16 channels; 151 FD bins → 1163 sub-bins, 400 ND bins → 400),
+one thread / 14 threads of an Intel Core Ultra 5 225H: FD 7.9 / 1.3 ms,
+with 12 gradients 68 / 8.7 ms; ND 2.5 / 0.55 ms, with gradients 24 / 3.2 ms
+(FD at tol 1e-8: 73 / 8.8 ms, with gradients 650 / 73 ms).
+
 ## Absorption
 
 `OscProb::Absorption` is available as flavour- and model-independent
@@ -444,8 +514,13 @@ brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
 * **Sterile** uses a Jacobi eigensolver instead of Eigen's QR, and **Decay** a
   port of Eigen's matrix exponential algorithm, so results agree to round-off
   rather than bit for bit.
-* **Averaging** is the Gauss–Legendre scheme above, not Maltoni's Taylor
-  expansion.
+* **Averaging:** `set_bins()`/`avg_path()` use the Gauss–Legendre scheme
+  above. Maltoni's expansion (OscProb's default for Fast and Sterile) is
+  available for fixed paths as `avg_path_analytic()`, with sub-bins chosen
+  from the binning rather than OscProb's `GetSamplePointsAvgClass`, gradients,
+  and fading of fully fast pairs. With OscProb's sub-bins it agrees with
+  `AvgProbLoE` to 8e-14. (OscProb returns NaN from the first `AvgProbLoE` call
+  after `SetPath`; later calls are fine.)
 * Only spherical-shell Earth models (`PremModel`); `EarthModelBinned` and
   OscProb's other models are not ported.
 
@@ -499,7 +574,7 @@ include/opg/linalg    zheevh3 (Kopp, LGPL), Jacobi, expm, general 3x3 eigensyste
 include/opg/physics   mixing (BuildHms port), propagation, gradients
 include/opg/models    fast, nsi, nunm, sterile, decay
 include/opg/earth     PremModel and on-device path walker
-include/opg/avg       Gauss-Legendre
+include/opg/avg       Gauss-Legendre, analytic (Maltoni) averages
 include/opg/propagator.h, engine*.h   user API and CPU backend
 src/                  CUDA backend
 python/               nanobind module, tests, examples
