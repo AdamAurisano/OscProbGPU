@@ -32,3 +32,10 @@ g++ -O2 -std=c++17 "$HERE/reference/dump_reference.cxx" -o "$BUILD/dump_referenc
 
 mkdir -p "$HERE/tests/data"
 "$BUILD/dump_reference" "$HERE/tests/data" "$NSUB" $ONLY
+
+# OscProb PMNS_Maltoni averages, committed as a header (tests/test_analytic.cpp)
+g++ -O2 -std=c++17 "$HERE/reference/dump_maltoni.cxx" -o "$BUILD/dump_maltoni" \
+  -I"$INST/include" -I"$INST/include/eigen3" $(root-config --cflags) \
+  -L"$INST/lib" -Wl,-rpath,"$INST/lib" -lOscProb -lMatrixDecomp \
+  $(root-config --libs)
+"$BUILD/dump_maltoni" > "$HERE/tests/maltoni_reference.h"

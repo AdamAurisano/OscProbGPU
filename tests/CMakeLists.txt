@@ -8,7 +8,7 @@ set(OPG_OSCPROB_DIR "${PROJECT_SOURCE_DIR}/../OscProb"
 
 add_executable(opg_tests_cpu test_main.cpp test_core.cpp test_numerics.cpp
                              test_models_cpu.cpp test_averaging.cpp
-                             test_gradients.cpp)
+                             test_gradients.cpp test_analytic.cpp)
 target_link_libraries(opg_tests_cpu PRIVATE oscprobgpu opg_doctest)
 
 # Compile the original Kopp eigensolvers (LGPL) into the test, if available,
@@ -46,3 +46,7 @@ if(OPG_ENABLE_CUDA)
   add_test(NAME gpu COMMAND opg_tests_gpu)
   set_tests_properties(gpu PROPERTIES LABELS "gpu")
 endif()
+
+# Validation tables for the analytic bin averages (not part of ctest; slow).
+add_executable(opg_validate_analytic validate_analytic.cpp)
+target_link_libraries(opg_validate_analytic PRIVATE oscprobgpu)
