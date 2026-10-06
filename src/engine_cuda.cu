@@ -604,10 +604,56 @@ namespace opg {
       }
     }
 
+    /// One-segment paths: value and all gradient passes of a sub-bin in one
+    /// thread (analytic::subbin_fused), no per-sub-bin scratch.
+    template <class Model, class R, int K>
+    __global__ void __launch_bounds__(64)
+        analytic_fused_kernel(const typename Model::Prepared P, const Mat<Model::N, R> A,
+                              const GradPrepared<Model, K>* __restrict__ G,
+                              const int* __restrict__ off, const int* __restrict__ cnt,
+                              int nchunk, const Mat<Model::N, R>* __restrict__ dA, int npar,
+                              const AnalyticSubBin* __restrict__ sub, size_t ns,
+                              const Segment<R>* __restrict__ path, bool nubar, R fast_begin,
+                              R fast_end, unsigned rows, R* __restrict__ sp,
+                              R* __restrict__ sg)
+    {
+      constexpr int N = Model::N;
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < ns;
+           i += size_t(gridDim.x) * blockDim.x) {
+        const AnalyticSubBin     s = sub[i];
+        const analytic::AvgFn<R> fn{R(s.h), R(s.beta), fast_begin, fast_end};
+        analytic::subbin_fused<Model, K>(P, A, G, off, cnt, nchunk, dA, path[0], nubar,
+                                         R(s.u0), fn, rows, sp + i * N * N,
+                                         nchunk > 0 ? sg + i * size_t(npar) * N * N : nullptr);
+      }
+    }
+
     //.........................................................................
     // Batched analytic averages: points x sub-bins, reduced per point on the
     // device in a fixed order.
     //.........................................................................
+
+    template <class Model, class R, int K>
+    __global__ void __launch_bounds__(64) analytic_batch_fused_kernel(
+        const typename Model::Prepared* __restrict__ P, const Mat<Model::N, R>* __restrict__ A,
+        const GradPrepared<Model, K>* __restrict__ G, const int* __restrict__ off,
+        const int* __restrict__ cnt, int nchunk, const Mat<Model::N, R>* __restrict__ dA,
+        int npar, const AnalyticSubBin* __restrict__ sub, size_t ns, size_t npts,
+        const Segment<R>* __restrict__ path, bool nubar, R fast_begin, R fast_end,
+        unsigned rows, R* __restrict__ sp, R* __restrict__ sg)
+    {
+      constexpr int N = Model::N;
+      for (size_t t = blockIdx.x * size_t(blockDim.x) + threadIdx.x; t < npts * ns;
+           t += size_t(gridDim.x) * blockDim.x) {
+        const size_t             p = t / ns;
+        const AnalyticSubBin     s = sub[t % ns];
+        const analytic::AvgFn<R> fn{R(s.h), R(s.beta), fast_begin, fast_end};
+        analytic::subbin_fused<Model, K>(P[p], A[p], G + p * nchunk, off, cnt, nchunk,
+                                         dA + p * npar, path[0], nubar, R(s.u0), fn, rows,
+                                         sp + t * N * N,
+                                         nchunk > 0 ? sg + t * size_t(npar) * N * N : nullptr);
+      }
+    }
 
     template <class Model, class R>
     __global__ void analytic_batch_value_kernel(
@@ -650,17 +696,24 @@ namespace opg {
 
     /// dst[p][q][bin] = invw[bin] * sum over the sub-bins i of bin (in
     /// list order) of w[i] src[p][i][q].
+    /// Channels q of initial flavours outside `rows` (q = (.. * N + a) * N + b)
+    /// are set to zero.
     template <class R>
     __global__ void analytic_batch_reduce_kernel(const R* __restrict__ src, size_t ns,
                                                  size_t nq, const int* __restrict__ binStart,
                                                  const int* __restrict__ binIdx,
                                                  const R* __restrict__ w,
                                                  const R* __restrict__ invw, size_t nbins,
-                                                 size_t npts, R* __restrict__ dst)
+                                                 size_t npts, int N, unsigned rows,
+                                                 R* __restrict__ dst)
     {
       for (size_t t = blockIdx.x * size_t(blockDim.x) + threadIdx.x; t < npts * nq * nbins;
            t += size_t(gridDim.x) * blockDim.x) {
         const size_t bin = t % nbins, q = (t / nbins) % nq, p = t / (nbins * nq);
+        if (!analytic::row_on(rows, int((q / N) % N))) {
+          dst[t] = 0;
+          continue;
+        }
         const R*     sp  = src + p * ns * nq + q;
         R            acc = 0;
         for (int k = binStart[bin]; k < binStart[bin + 1]; k++) {
@@ -1552,8 +1605,8 @@ namespace opg {
       bool analytic_subbins(const Prepared& P, const Chunks* chunks, int npar,
                             const Mat<N, R>& A, const Mat<N, R>* dA,
                             const AnalyticSubBin* sub, size_t ns, const Segment<R>* path,
-                            int nseg, bool nubar, double fast_begin, double fast_end, R* sp,
-                            R* sg) override
+                            int nseg, bool nubar, double fast_begin, double fast_end,
+                            unsigned rows, R* sp, R* sg) override
       {
         if constexpr (!has_analytic_avg<Model>::value || !std::is_same<R, double>::value) {
           return false;
@@ -1582,6 +1635,34 @@ namespace opg {
             OPG_CUDA(cudaSetDevice(D.id));
             D.anSub.upload(D.id, sub + off[k], cnt[k], D.stream);
             D.path.upload(D.id, path, size_t(nseg), D.stream);
+            if (nseg == 1) {
+              const GradPrepared<Model, GK>* g  = nullptr;
+              const int*                     go = nullptr;
+              const int*                     gc = nullptr;
+              const Mat<N, R>*               da = nullptr;
+              R*                             sgd = nullptr;
+              int                            nchunk = 0;
+              if constexpr (GT::enabled)
+                if (want_grad) {
+                  nchunk = int(coff.size());
+                  D.anDA.upload(D.id, dA, size_t(npar), D.stream);
+                  D.anG.upload(D.id, fPDHost.data(), fPDHost.size(), D.stream);
+                  D.anOff.upload(D.id, coff.data(), coff.size(), D.stream);
+                  D.anCnt.upload(D.id, ccnt.data(), ccnt.size(), D.stream);
+                  D.pGrad.resize(D.id, cnt[k] * ng);
+                  g   = D.anG.ptr;
+                  go  = D.anOff.ptr;
+                  gc  = D.anCnt.ptr;
+                  da  = D.anDA.ptr;
+                  sgd = D.pGrad.ptr;
+                }
+              D.pOut.resize(D.id, cnt[k] * nch);
+              analytic_fused_kernel<Model, R, GK><<<blocks_for(cnt[k], 64), 64, 0, D.stream>>>(
+                  P, A, g, go, gc, nchunk, da, npar, D.anSub.ptr, cnt[k], D.path.ptr, nubar,
+                  R(fast_begin), R(fast_end), rows, D.pOut.ptr, sgd);
+              OPG_CUDA(cudaGetLastError());
+              continue;
+            }
             D.anSeg.resize(D.id, cnt[k] * size_t(nseg));
             D.anKs.resize(D.id, cnt[k]);
             D.pOut.resize(D.id, cnt[k] * nch);
@@ -1632,6 +1713,7 @@ namespace opg {
           int                                           dev = 0;  ///< index into fDev
           size_t                                        ns = 0, nbins = 0, scratch = 0;
           int                                           nseg = 0;
+          unsigned                                      rows = 0;  ///< initial flavours
           DevBuf<AnalyticSubBin>                        sub;
           DevBuf<Segment<R>>                            path;
           DevBuf<int>                                   binStart, binIdx;
@@ -1665,7 +1747,7 @@ namespace opg {
 
       std::shared_ptr<void> analytic_batch_create(int di, const std::vector<AnalyticSubBin>& sub,
                                                   size_t nbins, const std::vector<Segment<R>>& path,
-                                                  size_t scratch) override
+                                                  size_t scratch, unsigned rows) override
       {
         if constexpr (!has_analytic_avg<Model>::value || !std::is_same<R, double>::value) {
           return nullptr;
@@ -1677,6 +1759,7 @@ namespace opg {
           B->ns      = sub.size();
           B->nbins   = nbins;
           B->nseg    = int(path.size());
+          B->rows    = rows;
           B->scratch = scratch;
           // per-bin lists of sub-bins (list order) and weights, as the host
           std::vector<int>    start(nbins + 1, 0), idx(sub.size());
@@ -1745,14 +1828,20 @@ namespace opg {
               B.cnt.upload(id, ccnt.data(), ccnt.size(), st);
             }
           // points per chunk from the scratch budget
+          // (one-segment paths: fused kernel, no per-segment / K scratch)
+          const bool   fused = B.nseg == 1;
           const size_t per_pt =
-              ns * (size_t(B.nseg) * sizeof(analytic::SegData<N, R>) +
-                    sizeof(analytic::KState<N, R>) + (nch + nq) * sizeof(R));
+              ns * ((fused ? 0
+                           : size_t(B.nseg) * sizeof(analytic::SegData<N, R>) +
+                                 sizeof(analytic::KState<N, R>)) +
+                    (nch + nq) * sizeof(R));
           const size_t mp = std::max<size_t>(1, std::min(npts, B.scratch / std::max<size_t>(per_pt, 1)));
           ensure(B.P, id, mp);
           ensure(B.A, id, mp);
-          ensure(B.seg, id, mp * ns * size_t(B.nseg));
-          ensure(B.ks, id, mp * ns);
+          if (!fused) {
+            ensure(B.seg, id, mp * ns * size_t(B.nseg));
+            ensure(B.ks, id, mp * ns);
+          }
           ensure(B.sp, id, mp * ns * nch);
           if (want) {
             ensure(B.G, id, mp * size_t(nchunk));
@@ -1775,14 +1864,6 @@ namespace opg {
                                      cudaMemcpyHostToDevice, st));
             OPG_CUDA(cudaMemcpyAsync(B.A.ptr, B.hA.ptr + p0, n * sizeof(Mat<N, R>),
                                      cudaMemcpyHostToDevice, st));
-            analytic_batch_value_kernel<Model, R><<<blocks_for(n * ns, 64), 64, 0, st>>>(
-                B.P.ptr, B.A.ptr, B.sub.ptr, ns, n, B.path.ptr, B.nseg, nubar, R(fast_begin),
-                R(fast_end), want, B.sp.ptr, B.seg.ptr, B.ks.ptr);
-            OPG_CUDA(cudaGetLastError());
-            analytic_batch_reduce_kernel<R><<<blocks_for(n * nch * nb, 128), 128, 0, st>>>(
-                B.sp.ptr, ns, nch, B.binStart.ptr, B.binIdx.ptr, B.w.ptr, B.invw.ptr, nb, n,
-                o + p0 * nch * nb);
-            OPG_CUDA(cudaGetLastError());
             if constexpr (GT::enabled)
               if (want) {
                 OPG_CUDA(cudaMemcpyAsync(B.G.ptr, B.hG.ptr + p0 * size_t(nchunk),
@@ -1791,16 +1872,40 @@ namespace opg {
                 OPG_CUDA(cudaMemcpyAsync(B.dA.ptr, B.hdA.ptr + p0 * size_t(npar),
                                          n * size_t(npar) * sizeof(Mat<N, R>),
                                          cudaMemcpyHostToDevice, st));
-                analytic_batch_grad_kernel<Model, R, GK>
-                    <<<blocks_for(n * ns * size_t(nchunk), 64), 64, 0, st>>>(
-                        B.G.ptr, B.off.ptr, B.cnt.ptr, nchunk, B.dA.ptr, npar, B.sub.ptr, ns, n,
-                        B.path.ptr, B.nseg, nubar, B.seg.ptr, B.ks.ptr, B.sg.ptr);
-                OPG_CUDA(cudaGetLastError());
-                analytic_batch_reduce_kernel<R><<<blocks_for(n * nq * nb, 128), 128, 0, st>>>(
-                    B.sg.ptr, ns, nq, B.binStart.ptr, B.binIdx.ptr, B.w.ptr, B.invw.ptr, nb, n,
-                    d + p0 * nq * nb);
-                OPG_CUDA(cudaGetLastError());
               }
+            if (fused) {
+              const GradPrepared<Model, GK>* g = nullptr;
+              if constexpr (GT::enabled) g = B.G.ptr;
+              analytic_batch_fused_kernel<Model, R, GK><<<blocks_for(n * ns, 64), 64, 0, st>>>(
+                  B.P.ptr, B.A.ptr, g, B.off.ptr, B.cnt.ptr, want ? nchunk : 0, B.dA.ptr, npar,
+                  B.sub.ptr, ns, n, B.path.ptr, nubar, R(fast_begin), R(fast_end), B.rows,
+                  B.sp.ptr, want ? B.sg.ptr : nullptr);
+              OPG_CUDA(cudaGetLastError());
+            }
+            else {
+              analytic_batch_value_kernel<Model, R><<<blocks_for(n * ns, 64), 64, 0, st>>>(
+                  B.P.ptr, B.A.ptr, B.sub.ptr, ns, n, B.path.ptr, B.nseg, nubar, R(fast_begin),
+                  R(fast_end), want, B.sp.ptr, B.seg.ptr, B.ks.ptr);
+              OPG_CUDA(cudaGetLastError());
+              if constexpr (GT::enabled)
+                if (want) {
+                  analytic_batch_grad_kernel<Model, R, GK>
+                      <<<blocks_for(n * ns * size_t(nchunk), 64), 64, 0, st>>>(
+                          B.G.ptr, B.off.ptr, B.cnt.ptr, nchunk, B.dA.ptr, npar, B.sub.ptr, ns,
+                          n, B.path.ptr, B.nseg, nubar, B.seg.ptr, B.ks.ptr, B.sg.ptr);
+                  OPG_CUDA(cudaGetLastError());
+                }
+            }
+            analytic_batch_reduce_kernel<R><<<blocks_for(n * nch * nb, 128), 128, 0, st>>>(
+                B.sp.ptr, ns, nch, B.binStart.ptr, B.binIdx.ptr, B.w.ptr, B.invw.ptr, nb, n, N,
+                B.rows, o + p0 * nch * nb);
+            OPG_CUDA(cudaGetLastError());
+            if (want) {
+              analytic_batch_reduce_kernel<R><<<blocks_for(n * nq * nb, 128), 128, 0, st>>>(
+                  B.sg.ptr, ns, nq, B.binStart.ptr, B.binIdx.ptr, B.w.ptr, B.invw.ptr, nb, n, N,
+                  B.rows, d + p0 * nq * nb);
+              OPG_CUDA(cudaGetLastError());
+            }
           }
           OPG_CUDA(cudaEventRecord(B.ev, st));
           if (!device_out) {

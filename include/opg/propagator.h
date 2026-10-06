@@ -622,7 +622,7 @@ namespace opg {
           if (device < 0 || size_t(device) >= fDevices.size())
             throw std::invalid_argument("analytic_batch: bad device index");
           b.state = fEngine->analytic_batch_create(
-              device, sub, nbins, path, size_t(opt.batch_scratch_mb * 1048576.0));
+              device, sub, nbins, path, size_t(opt.batch_scratch_mb * 1048576.0), opt.rows);
           if (b.state) b.device = device;
         }
         return b;

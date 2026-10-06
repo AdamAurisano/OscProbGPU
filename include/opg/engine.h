@@ -84,6 +84,10 @@ namespace opg {
       int threads = 0;
       /// Compute on the host even with a GPU backend.
       bool host = false;
+      /// Initial flavours to compute, as a bit mask (bit a: initial flavour
+      /// a, e.g. 3 = e and mu); 0: all. Channels of other initial flavours
+      /// (and their derivatives) are returned as zero.
+      unsigned rows = 0;
       /// Batched averages: per-(point, sub-bin) device scratch per chunk of
       /// points (MB).
       double batch_scratch_mb = 1024;
@@ -173,15 +177,16 @@ namespace opg {
       using Chunks = std::vector<GradChunk<Model>>;
 
       /// Analytic averages on the device (avg/analytic.h): per-sub-bin
-      /// results sp[i][a][b] and, with chunks, sg[i][p][a][b], for the
+      /// results sp[i][a][b] and, with chunks, sg[i][p][a][b] (initial
+      /// flavours a outside the mask `rows` may be left unset), for the
       /// vacuum term A = dH/du and its derivatives dA[p]. Returns false if
       /// the backend has none (the caller then computes on the host).
       virtual bool analytic_subbins(const Prepared&, const Chunks*, int /*npar*/,
                                     const Mat<N, R>& /*A*/, const Mat<N, R>* /*dA*/,
                                     const AnalyticSubBin*, size_t /*nsub*/,
                                     const Segment<R>*, int /*nseg*/, bool /*nubar*/,
-                                    double /*fast_begin*/, double /*fast_end*/, R* /*sp*/,
-                                    R* /*sg*/)
+                                    double /*fast_begin*/, double /*fast_end*/,
+                                    unsigned /*rows*/, R* /*sp*/, R* /*sg*/)
       {
         return false;
       }
@@ -195,7 +200,8 @@ namespace opg {
                                                           const std::vector<AnalyticSubBin>&,
                                                           size_t /*nbins*/,
                                                           const std::vector<Segment<R>>&,
-                                                          size_t /*scratch_bytes*/)
+                                                          size_t /*scratch_bytes*/,
+                                                          unsigned /*rows*/)
       {
         return nullptr;
       }

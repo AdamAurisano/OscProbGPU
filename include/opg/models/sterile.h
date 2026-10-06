@@ -42,6 +42,9 @@ namespace opg {
       static constexpr const char* name = "Sterile";
       /// Hermitian and affine in 1/E: analytic bin averages (avg/analytic.h).
       static constexpr bool analytic_avg = true;
+      /// The matter terms of hamiltonian() do not depend on the model
+      /// parameters: dH/dp = u dA/dp (A = dH/du) for all of them.
+      static constexpr bool analytic_static_matter = true;
 
       /// Derivative directions per gradient pass (see opg::grad_traits).
 #ifdef OPG_STERILE_GRAD_CHUNK
