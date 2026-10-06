@@ -261,14 +261,18 @@ Gradients agree with 4-point long-double finite differences to ≤ 1e-9
 relative (≤ 3e-4 in the clamped bin at Δm²₄₁ = 100 eV², where the tiny
 Δm² steps the finite differences need there are limited by round-off).
 Time per call (16 channels; 151 FD bins → 1163 sub-bins, 400 ND bins → 400),
-one thread / 14 threads of an Intel Core Ultra 5 225H: FD 7.9 / 1.3 ms,
-with 12 gradients 68 / 8.7 ms; ND 2.5 / 0.55 ms, with gradients 24 / 3.2 ms
-(FD at tol 1e-8: 73 / 8.8 ms, with gradients 650 / 73 ms). With the CUDA
-backend the sub-bins run on the GPUs (one thread per sub-bin for the values,
-one per sub-bin and gradient pass for the derivatives; the per-bin
-reduction stays on the host, in a fixed order; `AnalyticAvgOptions::host`
-forces the host): on one V100 (shared with another job) FD 0.45 ms, with
-gradients 3.5 ms; ND 0.30 / 2.7 ms; FD at tol 1e-8: 2.9 / 20 ms. GPU and host
+one thread / 14 threads of an Intel Core Ultra 5 225H: FD 8.2 / 0.8 ms,
+with 12 gradients 32 / 2.9 ms; ND 2.1 / 0.43 ms, with gradients 9.9 / 1.5 ms
+(FD at tol 1e-8: 54 / 5.6 ms, with gradients 242 / 25 ms). With the CUDA
+backend the sub-bins run on the GPUs (the per-bin reduction stays on the
+host, in a fixed order; `AnalyticAvgOptions::host` forces the host): on one
+V100 FD 0.30 ms, with gradients 1.8 ms; ND 0.18 / 1.3 ms; FD at tol 1e-8:
+1.2 / 8.7 ms. One-segment paths (as here) compute the value and all
+gradients of a sub-bin in one pass (one GPU thread) without per-sub-bin
+scratch; longer paths use one thread per sub-bin for the values and one per
+sub-bin and gradient pass for the derivatives. `AnalyticAvgOptions::rows`
+restricts the computation to some initial flavours (bit mask, e.g. 3 = e
+and μ); the other rows are returned as zero. GPU and host
 agree to ≤ 1e-10 in P̄ (phases up to 10⁶ rad at Δm²₄₁ = 100 eV²; ~1e-13 at
 Δm²₄₁ ≤ 1 eV²) and 1e-9 relative in dP̄; in the clamped bin, where phases
 reach 10¹⁰ rad, to 5e-11 and 1e-6.
@@ -293,9 +297,12 @@ batch size, order and internal chunking (points are processed in chunks
 whose per-(point, sub-bin) scratch stays below
 `AnalyticAvgOptions::batch_scratch_mb`, 1 GB by default). Per-point
 preparation runs on the host (OpenMP); each call needs exclusive use of its
-handle. V100 (shared), 6 gradients: FD 151 bins 0.39 ms per point (values
-only 0.19 ms), ND 400 bins 0.20 ms (0.07 ms); 3000 FD points in 1.2 s.
-Batch and per-point GPU results agree to ≤ 3e-16.
+handle; separate handles may run concurrently on different streams. V100,
+6 gradients, host output: FD 151 bins 0.19 ms per point (values only
+0.018 ms), ND 400 bins 0.15 ms (0.018 ms, dominated by the transfer of the
+16-channel gradients to the host); kernel time alone with `rows` = 3 (e, μ):
+FD 0.11 ms per point, ND 0.038 ms. Batch and per-point GPU results agree to
+round-off of the reduction (tests: ≤ 1e-14).
 
 ## Absorption
 

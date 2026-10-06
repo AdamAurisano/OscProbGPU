@@ -170,8 +170,19 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   (x gradient passes), per-point fixed-order device reduction; chunks of
   points under a scratch budget; bit-identical per point for any batch.
   V100: FD 0.39 ms per point with 6 gradients, ND 0.20 ms.
-* Possible: fewer register spills in the analytic kernels (~2 KB for
-  Sterile); batched fixed-node GL (not needed by PISCES now).
+* Done: faster analytic averages for one-segment paths (PISCES: NOvA FD/ND,
+  `analytic::subbin_fused`): value and all gradient passes of a sub-bin in
+  one thread with no per-segment/K scratch in global memory; K diagonalised
+  in the eigenbasis of H; derivatives contracted through
+  parameter-independent per-channel tables; divided differences reuse the
+  cached F/g values; J_n by one series plus downward recurrence;
+  dH/dp = u dA/dp for model parameters of models with static matter terms
+  (`Model::analytic_static_matter`: Fast, Sterile).
+  `AnalyticAvgOptions::rows` (initial-flavour bit mask; other rows zero).
+  Agrees with the general path to ~1e-15 (P) and ~3e-14 (dP, relative).
+  Multi-segment paths keep the two-kernel scheme. Tried: reverse mode per
+  output channel (no per-channel tables, but more flops: no faster).
+* Possible: batched fixed-node GL (not needed by PISCES now).
 * Next for the analytic averages: Python bindings. Models with E-dependent matter terms are
   out of scope (the expansion needs H affine in 1/E).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast).
