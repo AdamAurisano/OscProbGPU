@@ -442,3 +442,57 @@ TEST_CASE("Batched analytic averages on the host equal per-point calls")
   CHECK_THROWS_AS(prop.avg_path_analytic_batch(b, pts, out.data(), none), std::logic_error);
 }
 #endif
+
+#ifndef OPG_DISABLE_GRADIENTS
+TEST_CASE("Analytic averages: fused one-segment path and initial-flavour rows")
+{
+  // One segment takes the fused path (subbin_fused); the same path split in
+  // two identical halves takes the general one.
+  opg::Propagator<Sterile> prop;
+  const Path<double> one{{810, 2.84, 0.5, 0}}, two{{405, 2.84, 0.5, 0}, {405, 2.84, 0.5, 0}};
+  const auto         E = fd_edges();
+  const size_t       nb = E.size() - 1, n = 16 * nb;
+  auto sub = opg::Propagator<Sterile>::analytic_subbins(E, one, EMeasure::InvE, BinVar::E);
+  for (double dm41 : {1e-3, 1.0, 100.0})
+    for (int nubar = 0; nubar < 2; nubar++) {
+      prop.set_params(nova_sterile(dm41, 0.1, nubar));
+      prop.set_gradient_params({"th23", "th24", "th34", "d24", "dm31", "dm41", "zoa_0", "rho_0"});
+      std::vector<double> P1, dP1, P2, dP2;
+      prop.avg_path_analytic_subbins_grad(sub, nb, one, nubar, P1, dP1);
+      prop.avg_path_analytic_subbins_grad(sub, nb, two, nubar, P2, dP2);
+      double sg = 10;  // floor of the gradients (dm in eV^-2)
+      for (double v : dP2) sg = std::max(sg, std::fabs(v));
+      MESSAGE("dm41 " << dm41 << " nubar " << nubar << ": fused vs general P "
+                      << max_abs_diff(P1, P2) << ", dP (rel) " << max_abs_diff(dP1, dP2) / sg);
+      CHECK(max_abs_diff(P1, P2) < 1e-11);
+      CHECK(max_abs_diff(dP1, dP2) / sg < 1e-10);
+
+      // rows = {e, mu}: those channels unchanged, the others zero, on both paths
+      opg::AnalyticAvgOptions r;
+      r.rows = 3;
+      for (const auto* path : {&one, &two}) {
+        std::vector<double> Pr, dPr;
+        prop.avg_path_analytic_subbins_grad(sub, nb, *path, nubar, Pr, dPr, r);
+        const auto& Pf  = path == &one ? P1 : P2;
+        const auto& dPf = path == &one ? dP1 : dP2;
+        bool ok = true;
+        for (size_t q = 0; q < Pr.size() / nb; q++) {
+          const bool on = (q % 16) / 4 < 2;
+          for (size_t b = 0; b < nb; b++) {
+            const double v = Pr[q * nb + b];
+            ok = ok && (on ? v == Pf[q * nb + b] : v == 0);
+          }
+        }
+        for (size_t q = 0; q < dPr.size() / nb; q++) {
+          const bool on = (q % 16) / 4 < 2;
+          for (size_t b = 0; b < nb; b++) {
+            const double v = dPr[q * nb + b];
+            ok = ok && (on ? v == dPf[q * nb + b] : v == 0);
+          }
+        }
+        CHECK(ok);
+        CHECK(Pr.size() == n);
+      }
+    }
+}
+#endif

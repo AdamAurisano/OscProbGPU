@@ -211,5 +211,18 @@ TEST_CASE("GPU batched analytic averages: per-point agreement, bit-identity acro
              std::equal(d1.begin(), d1.end(), rd.begin() + (np - 1 - p) * q.size() * n);
     }
     CHECK(same);
+
+    // rows = {e, mu}: those channels bit-identical, the others zero
+    opg::AnalyticAvgOptions r;
+    r.rows  = 3;
+    auto br = prop.analytic_batch(edges, path, nubar, opg::EMeasure::InvE, var, r);
+    std::vector<double> rO, rD;
+    prop.avg_path_analytic_batch(br, pts, rO, &rD);
+    bool rok = rO.size() == out.size() && rD.size() == dout.size();
+    for (size_t i = 0; rok && i < rO.size(); i++)
+      rok = ((i / nb) % 16) / 4 < 2 ? rO[i] == out[i] : rO[i] == 0;
+    for (size_t i = 0; rok && i < rD.size(); i++)
+      rok = ((i / nb) % 16) / 4 < 2 ? rD[i] == dout[i] : rD[i] == 0;
+    CHECK(rok);
   }
 }
