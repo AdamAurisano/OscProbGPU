@@ -91,6 +91,14 @@ namespace opg {
       /// Batched averages: per-(point, sub-bin) device scratch per chunk of
       /// points (MB).
       double batch_scratch_mb = 1024;
+      /// One-segment paths: sub-bins share expansions in cells of relative
+      /// width half the uncapped tol rule (at most cell_max_width) and at
+      /// most cell_pieces sub-bins each. Much faster where the bins are
+      /// narrower than the rule allows (e.g. a 1 km near detector: 430
+      /// expansions -> ~40); errors stay ~ tol.
+      bool   cells          = false;
+      double cell_max_width = 1.0;
+      int    cell_pieces    = 16;
   };
 
   /// One sub-bin of the analytic averages: uniform in u = 1/E (GeV^-1) on
@@ -179,14 +187,18 @@ namespace opg {
       /// Analytic averages on the device (avg/analytic.h): per-sub-bin
       /// results sp[i][a][b] and, with chunks, sg[i][p][a][b] (initial
       /// flavours a outside the mask `rows` may be left unset), for the
-      /// vacuum term A = dH/du and its derivatives dA[p]. Returns false if
+      /// vacuum term A = dH/du and its derivatives dA[p]. One-segment paths
+      /// come as ncell cells (analytic::make_cells): sub-bins cell_start[k]
+      /// .. cell_start[k+1] share the expansion at uc[k]. Returns false if
       /// the backend has none (the caller then computes on the host).
       virtual bool analytic_subbins(const Prepared&, const Chunks*, int /*npar*/,
                                     const Mat<N, R>& /*A*/, const Mat<N, R>* /*dA*/,
                                     const AnalyticSubBin*, size_t /*nsub*/,
                                     const Segment<R>*, int /*nseg*/, bool /*nubar*/,
                                     double /*fast_begin*/, double /*fast_end*/,
-                                    unsigned /*rows*/, R* /*sp*/, R* /*sg*/)
+                                    unsigned /*rows*/, const double* /*uc*/,
+                                    const int* /*cell_start*/, size_t /*ncell*/, R* /*sp*/,
+                                    R* /*sg*/)
       {
         return false;
       }
@@ -194,14 +206,17 @@ namespace opg {
       /// Batched analytic averages over parameter points
       /// (Propagator::analytic_batch): device state of one batch handle on
       /// device `device_index` for these sub-bins and path, with at most
-      /// scratch_bytes of per-(point, sub-bin) scratch; nullptr if the
-      /// backend has no device implementation.
+      /// scratch_bytes of per-(point, sub-bin) scratch, and for one-segment
+      /// paths the cells (uc, cell_start) of analytic::make_cells; nullptr
+      /// if the backend has no device implementation.
       virtual std::shared_ptr<void> analytic_batch_create(int /*device_index*/,
                                                           const std::vector<AnalyticSubBin>&,
                                                           size_t /*nbins*/,
                                                           const std::vector<Segment<R>>&,
                                                           size_t /*scratch_bytes*/,
-                                                          unsigned /*rows*/)
+                                                          unsigned /*rows*/,
+                                                          const std::vector<double>& /*uc*/,
+                                                          const std::vector<int>& /*cell_start*/)
       {
         return nullptr;
       }
@@ -218,6 +233,22 @@ namespace opg {
       {
         throw std::logic_error("OscProbGPU: no device implementation of batched analytic "
                                "averages for this backend/model");
+      }
+
+      /// Weighted gradients of a batch: g[p][q] = sum over (a, b, bin) of
+      /// w[p][a][b][bin] dout[p][q][a][b][bin], with w and g in device
+      /// memory of the batch's device on `stream` (device_io, asynchronous)
+      /// or in host memory (blocking). Arguments otherwise as
+      /// analytic_batch_run.
+      virtual void analytic_batch_run_weighted(void* /*state*/, bool /*nubar*/,
+                                               double /*fast_begin*/, double /*fast_end*/,
+                                               size_t /*npts*/, const Prepared*, const Mat<N, R>*,
+                                               const GradChunk<Model>*, int /*nchunk*/,
+                                               const Mat<N, R>*, int /*npar*/, const R* /*w*/,
+                                               R* /*g*/, void* /*stream*/, bool /*device_io*/)
+      {
+        throw std::logic_error("OscProbGPU: no device implementation of weighted batched "
+                               "analytic averages for this backend/model");
       }
 
       /// Grid probabilities and gradients (probs as in calculate()).

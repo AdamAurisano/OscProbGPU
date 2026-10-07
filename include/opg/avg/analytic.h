@@ -77,26 +77,61 @@ namespace opg {
 
   namespace analytic {
 
-    /// J_n(z) = int_0^1 t^n exp(izt) dt for n = 0..nmax (nmax <= 15).
-    template <class R> OPG_HD inline void jn_all(R z, int nmax, Complex<R>* J)
+    /// 1 / (k! (n + k + 1)): coefficient of (iz)^k in the series of J_n.
+    template <class R> constexpr R jn_coef(int n, int k)
     {
-      const Complex<R> e = expi(z), iz(0, z);
+      R f = 1;
+      for (int i = 2; i <= k; i++) f *= R(i);
+      return R(1) / (f * R(n + k + 1));
+    }
+    template <class R, int NMAX, int K> struct JnCoef {
+        static constexpr R value = jn_coef<R>(NMAX, K);
+    };
+    /// sum_{j >= 0} (-z2)^j c_{K + 2j}, c_k = jn_coef(NMAX, k), k <= 37
+    /// (Horner, constant coefficients).
+    template <class R, int NMAX, int K> OPG_HD OPG_INLINE R jn_series(R z2)
+    {
+      if constexpr (K > 37) return R(0);
+      else return JnCoef<R, NMAX, K>::value - z2 * jn_series<R, NMAX, K + 2>(z2);
+    }
+    /// 1 / n as a constant.
+    template <class R, int n> struct Inv {
+        static constexpr R value = R(1) / R(n);
+    };
+    template <class R, int NMAX, int n> OPG_HD OPG_INLINE void jn_down(const Complex<R>& e, R z, Complex<R>* J)
+    {
+      if constexpr (n > 0) {
+        // J_{n-1} = (e - iz J_n) / n
+        const Complex<R>& j = J[n];
+        J[n - 1] = Complex<R>(e.re + z * j.im, e.im - z * j.re) * Inv<R, n>::value;
+        jn_down<R, NMAX, n - 1>(e, z, J);
+      }
+    }
+
+    /// J_n(z) = int_0^1 t^n exp(izt) dt for n = 0..NMAX.
+    template <int NMAX, class R> OPG_HD inline void jn_all(R z, Complex<R>* J)
+    {
+      static_assert(NMAX >= 0 && NMAX <= 15, "jn_all: NMAX");
+      const Complex<R> e = expi(z);
       if (std::fabs(z) <= R(4)) {
-        // Series for J_nmax, then the recurrence downwards (stable for
-        // |z| <= 4: errors grow by |z| / n per step, at most 4^8 / 8!).
-        Complex<R> acc(R(1) / R(nmax + 1), 0), term(1, 0);  // (iz)^k / k!
-        for (int k = 1; k < 64; k++) {
-          term = term * iz * (R(1) / R(k));
-          const Complex<R> t = term * (R(1) / R(nmax + k + 1));
-          acc += t;
-          if (norm(t) < R(1e-36) * norm(acc)) break;
-        }
-        J[nmax] = acc;
-        for (int n = nmax; n > 0; n--) J[n - 1] = (e - iz * J[n]) * (R(1) / R(n));
+        // Series for J_NMAX, sum_k (iz)^k / (k! (NMAX + k + 1)), truncated
+        // at k = 37 (4^38 / 38! < 1e-21; even k real, odd k imaginary),
+        // then the recurrence downwards (stable for |z| <= 4: errors grow by
+        // |z| / n per step, at most 4^8 / 8!).
+        const R z2 = z * z;
+        J[NMAX]    = Complex<R>(jn_series<R, NMAX, 0>(z2), z * jn_series<R, NMAX, 1>(z2));
+        jn_down<R, NMAX, NMAX>(e, z, J);
       }
       else {
-        J[0] = (e - R(1)) / iz;
-        for (int n = 1; n <= nmax; n++) J[n] = (e - R(n) * J[n - 1]) / iz;
+        // J_0 = (e - 1) / (iz), J_n = (e - n J_{n-1}) / (iz); a / (iz) = -i a / z
+        const R iv = R(1) / z;
+        Complex<R> a(e.re - R(1), e.im);
+        J[0] = Complex<R>(a.im * iv, -a.re * iv);
+        OPG_UNROLL
+        for (int n = 1; n <= NMAX; n++) {
+          a    = Complex<R>(e.re - R(n) * J[n - 1].re, e.im - R(n) * J[n - 1].im);
+          J[n] = Complex<R>(a.im * iv, -a.re * iv);
+        }
       }
     }
 
@@ -136,11 +171,11 @@ namespace opg {
           Complex<R> J[8];
           const Complex<R> I(0, 1);
           if (d == R(0)) {
-            jn_all(m * L, 1, J);
+            jn_all<1>(m * L, J);
             return I * J[1] * (L * L);
           }
           // sum over odd n of L^{n+1} i^n J_n(mL) t^{n-1} / n!, t = d / 2
-          jn_all(m * L, 7, J);
+          jn_all<7>(m * L, J);
           const R    t2 = lt * lt;
           Complex<R> acc =
               J[1] - J[3] * (t2 / 6) + J[5] * (t2 * t2 / 120) - J[7] * (t2 * t2 * t2 / 5040);
@@ -148,10 +183,13 @@ namespace opg {
         }
     };
 
-    /// F(x) = <(1 + beta d/h) exp(-ixd)> over d in [-h, h], faded out for
-    /// |x h| in [z1, z2], and its divided differences.
+    /// F(x) = <(1 + beta (d - c)/h) exp(-ixd)> over d in [c - h, c + h]
+    /// (= exp(-ixc) F_0(x), F_0 the centred average), faded out for |x h| in
+    /// [z1, z2], and its divided differences. The shift c places a piece of
+    /// a cell whose expansion point is d = 0.
     template <class R> struct AvgFn {
         R h, beta, z1, z2;
+        R c = 0;
 
         OPG_HD static void j01(R z, R& j0, R& j1)
         {
@@ -179,6 +217,33 @@ namespace opg {
         }
         OPG_HD Complex<R> F(R x) const
         {
+          if (c != R(0)) return F0(x) * expi(-x * c);
+          return F0(x);
+        }
+        /// (F(x) - F(y)) / (x - y), F'(x) at x = y.
+        OPG_HD Complex<R> dd(R x, R y) const
+        {
+          if (c != R(0)) return dd_shift(x, y, F0(y));
+          return dd0(x, y);
+        }
+        /// dd() with Fx = F(x), Fy = F(y) given.
+        OPG_HD Complex<R> dd(R x, R y, const Complex<R>& Fx, const Complex<R>& Fy) const
+        {
+          if (c != R(0)) return dd_shift(x, y, Fy * expi(y * c));
+          return dd0(x, y, Fx, Fy);
+        }
+        /// Product rule, F = E F_0 with E(x) = exp(-ixc): F[x, y] =
+        /// E(x) F_0[x, y] + E[x, y] F_0(y), E[x, y] = -ic exp(-ic(x + y)/2)
+        /// sinc(c (x - y)/2).
+        OPG_HD Complex<R> dd_shift(R x, R y, const Complex<R>& F0y) const
+        {
+          const Complex<R> Ex = expi(-x * c);
+          const Complex<R> Ed = expi(-c * (x + y) / 2) * Complex<R>(0, -c * sinc(c * (x - y) / 2));
+          return Ex * dd0(x, y) + Ed * F0y;
+        }
+        /// The centred average F_0.
+        OPG_HD Complex<R> F0(R x) const
+        {
           const R z = x * h;
           R       chi, dchi, j0, j1;
           fade(std::fabs(z), chi, dchi);
@@ -186,7 +251,7 @@ namespace opg {
           j01(z, j0, j1);
           return Complex<R>(j0, -beta * j1) * chi;
         }
-        /// dF/dx (used inside the fade region only).
+        /// dF_0/dx (used inside the fade region only).
         OPG_HD Complex<R> dF(R x) const
         {
           const R z = x * h;
@@ -198,15 +263,15 @@ namespace opg {
           const Complex<R> df(-j1, -beta * (j0 - 2 * j1 / z));
           return (df * chi + f * (dchi * (z < 0 ? R(-1) : R(1)))) * h;
         }
-        /// (F(x) - F(y)) / (x - y), F'(x) at x = y.
-        OPG_HD Complex<R> dd(R x, R y) const
+        /// (F_0(x) - F_0(y)) / (x - y), F_0'(x) at x = y.
+        OPG_HD Complex<R> dd0(R x, R y) const
         {
           const R d = x - y;
-          if (std::fabs(d) * h > R(0.1)) return (F(x) - F(y)) / d;
+          if (std::fabs(d) * h > R(0.1)) return (F0(x) - F0(y)) / d;
           return dd_near(x, y);
         }
-        /// dd() with Fx = F(x), Fy = F(y) given.
-        OPG_HD Complex<R> dd(R x, R y, const Complex<R>& Fx, const Complex<R>& Fy) const
+        /// dd0() with Fx = F_0(x), Fy = F_0(y) given.
+        OPG_HD Complex<R> dd0(R x, R y, const Complex<R>& Fx, const Complex<R>& Fy) const
         {
           const R d = x - y;
           if (std::fabs(d) * h > R(0.1)) return (Fx - Fy) / d;
@@ -221,9 +286,11 @@ namespace opg {
           // E_n(z) = (conj J_n(z) + (-1)^n J_n(z)) / 2; odd n: -i Im J_n,
           // even n: Re J_n.
           Complex<R> J[9];
-          const int  nmax = d == R(0) ? 2 : 8;
-          jn_all(m * h, nmax, J);
-          if (d == R(0)) return G(J, 1) * h;
+          if (d == R(0)) {
+            jn_all<2>(m * h, J);
+            return G(J, 1) * h;
+          }
+          jn_all<8>(m * h, J);
           const R t2 = (h * d / 2) * (h * d / 2);
           return (G(J, 1) + G(J, 3) * (t2 / 6) + G(J, 5) * (t2 * t2 / 120) +
                   G(J, 7) * (t2 * t2 * t2 / 5040)) *
@@ -478,225 +545,521 @@ namespace opg {
       }
     }
 
+    /// Parameters per block of cell_fused's contraction (registers).
+    constexpr int FUSED_MAXP = 8;
+
     /// Initial flavour a selected by the mask `rows` (0: all).
     OPG_HD inline bool row_on(unsigned rows, int a) { return rows == 0 || ((rows >> a) & 1u); }
 
-    /// Value and all derivatives of a sub-bin average for a one-segment
-    /// path in one pass, without per-segment scratch (same results as
-    /// subbin + subbin_grad to round-off): out[a*N + b], dout[(p*N + a)*N + b]
-    /// for the initial flavours a in `rows` (others are set to zero).
-    ///
-    /// Everything is kept in the eigenbasis of H (K = V Kt V^dag, Kt =
-    /// X diag(mu) X^dag, W = V X, B = V diag(e^{-i lam L}) X), and the
-    /// derivatives are contracted through parameter-independent tables per
-    /// channel: with y_m = B_bm conj(W_am), Y_n = sum_m F_nm conj(y_m) and
-    /// Q_nl = sum_m F[mu_n - mu_m, mu_l - mu_m] conj(y_m),
-    ///   Pbar_ab  = Re sum_n y_n Y_n,
-    ///   dPbar_ab = 2 Re [sum_n dB_bn conj(W_an) Y_n +
-    ///                    sum_nl dKk_nl B_bn conj(W_al) Q_nl],
-    /// dB = V dSt X, dKk = X^dag dKt X (dKt hermitian).
-    template <class Model, int KD>
-    OPG_HD void subbin_fused(const typename Model::Prepared& P,
-                             const Mat<Model::N, typename Model::Real>& A,
-                             const GradPrepared<Model, KD>* G, const int* off, const int* cnt,
-                             int nchunk, const Mat<Model::N, typename Model::Real>* dA,
-                             const Segment<typename Model::Real>& seg, bool nubar,
-                             typename Model::Real u0, const AvgFn<typename Model::Real>& fn,
-                             unsigned rows, typename Model::Real* out,
-                             typename Model::Real* dout)
+    /// One-segment sub-bin state of the fused path (eigenbasis of H: H =
+    /// V diag(lam) V^dag; K = V Kt V^dag, Kt = X diag(mu) X^dag; W = V X,
+    /// B = V diag(e^{-i lam L}) X; F[n][m] = F(mu_n - mu_m)).
+    template <int N, class R> struct FusedState {
+        Mat<N, R>  V, At, X, W, B;
+        R          lam[N], mu[N], L, u0;
+        Complex<R> gm[N][N], F[N][N];
+    };
+
+    /// The state at u0 (all but F, see fused_F).
+    template <class Model>
+    OPG_HD inline void fused_state(const typename Model::Prepared& P,
+                                   const Mat<Model::N, typename Model::Real>& A,
+                                   const Segment<typename Model::Real>& seg, bool nubar,
+                                   typename Model::Real u0,
+                                   FusedState<Model::N, typename Model::Real>& s)
     {
       using R         = typename Model::Real;
       constexpr int N = Model::N;
-      const R       E0 = R(1) / u0;
-      const R       L  = length_in_eV(seg.length);
-      const SegFn<R> g{L};
+      s.u0            = u0;
+      s.L             = length_in_eV(seg.length);
+      const SegFn<R> g{s.L};
 
-      Mat<N, R> V, H;
-      R         lam[N];
-      Model::hamiltonian(P, E0, nubar, seg, H);
-      jacobi_hermitian<N, R>(H, V, lam);
-      const Mat<N, R> At = sandwich(V, A);
+      Mat<N, R> H;
+      Model::hamiltonian(P, R(1) / u0, nubar, seg, H);
+      jacobi_hermitian<N, R>(H, s.V, s.lam);
+      s.At = sandwich(s.V, A);
 
-      Complex<R> gm[N][N];
-      Mat<N, R>  Kt;
+      Mat<N, R> Kt;
       OPG_UNROLL
       for (int i = 0; i < N; i++) {
-        gm[i][i] = Complex<R>(L, 0);
-        Kt(i, i) = At(i, i) * L;
+        s.gm[i][i] = Complex<R>(s.L, 0);
+        Kt(i, i)   = s.At(i, i) * s.L;
         OPG_UNROLL
         for (int j = i + 1; j < N; j++) {
-          gm[i][j] = g.g(lam[i] - lam[j]);
-          gm[j][i] = conj(gm[i][j]);
-          Kt(i, j) = At(i, j) * gm[i][j];
+          s.gm[i][j] = g.g(s.lam[i] - s.lam[j]);
+          s.gm[j][i] = conj(s.gm[i][j]);
+          Kt(i, j)   = s.At(i, j) * s.gm[i][j];
         }
       }
-      Mat<N, R> X;
-      R         mu[N];
-      jacobi_hermitian<N, R>(Kt, X, mu);
+      jacobi_hermitian<N, R>(Kt, s.X, s.mu);
 
-      // W = V X, B = V diag(ph) X
-      Mat<N, R> W = matmul(V, X), B;
+      s.W = matmul(s.V, s.X);
       {
         Mat<N, R> PX;
         OPG_UNROLL
         for (int i = 0; i < N; i++) {
           R sn, cs;
-          sin_cos(lam[i] * L, sn, cs);
+          sin_cos(s.lam[i] * s.L, sn, cs);
           const Complex<R> ph(cs, -sn);
           OPG_UNROLL
-          for (int n = 0; n < N; n++) PX(i, n) = ph * X(i, n);
+          for (int n = 0; n < N; n++) PX(i, n) = ph * s.X(i, n);
         }
-        B = matmul(V, PX);
+        s.B = matmul(s.V, PX);
       }
+    }
 
-      Complex<R> F[N][N];
+    /// F[n][m] = F(mu_n - mu_m) of the averaging function of a piece.
+    template <int N, class R> OPG_HD inline void fused_F(FusedState<N, R>& s, const AvgFn<R>& fn)
+    {
       OPG_UNROLL
       for (int n = 0; n < N; n++) {
-        F[n][n] = fn.F(R(0));
+        s.F[n][n] = fn.F(R(0));
         OPG_UNROLL
         for (int m = n + 1; m < N; m++) {
-          F[n][m] = fn.F(mu[n] - mu[m]);
-          F[m][n] = conj(F[n][m]);
+          s.F[n][m] = fn.F(s.mu[n] - s.mu[m]);
+          s.F[m][n] = conj(s.F[n][m]);
         }
       }
+    }
 
-      const bool want = dout != nullptr && nchunk > 0;
-      // Per-channel tables for the derivatives: Z_n = conj(W_an) Y_n and
-      // Rs_nl (n <= l) with Re sum_nl dKk_nl R_nl = Re sum_{n<=l} dKk_nl Rs_nl.
-      Complex<R> Z[N][N][N], Rs[N][N][N * (N + 1) / 2];
+    /// Pbar_ab for the initial flavours in `rows` (others zero).
+    template <int N, class R>
+    OPG_HD inline void fused_values(const FusedState<N, R>& s, unsigned rows, R* out)
+    {
       for (int a = 0; a < N; a++) {
         if (!row_on(rows, a)) {
           for (int b = 0; b < N; b++) out[a * N + b] = R(0);
           continue;
         }
         for (int b = 0; b < N; b++) {
-          Complex<R> cy[N], Y[N];  // cy = conj(y)
+          Complex<R> cy[N];  // cy = conj(y)
           OPG_UNROLL
-          for (int m = 0; m < N; m++) cy[m] = conj(B(b, m)) * W(a, m);
+          for (int m = 0; m < N; m++) cy[m] = conj(s.B(b, m)) * s.W(a, m);
           R acc = 0;
           OPG_UNROLL
           for (int n = 0; n < N; n++) {
             Complex<R> t(0, 0);
             OPG_UNROLL
-            for (int m = 0; m < N; m++) t += F[n][m] * cy[m];
-            Y[n] = t;
+            for (int m = 0; m < N; m++) t += s.F[n][m] * cy[m];
             acc += (conj(cy[n]) * t).re;
           }
           out[a * N + b] = acc;
-          if (!want) continue;
-          OPG_UNROLL
-          for (int n = 0; n < N; n++) Z[a][b][n] = conj(W(a, n)) * Y[n];
-        }
-      }
-      if (!want) return;
-
-      // F1[n][l][m] = F[mu_n - mu_m, mu_l - mu_m] (symmetric in n, l)
-      {
-        Complex<R> F1[N][N][N];
-        OPG_UNROLL
-        for (int m = 0; m < N; m++)
-          OPG_UNROLL
-        for (int n = 0; n < N; n++)
-          OPG_UNROLL
-        for (int l = 0; l <= n; l++)
-          F1[n][l][m] = F1[l][n][m] =
-              fn.dd(mu[n] - mu[m], mu[l] - mu[m], F[n][m], F[l][m]);
-        for (int a = 0; a < N; a++) {
-          if (!row_on(rows, a)) continue;
-          for (int b = 0; b < N; b++) {
-            Complex<R> cy[N];
-            OPG_UNROLL
-            for (int m = 0; m < N; m++) cy[m] = conj(B(b, m)) * W(a, m);
-            int k = 0;
-            OPG_UNROLL
-            for (int n = 0; n < N; n++)
-              OPG_UNROLL
-            for (int l = n; l < N; l++, k++) {
-              Complex<R> q(0, 0);
-              OPG_UNROLL
-              for (int m = 0; m < N; m++) q += F1[n][l][m] * cy[m];
-              // R_nl = B_bn conj(W_al) Q_nl; Rs_nl = R_nl + conj(R_ln) (n < l)
-              Complex<R> r = B(b, n) * conj(W(a, l)) * q;
-              if (l != n) r += conj(B(b, l) * conj(W(a, n)) * q);
-              Rs[a][b][k] = r;
-            }
-          }
-        }
-      }
-
-      // Eigenbasis of H: Gamma (dS) and G1[i][l][j] = g[lam_i - lam_j,
-      // lam_l - lam_j] (symmetric in i, l).
-      Complex<R> Gam[N][N], G1[N][N][N];
-      {
-        Complex<R> f[N];
-        dk_gamma<N, R>(lam, L, Gam, f);
-        OPG_UNROLL
-        for (int j = 0; j < N; j++)
-          OPG_UNROLL
-        for (int i = 0; i < N; i++)
-          OPG_UNROLL
-        for (int l = 0; l <= i; l++)
-          G1[i][l][j] = G1[l][i][j] =
-              g.dd(lam[i] - lam[j], lam[l] - lam[j], gm[i][j], gm[l][j]);
-      }
-
-      using D = Dual<R, KD>;
-      for (int c = 0; c < nchunk; c++) {
-        // Model parameters of a model with static matter terms: dH = u dA.
-        bool st = has_static_matter<Model>::value;
-        for (int k = 0; k < cnt[c]; k++)
-          st = st && G[c].zoa_type[k] < 0 && G[c].rho_type[k] < 0;
-        Mat<N, D> HD;
-        if (!st) Model::hamiltonian(G[c].P, E0, nubar, seed_segment(G[c], seg), HD);
-        for (int k = 0; k < cnt[c]; k++) {
-          const int       p   = off[c] + k;
-          const Mat<N, R> dAt = sandwich(V, dA[p]);
-          Mat<N, R>       dHt;
-          if (st)
-            for (int i = 0; i < N; i++)
-              for (int j = 0; j < N; j++) dHt(i, j) = dAt(i, j) * u0;
-          else dHt = sandwich(V, dual_dir<N, R, KD>(HD, k));
-          // dKt (hermitian: upper triangle, then mirrored), dSt = Gamma o dHt
-          Mat<N, R> dKt, dSt;
-          OPG_UNROLL
-          for (int i = 0; i < N; i++) {
-            OPG_UNROLL
-            for (int j = 0; j < N; j++) dSt(i, j) = Gam[i][j] * dHt(i, j);
-            OPG_UNROLL
-            for (int j = i; j < N; j++) {
-              Complex<R> acc = dAt(i, j) * gm[i][j];
-              OPG_UNROLL
-              for (int l = 0; l < N; l++)
-                acc += dHt(i, l) * At(l, j) * G1[i][l][j] +
-                       At(i, l) * dHt(l, j) * conj(G1[l][j][i]);
-              if (j == i) acc.im = 0;
-              dKt(i, j) = acc;
-              if (j != i) dKt(j, i) = conj(acc);
-            }
-          }
-          const Mat<N, R> dKk = sandwich(X, dKt);
-          const Mat<N, R> dB  = matmul(V, matmul(dSt, X));
-          for (int a = 0; a < N; a++) {
-            R* o = dout + (size_t(p) * N + a) * N;
-            if (!row_on(rows, a)) {
-              for (int b = 0; b < N; b++) o[b] = R(0);
-              continue;
-            }
-            for (int b = 0; b < N; b++) {
-              R acc = 0;
-              OPG_UNROLL
-              for (int n = 0; n < N; n++) acc += (dB(b, n) * Z[a][b][n]).re;
-              int kk = 0;
-              OPG_UNROLL
-              for (int n = 0; n < N; n++)
-                OPG_UNROLL
-              for (int l = n; l < N; l++, kk++) acc += (dKk(n, l) * Rs[a][b][kk]).re;
-              o[b] = 2 * acc;
-            }
-          }
         }
       }
     }
+
+    /// Parameter-independent derivative tables: Gamma (dS) and G1[i][l][j] =
+    /// g[lam_i - lam_j, lam_l - lam_j] in the eigenbasis of H, F1[n][l][m] =
+    /// F[mu_n - mu_m, mu_l - mu_m] in that of K (both symmetric in the first
+    /// two indices).
+    template <int N, class R> struct FusedTables {
+        Complex<R> Gam[N][N], G1[N][N][N], F1[N][N][N];
+    };
+
+    /// The tables of the eigenbasis of H (per expansion point).
+    template <int N, class R>
+    OPG_HD inline void fused_tables_H(const FusedState<N, R>& s, FusedTables<N, R>& t)
+    {
+      const SegFn<R> g{s.L};
+      Complex<R>     f[N];
+      dk_gamma<N, R>(s.lam, s.L, t.Gam, f);
+      OPG_UNROLL
+      for (int j = 0; j < N; j++)
+        OPG_UNROLL
+      for (int i = 0; i < N; i++)
+        OPG_UNROLL
+      for (int l = 0; l <= i; l++)
+        t.G1[i][l][j] = t.G1[l][i][j] =
+            g.dd(s.lam[i] - s.lam[j], s.lam[l] - s.lam[j], s.gm[i][j], s.gm[l][j]);
+    }
+
+    /// F1 of a piece (after fused_F with the same fn).
+    template <int N, class R>
+    OPG_HD inline void fused_tables_F1(const FusedState<N, R>& s, const AvgFn<R>& fn,
+                                       FusedTables<N, R>& t)
+    {
+      OPG_UNROLL
+      for (int m = 0; m < N; m++)
+        OPG_UNROLL
+      for (int n = 0; n < N; n++)
+        OPG_UNROLL
+      for (int l = 0; l <= n; l++)
+        t.F1[n][l][m] = t.F1[l][n][m] =
+            fn.dd(s.mu[n] - s.mu[m], s.mu[l] - s.mu[m], s.F[n][m], s.F[l][m]);
+    }
+
+    /// Derivative of one parameter (dAt = V^dag dA V, dHt = V^dag dH V) as
+    /// dKk = X^dag dKt X (N*N reals: diagonal, then Re, Im of n < l) and
+    /// the rows b < N-1 of dB = V dSt X.
+    template <int N, class R>
+    OPG_HD inline void fused_dparam(const FusedState<N, R>& s, const FusedTables<N, R>& t,
+                                    const Mat<N, R>& dAt, const Mat<N, R>& dHt, R* dk,
+                                    Complex<R> (*db)[N])
+    {
+      // dKt (hermitian: upper triangle, then mirrored), dSt = Gamma o dHt
+      Mat<N, R> dKt, dSt;
+      OPG_UNROLL
+      for (int i = 0; i < N; i++) {
+        OPG_UNROLL
+        for (int j = 0; j < N; j++) dSt(i, j) = t.Gam[i][j] * dHt(i, j);
+        OPG_UNROLL
+        for (int j = i; j < N; j++) {
+          Complex<R> acc = dAt(i, j) * s.gm[i][j];
+          OPG_UNROLL
+          for (int l = 0; l < N; l++)
+            acc += dHt(i, l) * s.At(l, j) * t.G1[i][l][j] +
+                   s.At(i, l) * dHt(l, j) * conj(t.G1[l][j][i]);
+          if (j == i) acc.im = 0;
+          dKt(i, j) = acc;
+          if (j != i) dKt(j, i) = conj(acc);
+        }
+      }
+      const Mat<N, R> dKk = sandwich(s.X, dKt);
+      const Mat<N, R> dB  = matmul(s.V, matmul(dSt, s.X));
+      int             k   = 0;
+      OPG_UNROLL
+      for (int n = 0; n < N; n++) dk[k++] = dKk(n, n).re;
+      OPG_UNROLL
+      for (int n = 0; n < N; n++)
+        OPG_UNROLL
+      for (int l = n + 1; l < N; l++) {
+        dk[k++] = dKk(n, l).re;
+        dk[k++] = dKk(n, l).im;
+      }
+      OPG_UNROLL
+      for (int b = 0; b < N - 1; b++)
+        OPG_UNROLL
+      for (int n = 0; n < N; n++) db[b][n] = dB(b, n);
+    }
+
+    /// Channel (a, b) tables, as reals, scaled by w: rs . dk = 2 w Re
+    /// sum_{n<=l} dKk_nl Rs_nl and z . (Re, Im dB_bn)_n = 2 w Re sum_n dB_bn
+    /// Z_n, with y_m = B_bm conj(W_am), Y_n = sum_m F_nm conj(y_m), Z_n =
+    /// conj(W_an) Y_n, Q_nl = sum_m F1[n][l][m] conj(y_m), R_nl = B_bn
+    /// conj(W_al) Q_nl, Rs_nn = R_nn, Rs_nl = R_nl + conj(R_ln) (n < l).
+    /// With add, the tables are accumulated.
+    template <int N, class R>
+    OPG_HD inline void fused_channel(const FusedState<N, R>& s, const FusedTables<N, R>& t,
+                                     int a, int b, R w, bool add, R* rs, R* z)
+    {
+      Complex<R> cy[N];
+      OPG_UNROLL
+      for (int m = 0; m < N; m++) cy[m] = conj(s.B(b, m)) * s.W(a, m);
+      OPG_UNROLL
+      for (int n = 0; n < N; n++) {
+        Complex<R> y(0, 0);
+        OPG_UNROLL
+        for (int m = 0; m < N; m++) y += s.F[n][m] * cy[m];
+        const Complex<R> zz = conj(s.W(a, n)) * y;
+        const R          zr = 2 * w * zz.re, zi = -2 * w * zz.im;
+        z[2 * n]            = add ? z[2 * n] + zr : zr;
+        z[2 * n + 1]        = add ? z[2 * n + 1] + zi : zi;
+      }
+      int kd = 0, ko = N;
+      OPG_UNROLL
+      for (int n = 0; n < N; n++)
+        OPG_UNROLL
+      for (int l = n; l < N; l++) {
+        Complex<R> q(0, 0);
+        OPG_UNROLL
+        for (int m = 0; m < N; m++) q += t.F1[n][l][m] * cy[m];
+        Complex<R> r = s.B(b, n) * conj(s.W(a, l)) * q;
+        if (l != n) {
+          r += conj(s.B(b, l) * conj(s.W(a, n)) * q);
+          const R rr = 2 * w * r.re, ri = -2 * w * r.im;
+          rs[ko]     = add ? rs[ko] + rr : rr;
+          rs[ko + 1] = add ? rs[ko + 1] + ri : ri;
+          ko += 2;
+        }
+        else {
+          const R rr = 2 * w * r.re;
+          rs[kd]     = add ? rs[kd] + rr : rr;
+          kd++;
+        }
+      }
+    }
+
+    /// V^dag dA V and V^dag dH V of parameter k of a chunk (dA: the
+    /// chunk's dA; HD its dual Hamiltonian unless st: dH = u dA for the
+    /// model parameters of a model with static matter terms).
+    template <class Model, int KD>
+    OPG_HD inline void fused_dH(const FusedState<Model::N, typename Model::Real>& s,
+                                const Mat<Model::N, typename Model::Real>* dA, int k, bool st,
+                                const Mat<Model::N, Dual<typename Model::Real, KD>>& HD,
+                                Mat<Model::N, typename Model::Real>& dAt,
+                                Mat<Model::N, typename Model::Real>& dHt)
+    {
+      using R         = typename Model::Real;
+      constexpr int N = Model::N;
+      dAt             = sandwich(s.V, dA[k]);
+      if (st)
+        for (int i = 0; i < N; i++)
+          for (int j = 0; j < N; j++) dHt(i, j) = dAt(i, j) * s.u0;
+      else dHt = sandwich(s.V, dual_dir<N, R, KD>(HD, k));
+    }
+
+    /// Whether chunk c only has model parameters of a model with static
+    /// matter terms (dH = u dA).
+    template <class Model, int KD>
+    OPG_HD inline bool fused_static(const GradPrepared<Model, KD>& G, int count)
+    {
+      bool st = has_static_matter<Model>::value;
+      for (int k = 0; k < count; k++) st = st && G.zoa_type[k] < 0 && G.rho_type[k] < 0;
+      return st;
+    }
+
+    /// A cell of a one-segment path: pieces (sub-bins sub[first .. first+n))
+    /// that share the expansion at u = uc; piece i is averaged with AvgFn
+    /// shift c = u0_i - uc. A sub-bin on its own is the cell uc = u0, c = 0.
+    template <class R> struct CellView {
+        R                     uc;
+        const AnalyticSubBin* sub;
+        int                   first, n;
+        R                     fast_begin, fast_end;
+        OPG_HD AvgFn<R>       fn(int j) const
+        {
+          const AnalyticSubBin& s = sub[first + j];
+          return AvgFn<R>{R(s.h), R(s.beta), fast_begin, fast_end, R(s.u0) - uc};
+        }
+    };
+
+    /// Values and all derivatives of the pieces of a cell of a one-segment
+    /// path, without per-segment scratch (same results as subbin +
+    /// subbin_grad to round-off for one-piece cells): for sub-bin i of the
+    /// cell, sp[i*N*N + a*N + b] and sg[i*npar*N*N + (p*N + a)*N + b]
+    /// (sg = nullptr or nchunk = 0: values only), for the initial flavours a
+    /// in `rows` (others are set to zero).
+    ///
+    /// Everything is kept in the eigenbasis of H (FusedState), and the
+    /// derivatives are contracted through parameter-independent tables per
+    /// channel: with y_m = B_bm conj(W_am), Y_n = sum_m F_nm conj(y_m) and
+    /// Q_nl = sum_m F[mu_n - mu_m, mu_l - mu_m] conj(y_m),
+    ///   Pbar_ab  = Re sum_n y_n Y_n,
+    ///   dPbar_ab = 2 Re [sum_n dB_bn conj(W_an) Y_n +
+    ///                    sum_nl dKk_nl B_bn conj(W_al) Q_nl],
+    /// dB = V dSt X, dKk = X^dag dKt X (dKt hermitian). Parameters go in
+    /// blocks of at most FUSED_MAXP: dKk and dB of the block first (per
+    /// cell), then one contraction per piece with its channel tables
+    /// (parameters x channels in registers). The last final flavour follows
+    /// from unitarity: sum_b Pbar_ab = F(0) = 1 exactly, so sum_b dPbar_ab = 0.
+    template <class Model, int KD>
+    OPG_HD void cell_fused(const typename Model::Prepared& P,
+                           const Mat<Model::N, typename Model::Real>& A,
+                           const GradPrepared<Model, KD>* G, const int* off, const int* cnt,
+                           int nchunk, const Mat<Model::N, typename Model::Real>* dA, int npar,
+                           const Segment<typename Model::Real>& seg, bool nubar,
+                           const CellView<typename Model::Real>& cell, unsigned rows,
+                           typename Model::Real* sp, typename Model::Real* sg)
+    {
+      using R          = typename Model::Real;
+      constexpr int N  = Model::N;
+      constexpr int NK = N * N;
+      using D          = Dual<R, KD>;
+      static_assert(KD <= FUSED_MAXP, "cell_fused: gradient chunk too large");
+
+      FusedState<N, R> s;
+      fused_state<Model>(P, A, seg, nubar, cell.uc, s);
+      for (int j = 0; j < cell.n; j++) {
+        fused_F(s, cell.fn(j));
+        fused_values(s, rows, sp + size_t(cell.first + j) * NK);
+      }
+      if (sg == nullptr || nchunk <= 0) return;
+      FusedTables<N, R> t;
+      fused_tables_H(s, t);
+
+      for (int c0 = 0; c0 < nchunk;) {
+        int c1 = c0, nq = 0;
+        while (c1 < nchunk && nq + cnt[c1] <= FUSED_MAXP) nq += cnt[c1++];
+        int        pid[FUSED_MAXP];
+        R          dk[FUSED_MAXP][NK];
+        Complex<R> db[FUSED_MAXP][N - 1][N];
+        int        q = 0;
+        for (int c = c0; c < c1; c++) {
+          const bool st = fused_static(G[c], cnt[c]);
+          Mat<N, D>  HD;
+          if (!st)
+            Model::hamiltonian(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
+          for (int k = 0; k < cnt[c]; k++, q++) {
+            pid[q] = off[c] + k;
+            Mat<N, R> dAt, dHt;
+            fused_dH<Model, KD>(s, dA + off[c], k, st, HD, dAt, dHt);
+            fused_dparam(s, t, dAt, dHt, dk[q], db[q]);
+          }
+        }
+
+        for (int j = 0; j < cell.n; j++) {
+          const AvgFn<R> fn = cell.fn(j);
+          fused_F(s, fn);
+          fused_tables_F1(s, fn, t);
+          R* dout = sg + size_t(cell.first + j) * size_t(npar) * NK;
+          for (int a = 0; a < N; a++) {
+            if (!row_on(rows, a)) {
+              for (int r = 0; r < nq; r++)
+                for (int b = 0; b < N; b++) dout[(size_t(pid[r]) * N + a) * N + b] = R(0);
+              continue;
+            }
+            R rs[N - 1][NK], z[N - 1][2 * N];
+            for (int b = 0; b < N - 1; b++) fused_channel(s, t, a, b, R(1), false, rs[b], z[b]);
+            R acc[FUSED_MAXP][N - 1];
+            OPG_UNROLL
+            for (int r = 0; r < FUSED_MAXP; r++)
+              OPG_UNROLL
+            for (int b = 0; b < N - 1; b++) acc[r][b] = 0;
+            OPG_UNROLL
+            for (int k = 0; k < NK; k++) {
+              R tk[N - 1];
+              OPG_UNROLL
+              for (int b = 0; b < N - 1; b++) tk[b] = rs[b][k];
+              OPG_UNROLL
+              for (int r = 0; r < FUSED_MAXP; r++)
+                if (r < nq) {
+                  const R d = dk[r][k];
+                  OPG_UNROLL
+                  for (int b = 0; b < N - 1; b++) acc[r][b] += d * tk[b];
+                }
+            }
+            OPG_UNROLL
+            for (int b = 0; b < N - 1; b++)
+              OPG_UNROLL
+            for (int n = 0; n < N; n++) {
+              const R zr = z[b][2 * n], zi = z[b][2 * n + 1];
+              OPG_UNROLL
+              for (int r = 0; r < FUSED_MAXP; r++)
+                if (r < nq) acc[r][b] += db[r][b][n].re * zr + db[r][b][n].im * zi;
+            }
+            OPG_UNROLL
+            for (int r = 0; r < FUSED_MAXP; r++)
+              if (r < nq) {
+                R* o  = dout + (size_t(pid[r]) * N + a) * N;
+                R  sm = 0;
+                OPG_UNROLL
+                for (int b = 0; b < N - 1; b++) {
+                  o[b] = acc[r][b];
+                  sm += acc[r][b];
+                }
+                o[N - 1] = -sm;
+              }
+          }
+        }
+        c0 = c1;
+      }
+    }
+
+    /// Weighted derivatives of the pieces of a cell: g[p] = sum over its
+    /// sub-bins i (bin bin_i) of subw[i] sum_ab
+    /// w[(a*N + b)*nbins + bin_i] dPbar_ab(i)/dp, over the initial flavours a
+    /// in `rows` (as cell_fused contracted with the weights, to round-off).
+    /// The channel tables of all pieces are summed with the weights (w_ab -
+    /// w_a,N-1 by unitarity) into one, so each parameter costs one dKk, dB
+    /// and a dot product per cell.
+    template <class Model, int KD>
+    OPG_HD void cell_weighted(const typename Model::Prepared& P,
+                              const Mat<Model::N, typename Model::Real>& A,
+                              const GradPrepared<Model, KD>* G, const int* off, const int* cnt,
+                              int nchunk, const Mat<Model::N, typename Model::Real>* dA,
+                              const Segment<typename Model::Real>& seg, bool nubar,
+                              const CellView<typename Model::Real>& cell, unsigned rows,
+                              const typename Model::Real* w, size_t nbins,
+                              const typename Model::Real* subw, typename Model::Real* g)
+    {
+      using R          = typename Model::Real;
+      constexpr int N  = Model::N;
+      constexpr int NK = N * N;
+      using D          = Dual<R, KD>;
+
+      FusedState<N, R> s;
+      fused_state<Model>(P, A, seg, nubar, cell.uc, s);
+      FusedTables<N, R> t;
+      fused_tables_H(s, t);
+
+      R rs[NK], z[N - 1][2 * N];
+      OPG_UNROLL
+      for (int i = 0; i < NK; i++) rs[i] = R(0);
+      OPG_UNROLL
+      for (int b = 0; b < N - 1; b++)
+        OPG_UNROLL
+      for (int i = 0; i < 2 * N; i++) z[b][i] = R(0);
+      for (int j = 0; j < cell.n; j++) {
+        const int      i  = cell.first + j;
+        const AvgFn<R> fn = cell.fn(j);
+        fused_F(s, fn);
+        fused_tables_F1(s, fn, t);
+        const R* wb = w + cell.sub[i].bin;
+        for (int a = 0; a < N; a++) {
+          if (!row_on(rows, a)) continue;
+          const R wl = wb[size_t(a * N + N - 1) * nbins];
+          for (int b = 0; b < N - 1; b++)
+            fused_channel(s, t, a, b, (wb[size_t(a * N + b) * nbins] - wl) * subw[i], true, rs,
+                          z[b]);
+        }
+      }
+      for (int c = 0; c < nchunk; c++) {
+        const bool st = fused_static(G[c], cnt[c]);
+        Mat<N, D>  HD;
+        if (!st) Model::hamiltonian(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
+        for (int k = 0; k < cnt[c]; k++) {
+          Mat<N, R> dAt, dHt;
+          fused_dH<Model, KD>(s, dA + off[c], k, st, HD, dAt, dHt);
+          R          dk[NK];
+          Complex<R> db[N - 1][N];
+          fused_dparam(s, t, dAt, dHt, dk, db);
+          R acc = 0;
+          OPG_UNROLL
+          for (int i = 0; i < NK; i++) acc += dk[i] * rs[i];
+          OPG_UNROLL
+          for (int b = 0; b < N - 1; b++)
+            OPG_UNROLL
+          for (int n = 0; n < N; n++)
+            acc += db[b][n].re * z[b][2 * n] + db[b][n].im * z[b][2 * n + 1];
+          g[off[c] + k] = acc;
+        }
+      }
+    }
+
+    /// Cells of a one-segment path: the sub-bins sorted by u0 (perm: list
+    /// index of each, in cell order) and grouped greedily into cells of
+    /// relative width (u_hi / u_lo - 1) at most `width` and at most
+    /// `max_pieces` sub-bins, uc = the middle of the cell (u0 for one
+    /// sub-bin). Cell k holds sorted positions cell_start[k] ..
+    /// cell_start[k+1]. width <= 0: one cell per sub-bin in list order.
+    inline void make_cells(const std::vector<AnalyticSubBin>& sub, double width, int max_pieces,
+                           std::vector<int>& perm, std::vector<double>& uc,
+                           std::vector<int>& cell_start)
+    {
+      const size_t ns = sub.size();
+      perm.resize(ns);
+      for (size_t i = 0; i < ns; i++) perm[i] = int(i);
+      uc.clear();
+      cell_start.assign(1, 0);
+      if (!(width > 0)) {
+        for (size_t i = 0; i < ns; i++) {
+          uc.push_back(sub[i].u0);
+          cell_start.push_back(int(i) + 1);
+        }
+        return;
+      }
+      std::stable_sort(perm.begin(), perm.end(),
+                       [&](int x, int y) { return sub[size_t(x)].u0 < sub[size_t(y)].u0; });
+      for (size_t k0 = 0; k0 < ns;) {
+        const auto&  s0 = sub[size_t(perm[k0])];
+        const double lo = s0.u0 - s0.h;
+        double       hi = s0.u0 + s0.h;
+        size_t       k1 = k0 + 1;
+        while (k1 < ns && int(k1 - k0) < max_pieces) {
+          const auto&  s = sub[size_t(perm[k1])];
+          const double h = std::max(hi, s.u0 + s.h);
+          if (h / lo - 1 > width) break;
+          hi = h;
+          k1++;
+        }
+        uc.push_back(k1 == k0 + 1 ? s0.u0 : 0.5 * (lo + hi));
+        cell_start.push_back(int(k1));
+        k0 = k1;
+      }
+    }
+
+    template <class R>
+    double cell_width(const std::vector<Segment<R>>& path, const AnalyticAvgOptions& opt);
 
     /// Sub-bins of 1/E bins [ulo[i], uhi[i]] for a measure (uniform in E,
     /// log E or 1/E) and the options; r is the relative width of the
@@ -768,7 +1131,8 @@ namespace opg {
                       const Mat<Model::N, typename Model::Real>* dA,
                       const std::vector<AnalyticSubBin>& sub,
                       const std::vector<Segment<typename Model::Real>>& path, bool nubar,
-                      const AnalyticAvgOptions& opt, typename Model::Real* sp,
+                      const AnalyticAvgOptions& opt, const std::vector<double>& uc,
+                      const std::vector<int>& cstart, typename Model::Real* sp,
                       typename Model::Real* sg)
     {
       using R         = typename Model::Real;
@@ -787,17 +1151,20 @@ namespace opg {
             off.push_back(c.offset);
             cnt.push_back(c.count);
           }
-      if (nseg == 1) {
+      if (nseg == 1) {  // cells uc, cstart over the list order of sub
 #ifdef _OPENMP
         const int nthr1 = opt.threads > 0 ? opt.threads : omp_get_max_threads();
 #pragma omp parallel for schedule(dynamic, 4) num_threads(nthr1)
 #endif
-        for (long i = 0; i < long(ns); i++) {
-          const AnalyticSubBin& s = sub[size_t(i)];
-          const AvgFn<R>        fn{R(s.h), R(s.beta), R(opt.fast_begin), R(opt.fast_end)};
-          subbin_fused<Model, KD>(P, A, G.data(), off.data(), cnt.data(), int(G.size()), dA,
-                                  path[0], nubar, R(s.u0), fn, opt.rows, sp + size_t(i) * nch,
-                                  chunks ? sg + size_t(i) * ng : nullptr);
+        for (long k = 0; k < long(uc.size()); k++) {
+          const CellView<R> cell{R(uc[size_t(k)]),
+                                 sub.data(),
+                                 cstart[size_t(k)],
+                                 cstart[size_t(k) + 1] - cstart[size_t(k)],
+                                 R(opt.fast_begin),
+                                 R(opt.fast_end)};
+          cell_fused<Model, KD>(P, A, G.data(), off.data(), cnt.data(), int(G.size()), dA, npar,
+                                path[0], nubar, cell, opt.rows, sp, chunks ? sg : nullptr);
         }
         return;
       }
@@ -833,7 +1200,7 @@ namespace opg {
     /// the reduction is always on the host, in a fixed order.
     template <class Model>
     void average(const typename Model::Prepared& P, const std::vector<GradChunk<Model>>* chunks,
-                 int npar, const std::vector<AnalyticSubBin>& sub, size_t nbins,
+                 int npar, const std::vector<AnalyticSubBin>& sub_in, size_t nbins,
                  const std::vector<Segment<typename Model::Real>>& path, bool nubar,
                  const AnalyticAvgOptions& opt, std::vector<typename Model::Real>& out,
                  std::vector<typename Model::Real>* dout, EngineBase<Model>* engine = nullptr)
@@ -844,13 +1211,27 @@ namespace opg {
                     "analytic averages need a hermitian model affine in 1/E "
                     "(Model::analytic_avg)");
       if (path.empty()) throw std::invalid_argument("avg_path_analytic: empty path");
-      for (const auto& s : sub)
+      for (const auto& s : sub_in)
         if (s.bin < 0 || size_t(s.bin) >= nbins || !(s.u0 > 0) || !(s.h >= 0))
           throw std::invalid_argument("avg_path_analytic: bad sub-bin");
 
       Mat<N, R>              A;
       std::vector<Mat<N, R>> dA;
       vacuum_term<Model>(P, chunks, npar, nubar, A, dA);
+
+      // One-segment paths: cells (sub-bins sharing an expansion, contiguous
+      // in the reordered list subc), else one cell per sub-bin.
+      std::vector<int>            perm, cstart;
+      std::vector<double>         uc;
+      std::vector<AnalyticSubBin> subc;
+      const bool                  one = path.size() == 1;
+      if (one) {
+        make_cells(sub_in, opt.cells ? cell_width(path, opt) : 0.0, opt.cell_pieces, perm, uc,
+                   cstart);
+        subc.reserve(sub_in.size());
+        for (int i : perm) subc.push_back(sub_in[size_t(i)]);
+      }
+      const std::vector<AnalyticSubBin>& sub = one ? subc : sub_in;
 
       const size_t   ns = sub.size(), nch = size_t(N) * N;
       const size_t   ng = chunks ? size_t(npar) * nch : 0;
@@ -859,10 +1240,11 @@ namespace opg {
                        engine->analytic_subbins(P, chunks, npar, A, dA.data(), sub.data(), ns,
                                                 path.data(), int(path.size()), nubar,
                                                 opt.fast_begin, opt.fast_end, opt.rows,
-                                                sp.data(), sg.data());
+                                                uc.data(), cstart.data(), uc.size(), sp.data(),
+                                                sg.data());
       if (!dev)
-        subbins_host<Model>(P, chunks, npar, A, dA.data(), sub, path, nubar, opt, sp.data(),
-                            sg.data());
+        subbins_host<Model>(P, chunks, npar, A, dA.data(), sub, path, nubar, opt, uc, cstart,
+                            sp.data(), sg.data());
 
       // Fixed-order reduction (independent of the thread count and devices).
       std::vector<double> wsum(nbins, 0.0);
@@ -904,6 +1286,17 @@ namespace opg {
       if (!(opt.max_width > 0)) throw std::invalid_argument("avg_path_analytic: max_width <= 0");
       if (phi <= 0 || !(opt.tol > 0)) return opt.max_width;
       return std::min(opt.max_width, std::sqrt(opt.tol / (0.005 * phi)));
+    }
+
+    /// Relative width of the cells of a one-segment path (opt.cells): half
+    /// the uncapped sub-bin width rule (pieces sit off the expansion point:
+    /// ~3x the mean d^2 of a centred sub-bin), at most opt.cell_max_width.
+    template <class R>
+    inline double cell_width(const std::vector<Segment<R>>& path, const AnalyticAvgOptions& opt)
+    {
+      AnalyticAvgOptions o = opt;
+      o.max_width          = 1e300;
+      return std::min(opt.cell_max_width, 0.5 * subbin_width(path, o));
     }
 
   } // namespace analytic

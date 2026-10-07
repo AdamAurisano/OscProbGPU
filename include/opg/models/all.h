@@ -23,6 +23,10 @@
 
 /// X(ModelType) for every model compiled into the CUDA backend. Other
 /// instantiations (e.g. long double) are available on the CPU backend only.
+/// A build may define its own list first (fewer models compile faster),
+/// e.g. with a header passed to the compilers by -include that contains
+/// `#define OPG_FOR_EACH_MODEL(X) X(opg::Sterile<double>)`.
+#ifndef OPG_FOR_EACH_MODEL
 #define OPG_FOR_EACH_MODEL(X) \
   X(opg::Fast<double>)        \
   X(opg::Fast<float>)         \
@@ -35,6 +39,7 @@
   X(opg::Deco<double>)        \
   X(opg::SiderealLIV<double>) \
   X(opg::OQS<double>)
+#endif
 
 namespace opg {
   template <class Model> struct has_cuda_engine : std::false_type {};

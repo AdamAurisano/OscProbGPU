@@ -579,6 +579,7 @@ namespace opg {
       // parameters (bit-identical for any batch size and position).
 
       /// Handle of a batch configuration (sub-bins, path, nu/nubar, device).
+      /// For one-segment paths the sub-bins are kept in cell order.
       struct AnalyticBatch {
           std::vector<AnalyticSubBin> sub;
           size_t                      nbins = 0;
@@ -613,16 +614,25 @@ namespace opg {
           if (s.bin < 0 || size_t(s.bin) >= nbins || !(s.u0 > 0) || !(s.h >= 0))
             throw std::invalid_argument("analytic_batch: bad sub-bin");
         AnalyticBatch b;
-        b.sub   = sub;
         b.nbins = nbins;
         b.path  = path;
         b.nubar = nubar;
         b.opt   = opt;
+        // one segment: sub-bins in cell order (analytic::make_cells)
+        std::vector<double> uc;
+        std::vector<int>    cs, perm;
+        if (path.size() == 1) {
+          analytic::make_cells(sub, opt.cells ? analytic::cell_width(path, opt) : 0.0,
+                               opt.cell_pieces, perm, uc, cs);
+          for (int i : perm) b.sub.push_back(sub[size_t(i)]);
+        }
+        else b.sub = sub;
         if (on_gpu() && !opt.host) {
           if (device < 0 || size_t(device) >= fDevices.size())
             throw std::invalid_argument("analytic_batch: bad device index");
-          b.state = fEngine->analytic_batch_create(
-              device, sub, nbins, path, size_t(opt.batch_scratch_mb * 1048576.0), opt.rows);
+          b.state = fEngine->analytic_batch_create(device, b.sub, nbins, path,
+                                                   size_t(opt.batch_scratch_mb * 1048576.0),
+                                                   opt.rows, uc, cs);
           if (b.state) b.device = device;
         }
         return b;
@@ -641,6 +651,61 @@ namespace opg {
           throw std::logic_error("avg_path_analytic_batch: device output needs a batch "
                                  "handle on a GPU (CUDA backend, double precision)");
         run_batch(b, points, out, dout, stream, true);
+      }
+
+      /// Weighted gradients of batched averages, for objectives f whose
+      /// gradient only needs the contraction g[p][q] = sum over (a, b, bin)
+      /// of w[p][a][b][bin] dPbar_ab(bin)/dq at point p (w = df/dPbar, in
+      /// the layout of out), q over the parameters of set_gradient_params().
+      /// Much cheaper than the full derivatives for one-segment paths, at
+      /// any number of parameters (the probabilities are not computed:
+      /// avg_path_analytic_batch with dout = nullptr gives them). Device
+      /// memory of the handle's device, asynchronous on `stream` as
+      /// avg_path_analytic_batch. Initial flavours outside the handle's
+      /// rows do not contribute.
+      void avg_path_analytic_batch_weighted(const AnalyticBatch& b,
+                                            const std::vector<Params>& points, const R* w, R* g,
+                                            void* stream = nullptr)
+      {
+        if (!b.on_device())
+          throw std::logic_error("avg_path_analytic_batch_weighted: device pointers need a "
+                                 "batch handle on a GPU (CUDA backend, double precision)");
+        run_batch_weighted(b, points, w, g, stream, true);
+      }
+
+      /// As above with host vectors (any backend; blocking): w has
+      /// points.size() x N x N x nbins entries, g gets points.size() x
+      /// (number of gradient parameters).
+      void avg_path_analytic_batch_weighted(const AnalyticBatch& b,
+                                            const std::vector<Params>& points,
+                                            const std::vector<R>& w, std::vector<R>& g)
+      {
+        const size_t nq = fGradIdx.size(), nch = size_t(N) * N;
+        if (w.size() != points.size() * nch * b.nbins)
+          throw std::invalid_argument("avg_path_analytic_batch_weighted: w size");
+        g.assign(points.size() * nq, R(0));
+        if (b.on_device()) {
+          run_batch_weighted(b, points, w.data(), g.data(), nullptr, false);
+          return;
+        }
+        if (fGradIdx.empty())
+          throw std::logic_error("avg_path_analytic_batch_weighted: no parameters selected "
+                                 "(set_gradient_params)");
+        // host: full derivatives, then the contraction
+        std::vector<GradChunk<Model>> ch;
+        std::vector<R>                o, d;
+        const size_t                  nc = nch * b.nbins;
+        for (size_t p = 0; p < points.size(); p++) {
+          const Prepared P = Model::prepare(points[p]);
+          build_chunks(points[p], ch);
+          analytic::average<Model>(P, &ch, int(nq), b.sub, b.nbins, b.path, b.nubar, b.opt, o,
+                                   &d);
+          for (size_t q = 0; q < nq; q++) {
+            R acc = 0;
+            for (size_t c = 0; c < nc; c++) acc += w[p * nc + c] * d[q * nc + c];
+            g[p * nq + q] = acc;
+          }
+        }
       }
 
       /// Batched averages into host vectors (any backend): out[p][a][b][bin]
@@ -818,9 +883,48 @@ namespace opg {
           build_chunks(points[0], c0);
           nchunk = int(c0.size());
         }
-        std::vector<Prepared>         P(np);
-        std::vector<Mat<N, R>>        A(np), dA(np * size_t(npar));
-        std::vector<GradChunk<Model>> G(np * size_t(nchunk));
+        std::vector<Prepared>         P;
+        std::vector<Mat<N, R>>        A, dA;
+        std::vector<GradChunk<Model>> G;
+        prepare_batch(b, points, want, nchunk, P, A, G, dA);
+        fEngine->analytic_batch_run(b.state.get(), b.nubar, b.opt.fast_begin, b.opt.fast_end, np,
+                                    P.data(), A.data(), G.data(), nchunk, dA.data(), npar, out,
+                                    dout, stream, device_out);
+      }
+
+      void run_batch_weighted(const AnalyticBatch& b, const std::vector<Params>& points,
+                              const R* w, R* g, void* stream, bool device_io)
+      {
+        if (fGradIdx.empty())
+          throw std::logic_error("avg_path_analytic_batch_weighted: no parameters selected "
+                                 "(set_gradient_params)");
+        const size_t np = points.size();
+        if (np == 0) return;
+        std::vector<GradChunk<Model>> c0;
+        build_chunks(points[0], c0);
+        const int                     nchunk = int(c0.size());
+        std::vector<Prepared>         P;
+        std::vector<Mat<N, R>>        A, dA;
+        std::vector<GradChunk<Model>> G;
+        prepare_batch(b, points, true, nchunk, P, A, G, dA);
+        fEngine->analytic_batch_run_weighted(b.state.get(), b.nubar, b.opt.fast_begin,
+                                             b.opt.fast_end, np, P.data(), A.data(), G.data(),
+                                             nchunk, dA.data(), int(fGradIdx.size()), w, g,
+                                             stream, device_io);
+      }
+
+      /// Prepared states, vacuum terms and (with want) gradient passes and
+      /// dA of each point of a batch.
+      void prepare_batch(const AnalyticBatch& b, const std::vector<Params>& points, bool want,
+                         int nchunk, std::vector<Prepared>& P, std::vector<Mat<N, R>>& A,
+                         std::vector<GradChunk<Model>>& G, std::vector<Mat<N, R>>& dA) const
+      {
+        const size_t np   = points.size();
+        const int    npar = want ? int(fGradIdx.size()) : 0;
+        P.resize(np);
+        A.resize(np);
+        dA.resize(np * size_t(npar));
+        G.resize(np * size_t(nchunk));
 #pragma omp parallel for schedule(static)
         for (long p = 0; p < long(np); p++) {
           std::vector<GradChunk<Model>> ch;
@@ -831,9 +935,6 @@ namespace opg {
           for (int c = 0; c < nchunk; c++) G[size_t(p) * nchunk + c] = ch[c];
           for (int q = 0; q < npar; q++) dA[size_t(p) * npar + q] = da[q];
         }
-        fEngine->analytic_batch_run(b.state.get(), b.nubar, b.opt.fast_begin, b.opt.fast_end, np,
-                                    P.data(), A.data(), G.data(), nchunk, dA.data(), npar, out,
-                                    dout, stream, device_out);
       }
 
       static void check_points(const std::vector<R>& E, const std::vector<R>& C,
