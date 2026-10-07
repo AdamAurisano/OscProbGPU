@@ -45,6 +45,10 @@ if(OPG_ENABLE_CUDA)
     opg_tests_gpu PRIVATE OPG_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
   add_test(NAME gpu COMMAND opg_tests_gpu)
   set_tests_properties(gpu PROPERTIES LABELS "gpu")
+
+  # Timing of the batched analytic averages (not part of ctest).
+  add_executable(opg_bench_analytic_batch bench_analytic_batch.cpp)
+  target_link_libraries(opg_bench_analytic_batch PRIVATE oscprobgpu CUDA::cudart)
 endif()
 
 # Validation tables for the analytic bin averages (not part of ctest; slow).

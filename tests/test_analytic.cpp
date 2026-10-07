@@ -446,7 +446,7 @@ TEST_CASE("Batched analytic averages on the host equal per-point calls")
 #ifndef OPG_DISABLE_GRADIENTS
 TEST_CASE("Analytic averages: fused one-segment path and initial-flavour rows")
 {
-  // One segment takes the fused path (subbin_fused); the same path split in
+  // One segment takes the fused path (cell_fused); the same path split in
   // two identical halves takes the general one.
   opg::Propagator<Sterile> prop;
   const Path<double> one{{810, 2.84, 0.5, 0}}, two{{405, 2.84, 0.5, 0}, {405, 2.84, 0.5, 0}};
@@ -456,8 +456,23 @@ TEST_CASE("Analytic averages: fused one-segment path and initial-flavour rows")
   for (double dm41 : {1e-3, 1.0, 100.0})
     for (int nubar = 0; nubar < 2; nubar++) {
       prop.set_params(nova_sterile(dm41, 0.1, nubar));
-      prop.set_gradient_params({"th23", "th24", "th34", "d24", "dm31", "dm41", "zoa_0", "rho_0"});
       std::vector<double> P1, dP1, P2, dP2;
+      {
+        // more parameters than one block of the fused contraction (FUSED_MAXP)
+        auto names = prop.default_gradient_params();
+        names.push_back("zoa_0");
+        names.push_back("rho_0");
+        REQUIRE(names.size() > size_t(opg::analytic::FUSED_MAXP));
+        prop.set_gradient_params(names);
+        prop.avg_path_analytic_subbins_grad(sub, nb, one, nubar, P1, dP1);
+        prop.avg_path_analytic_subbins_grad(sub, nb, two, nubar, P2, dP2);
+        double sg = 10;
+        for (double v : dP2) sg = std::max(sg, std::fabs(v));
+        MESSAGE("dm41 " << dm41 << " nubar " << nubar << ", " << names.size()
+                        << " parameters: fused vs general dP (rel) " << max_abs_diff(dP1, dP2) / sg);
+        CHECK(max_abs_diff(dP1, dP2) / sg < 1e-10);
+      }
+      prop.set_gradient_params({"th23", "th24", "th34", "d24", "dm31", "dm41", "zoa_0", "rho_0"});
       prop.avg_path_analytic_subbins_grad(sub, nb, one, nubar, P1, dP1);
       prop.avg_path_analytic_subbins_grad(sub, nb, two, nubar, P2, dP2);
       double sg = 10;  // floor of the gradients (dm in eV^-2)
@@ -494,5 +509,57 @@ TEST_CASE("Analytic averages: fused one-segment path and initial-flavour rows")
         CHECK(Pr.size() == n);
       }
     }
+}
+
+TEST_CASE("Analytic averages: cells (shared expansions) for one-segment paths")
+{
+  // ND-like: 1 km, 400 narrow L/E bins; cells merge ~10 sub-bins per expansion
+  opg::Propagator<Sterile> prop;
+  const Path<double>       nd{{1, 2.84, 0.5, 0}}, fd{{810, 2.84, 0.5, 0}};
+  std::vector<double>      ne;
+  for (int i = 0; i <= 400; i++) ne.push_back(0.005 + i * 4.995 / 400);
+  const auto fe = fd_edges();
+  prop.set_gradient_params({"th23", "th24", "th34", "d24", "dm31", "dm41", "zoa_0"});
+  opg::AnalyticAvgOptions def, cel, fine;
+  cel.cells      = true;
+  fine.tol       = 1e-12;
+  fine.max_width = 0.002;
+  for (double dm41 : {0.01, 1.0, 30.0}) {
+    prop.set_params(nova_sterile(dm41, 0.1));
+    std::vector<double> P, dP, Pc, dPc;
+    prop.avg_path_analytic_grad(ne, nd, false, P, dP, EMeasure::InvE, BinVar::LoE, def);
+    prop.avg_path_analytic_grad(ne, nd, false, Pc, dPc, EMeasure::InvE, BinVar::LoE, cel);
+    const auto Pf = prop.avg_path_analytic(ne, nd, false, EMeasure::InvE, BinVar::LoE, fine);
+    double sg = 10;
+    for (double v : dP) sg = std::max(sg, std::fabs(v));
+    MESSAGE("ND dm41 " << dm41 << ": cells P err " << max_abs_diff(Pc, Pf) << " (default "
+                       << max_abs_diff(P, Pf) << "), dP vs default (rel) "
+                       << max_abs_diff(dPc, dP) / sg);
+    CHECK(max_abs_diff(Pc, Pf) < 1.5e-6);
+    CHECK(max_abs_diff(dPc, dP) / sg < 2e-6);
+
+    // FD: the rule's cells are narrower than its sub-bins (one sub-bin each)
+    std::vector<double> Q, dQ, Qc, dQc;
+    prop.avg_path_analytic_grad(fe, fd, false, Q, dQ, EMeasure::InvE, BinVar::E, def);
+    prop.avg_path_analytic_grad(fe, fd, false, Qc, dQc, EMeasure::InvE, BinVar::E, cel);
+    CHECK(max_abs_diff(Q, Qc) < 1e-14);
+    CHECK(max_abs_diff(dQ, dQc) < 1e-12 * sg);
+
+    // batch handles (host backend) and weighted gradients with cells
+    auto b = prop.analytic_batch(ne, nd, false, EMeasure::InvE, BinVar::LoE, cel);
+    std::vector<double> bo, bd;
+    prop.avg_path_analytic_batch(b, {nova_sterile(dm41, 0.1)}, bo, &bd);
+    CHECK(bo == Pc);
+    CHECK(bd == dPc);
+    std::vector<double> w(bo.size()), g;
+    for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i));
+    prop.avg_path_analytic_batch_weighted(b, {nova_sterile(dm41, 0.1)}, w, g);
+    const size_t nc = w.size();
+    for (size_t q = 0; q < g.size(); q++) {
+      double ref = 0;
+      for (size_t c = 0; c < nc; c++) ref += w[c] * bd[q * nc + c];
+      CHECK(g[q] == doctest::Approx(ref).epsilon(1e-12));
+    }
+  }
 }
 #endif

@@ -226,3 +226,104 @@ TEST_CASE("GPU batched analytic averages: per-point agreement, bit-identity acro
     CHECK(rok);
   }
 }
+
+TEST_CASE("GPU weighted batched analytic gradients")
+{
+  const int dev = devs("OPG_TEST_DEVICES", "0").front();
+  using M       = opg::Sterile<>;
+  opg::Propagator<M> prop(opg::PremModel(), {dev}), cpu;
+  const std::vector<std::string> q{"th23", "th24", "th34", "d24", "dm31", "dm41", "zoa_0"};
+  prop.set_gradient_params(q);
+  cpu.set_gradient_params(q);
+  std::vector<M::Params> pts;
+  for (double dm41 : {1e-3, 0.02, 0.3, 1.0, 3.0, 30.0, 100.0}) {
+    auto p = nova(dm41);
+    p.mix.SetAngle(2, 4, 0.1 + 0.3 * std::log10(1e4 * dm41) / 5);
+    pts.push_back(p);
+  }
+  std::vector<double> fe;
+  for (int i = 0; i <= 150; i++) fe.push_back(0.1 + i * 119.9 / 150);
+  std::vector<double> ne;
+  for (int i = 0; i <= 400; i++) ne.push_back(0.005 + i * 4.995 / 400);
+  const std::vector<opg::Segment<double>> fd{{810, 2.84, 0.5, 0}}, nd{{1, 2.84, 0.5, 0}},
+      fd2{{405, 2.84, 0.5, 0}, {405, 2.84, 0.5, 0}};
+
+  // (path, rows): FD all rows, FD and ND rows {e, mu}, two segments (general
+  // path), ND with cells
+  for (int cfg = 0; cfg < 5; cfg++) {
+    const bool  isnd  = cfg == 2 || cfg == 4;
+    const auto& edges = isnd ? ne : fe;
+    const auto& path  = cfg == 3 ? fd2 : isnd ? nd : fd;
+    const auto  var   = isnd ? opg::BinVar::LoE : opg::BinVar::E;
+    opg::AnalyticAvgOptions o;
+    o.rows  = cfg == 0 ? 0u : 3u;
+    o.cells = cfg == 4;
+    for (int nubar = 0; nubar < 2; nubar++) {
+      auto b = prop.analytic_batch(edges, path, nubar, opg::EMeasure::InvE, var, o);
+      REQUIRE(b.on_device());
+      const size_t nb = b.n_bins(), n = 16 * nb, np = pts.size(), nq = q.size();
+      std::vector<double> w(np * n);
+      for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i) + 1.0);
+
+      // reference: full derivatives contracted with w
+      std::vector<double> out, dout, ref(np * nq, 0.0), scale(np * nq, 0.0);
+      prop.avg_path_analytic_batch(b, pts, out, &dout);
+      for (size_t p = 0; p < np; p++)
+        for (size_t k = 0; k < nq; k++)
+          for (size_t c = 0; c < n; c++) {
+            const double t = w[p * n + c] * dout[(p * nq + k) * n + c];
+            ref[p * nq + k] += t;
+            scale[p * nq + k] += std::fabs(t);
+          }
+
+      // device pointers, on a stream
+      double *w_d = nullptr, *g_d = nullptr;
+      REQUIRE(cudaSetDevice(dev) == cudaSuccess);
+      REQUIRE(cudaMalloc(&w_d, w.size() * sizeof(double)) == cudaSuccess);
+      REQUIRE(cudaMalloc(&g_d, np * nq * sizeof(double)) == cudaSuccess);
+      cudaMemcpy(w_d, w.data(), w.size() * sizeof(double), cudaMemcpyHostToDevice);
+      cudaStream_t st;
+      REQUIRE(cudaStreamCreate(&st) == cudaSuccess);
+      prop.avg_path_analytic_batch_weighted(b, pts, w_d, g_d, st);
+      REQUIRE(cudaStreamSynchronize(st) == cudaSuccess);
+      std::vector<double> g(np * nq);
+      cudaMemcpy(g.data(), g_d, g.size() * sizeof(double), cudaMemcpyDeviceToHost);
+      cudaFree(w_d);
+      cudaFree(g_d);
+      cudaStreamDestroy(st);
+
+      double e = 0;
+      for (size_t i = 0; i < g.size(); i++)
+        e = std::max(e, std::fabs(g[i] - ref[i]) / std::max(scale[i], 1e-300));
+      MESSAGE("config " << cfg << " nubar " << nubar << ": weighted vs contracted (rel) " << e);
+      // round-off of a different summation order (tables summed with the
+      // weights first); ND sub-bin terms cancel strongly (~1e-11 seen)
+      CHECK(e < 1e-9);
+
+      // host vectors: identical; one point at a time: identical
+      std::vector<double> gh;
+      prop.avg_path_analytic_batch_weighted(b, pts, w, gh);
+      CHECK(gh == g);
+      bool same = true;
+      for (size_t p = 0; p < np; p++) {
+        std::vector<double> g1;
+        prop.avg_path_analytic_batch_weighted(
+            b, {pts[p]}, std::vector<double>(w.begin() + p * n, w.begin() + (p + 1) * n), g1);
+        same = same && std::equal(g1.begin(), g1.end(), g.begin() + p * nq);
+      }
+      CHECK(same);
+
+      // host backend
+      if (cfg == 1 || cfg == 4) {
+        auto                bc = cpu.analytic_batch(edges, path, nubar, opg::EMeasure::InvE, var, o);
+        std::vector<double> gc;
+        cpu.avg_path_analytic_batch_weighted(bc, pts, w, gc);
+        double ec = 0;
+        for (size_t i = 0; i < g.size(); i++)
+          ec = std::max(ec, std::fabs(gc[i] - g[i]) / std::max(scale[i], 1e-300));
+        MESSAGE("host backend vs GPU (rel) " << ec);
+        CHECK(ec < 1e-9);
+      }
+    }
+  }
+}
