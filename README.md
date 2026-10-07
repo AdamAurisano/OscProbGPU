@@ -300,9 +300,39 @@ preparation runs on the host (OpenMP); each call needs exclusive use of its
 handle; separate handles may run concurrently on different streams. V100,
 6 gradients, host output: FD 151 bins 0.19 ms per point (values only
 0.018 ms), ND 400 bins 0.15 ms (0.018 ms, dominated by the transfer of the
-16-channel gradients to the host); kernel time alone with `rows` = 3 (e, μ):
-FD 0.11 ms per point, ND 0.038 ms. Batch and per-point GPU results agree to
+16-channel gradients to the host). A NOvA-like 3+1 fit (FD 150 E bins over
+[0.1, 120] GeV, 541 sub-bins; ND 400 L/E bins, 430; `rows` = 3 (e, μ),
+device output, 1024 points per call, `opg_bench_analytic_batch`): kernel
+time with 6 gradients FD 36 ms, ND 30 ms per call (values only 5 / 4 ms).
+Batch and per-point GPU results agree to
 round-off of the reduction (tests: ≤ 1e-14).
+
+**Weighted gradients.** A fit whose gradient is a contraction of the
+derivatives, g = Σ w · dP̄/dθ with w = ∂f/∂P̄ (e.g. a likelihood through
+templates), can ask for g directly:
+
+```cpp
+prop.avg_path_analytic_batch(fdnu, points, out_dev, nullptr, stream);   // P only
+// ... w[p][a][b][bin] = df/dP from the fit (device memory, layout of out) ...
+prop.avg_path_analytic_batch_weighted(fdnu, points, w_dev, g_dev, stream); // g[p][q]
+```
+
+For one-segment paths the per-channel tables are summed with the weights,
+so each parameter costs one derivative of K and S and a dot product
+(multi-segment paths contract the full derivatives). Host-vector overloads
+exist for any backend. V100, 1024 points, `rows` = 3, per call with host
+preparation: FD 30 ms with 6 gradients (full derivatives 44 ms), ND 26 ms
+(37 ms); 1 gradient: 17 / 15 ms.
+
+**Cells** (`AnalyticAvgOptions::cells`, one-segment paths): sub-bins share
+one expansion over cells of relative width half the uncapped tol rule
+(≤ `cell_pieces` sub-bins each), each sub-bin averaged with its offset from
+the cell centre. Where bins are much narrower than the rule needs (a 1 km
+near detector: 430 sub-bins → ~40 expansions) this cuts the work per
+expansion point; errors stay ≈ tol (ND: ≤ 7e-7 at tol 1e-6). On the CPU, ND
+values 4x and 6 gradients 1.6x faster; on the GPU only the values gain (ND
+4.9 → 2.9 ms per 1024 points): the per-sub-bin tables dominate the
+gradients there. Off by default.
 
 ## Absorption
 

@@ -182,6 +182,29 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   Agrees with the general path to ~1e-15 (P) and ~3e-14 (dP, relative).
   Multi-segment paths keep the two-kernel scheme. Tried: reverse mode per
   output channel (no per-channel tables, but more flops: no faster).
+* Done (PISCES fitter profile): faster one-segment gradients. Per
+  parameter block (`FUSED_MAXP` = 8) dK and dS once, then one register-
+  blocked contraction with the channel tables; the last final flavour from
+  unitarity (sum_b Pbar_ab = F(0) = 1). V100 kernel, 1024 points, 6
+  gradients, rows = 3: FD 48.7 -> 36 ms, ND 38.7 -> 30 ms. Profiling: ~30
+  ms of the old kernel were the per-channel tables re-read per parameter
+  from spilled local memory; special functions (J_n now a
+  constant-coefficient Horner series), occupancy (fewer registers: slower)
+  and Richardson extrapolation over sub-bin widths (no gain at tol 1e-6:
+  ~150 one-sub-bin bins) were minor or no help.
+* Done: weighted gradients of batches (`avg_path_analytic_batch_weighted`,
+  g = sum w dPbar/dtheta, device or host memory): channel tables summed
+  with the weights, ~1 dK/dS + dot product per parameter. V100 FD 30 ms,
+  ND 26 ms per 1024 points with 6 gradients (with host preparation).
+* Done: cells for one-segment paths (`AnalyticAvgOptions::cells`): sub-bins
+  share expansions (AvgFn shift c, product-rule divided differences);
+  width = half the uncapped rule (pieces off-centre: ~3x the mean d^2).
+  ND 430 -> ~40 expansions at <= 7e-7. CPU: values 4x, gradients 1.6x;
+  GPU: values 1.7x, gradients slower (per-piece F1/tables dominate; uneven
+  pieces per cell in a warp). Possible: cheaper shifted F1 (phases of
+  mu_n c / 2 instead of two sincos per entry), balanced cells.
+* Possible: host preparation of batches (~5-10 us per point: dual-number
+  prepared states and dA per parameter) on the device.
 * Possible: batched fixed-node GL (not needed by PISCES now).
 * Next for the analytic averages: Python bindings. Models with E-dependent matter terms are
   out of scope (the expansion needs H affine in 1/E).
