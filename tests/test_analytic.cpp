@@ -563,3 +563,49 @@ TEST_CASE("Analytic averages: cells (shared expansions) for one-segment paths")
   }
 }
 #endif
+
+TEST_CASE("Analytic averages of a sandwiched model (NUNM): brute-force GL and gradients")
+{
+  using NUNM = opg::NUNM<double>;
+  static_assert(opg::has_avg_sandwich<NUNM>::value, "NUNM is sandwiched");
+  opg::Propagator<NUNM> prop;
+  // DUNE-like FD (one segment) and ND (L/E bins, L = 0.574 km)
+  std::vector<double> fe;
+  for (int i = 0; i <= 60; i++) fe.push_back(0.5 * std::pow(120.0, i / 60.0));
+  std::vector<double> flo, fhi;
+  e_to_u(fe, flo, fhi);
+  std::vector<double> nde, nlo, nhi;
+  for (int i = 0; i <= 200; i++) nde.push_back(0.001 * std::pow(1000.0, i / 200.0));
+  for (int i = 0; i < 200; i++) { nlo.push_back(nde[i] / 0.574); nhi.push_back(nde[i + 1] / 0.574); }   // 1/E = (L/E) / L
+  const Path<double> fd{{1300, 2.848, 0.5, 0}}, nd{{0.574, 2.848, 0.5, 0}};
+  for (int v = 0; v < 3; v++) {
+    const NUNM::Params p = v == 0 ? variants::nunm(0) : v == 1 ? variants::nunm_phases() : variants::nunm(1);
+    for (int nubar = 0; nubar < 2; nubar++) {
+      prop.set_params(p);
+      auto a = prop.avg_path_analytic(fe, fd, nubar, EMeasure::Linear, BinVar::E);
+      auto r = brute(prop, flo, fhi, fd, nubar, EMeasure::Linear, 2.6e-3);
+      const double efd = max_abs_diff(a, r);
+      a = prop.avg_path_analytic(nde, nd, nubar, EMeasure::InvE, BinVar::LoE);
+      r = brute(prop, nlo, nhi, nd, nubar, EMeasure::InvE, 2.6e-3);
+      const double end = max_abs_diff(a, r);
+      MESSAGE("NUNM variant " << v << " nubar = " << nubar << ": FD " << efd << ", ND " << end);
+      CHECK(efd < 3e-6);
+      CHECK(end < 1e-8);
+    }
+  }
+#ifndef OPG_DISABLE_GRADIENTS
+  std::vector<double> fsub(fe.begin(), fe.begin() + 20);
+  fsub.push_back(120);
+  auto fs = opg::Propagator<NUNM>::analytic_subbins(fsub, fd, EMeasure::Linear, BinVar::E);
+  std::vector<double> nsb;
+  for (int i = 0; i <= 40; i++) nsb.push_back(0.001 * std::pow(1000.0, i / 40.0));
+  auto ns = opg::Propagator<NUNM>::analytic_subbins(nsb, nd, EMeasure::InvE, BinVar::LoE);
+  CHECK(check_grad<NUNM>(variants::nunm(0), fs, fsub.size() - 1, fd, false, 1300 / 0.5, "NUNM FD") < 1e-6);
+  CHECK(check_grad<NUNM>(variants::nunm_phases(), fs, fsub.size() - 1, fd, true, 1300 / 0.5, "NUNM FD phases nubar") < 1e-6);
+  CHECK(check_grad<NUNM>(variants::nunm_phases(), ns, nsb.size() - 1, nd, false, 1.0, "NUNM ND phases") < 1e-6);
+  const Path<double> tp{{1000, 2, 0.5, 0}, {1000, 4, 0.5, 1}, {1000, 2, 0.5, 0}};
+  const std::vector<double> E{0.5, 1.0, 2.0, 5.0, 20.0};
+  auto sub = opg::Propagator<NUNM>::analytic_subbins(E, tp, EMeasure::Linear, BinVar::E);
+  CHECK(check_grad<NUNM>(variants::nunm(1), sub, E.size() - 1, tp, true, 3000 / 0.5, "NUNM high scale 3 segments") < 1e-6);
+#endif
+}

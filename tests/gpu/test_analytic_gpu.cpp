@@ -119,6 +119,21 @@ TEST_CASE("GPU analytic averages agree with the host computation")
     cn.set_gradient_params();
     compare(gn, cn, {0.5, 1.0, 2.0, 5.0, 20.0}, {{1300, 2.8, 0.5, 0}}, opg::EMeasure::Log,
             opg::BinVar::E, "NSI");
+    // NUNM (sandwiched amplitude, general sub-bin path also for one segment)
+    opg::Propagator<opg::NUNM<>> gu(opg::PremModel(), d), cu;
+    for (int scale = 0; scale < 2; scale++) {
+      gu.set_params(variants::nunm(scale));
+      cu.set_params(variants::nunm(scale));
+      gu.set_gradient_params();
+      cu.set_gradient_params();
+      std::vector<double> ue;
+      for (int i = 0; i <= 60; i++) ue.push_back(0.5 * std::pow(120.0, i / 60.0));
+      compare(gu, cu, ue, {{1300, 2.848, 0.5, 0}}, opg::EMeasure::Linear, opg::BinVar::E,
+              "NUNM FD scale " + std::to_string(scale));
+      compare(gu, cu, {0.5, 1.0, 2.0, 5.0, 20.0},
+              {{1000, 2, 0.5, 0}, {1000, 4, 0.5, 1}, {1000, 2, 0.5, 0}}, opg::EMeasure::Linear,
+              opg::BinVar::E, "NUNM 3 segments scale " + std::to_string(scale));
+    }
   }
 }
 
