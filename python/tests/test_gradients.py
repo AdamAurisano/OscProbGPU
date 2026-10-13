@@ -291,7 +291,8 @@ def test_device_weights(devices):
                           p.weighted_gradient_binned(p.binned()))
 
 
-ADJOINT_MODELS = [opg.Fast, opg.NSI, opg.Sterile, opg.LIV, opg.SNSI, opg.SiderealLIV, opg.OQS]
+ADJOINT_MODELS = [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.LIV, opg.SNSI, opg.SiderealLIV,
+                  opg.OQS]
 
 
 @pytest.mark.parametrize("cls", ADJOINT_MODELS, ids=lambda c: c.__name__)
@@ -300,7 +301,7 @@ def test_adjoint_weighted_gradient(cls, devices):
     if not cls.has_gradients:
         pytest.skip("gradients disabled at build time")
     assert cls.has_adjoint_gradients
-    assert not any(c.has_adjoint_gradients for c in (opg.NUNM, opg.Decay, opg.Deco))
+    assert not any(c.has_adjoint_gradients for c in (opg.Decay, opg.Deco))
     p = _model(cls, devices)
     p.set_gradient_params(p.gradient_parameter_names)   # model and Earth Z/A
     p.set_grid(np.geomspace(0.5, 30, 9), np.linspace(-1, 0.4, 7))
