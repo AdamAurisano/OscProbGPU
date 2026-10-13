@@ -197,7 +197,7 @@ oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 
 ### Analytic averages (fixed paths)
 
-`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, Sterile;
+`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, NUNM, Sterile;
 `include/opg/avg/analytic.h`) average P(a → b) over bins of E or L/E for a
 fixed path without resolving the oscillations, after OscProb's
 `PMNS_Maltoni` (arXiv:2308.00037). To first order in u = 1/E around a
@@ -220,6 +220,9 @@ prop.avg_path_analytic_grad(E_edges, fd, /*nubar=*/false, P, dP,
                             opg::BinVar::E);         // edges in E (or LoE, km/GeV)
 ```
 
+* NUNM's amplitude is α S α†, not unitary: it takes the general sub-bin
+  path (no fused one-segment kernels or cells) and has no batch handles
+  (`analytic_batch` throws).
 * Measures: uniform in E (`Linear`, the default as for `avg_path`), log E or
   1/E (`InvE`, uniform in L/E); the measure's weight enters each sub-bin
   exactly to first order.

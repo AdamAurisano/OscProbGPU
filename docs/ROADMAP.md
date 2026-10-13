@@ -203,6 +203,20 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   GPU: values 1.7x, gradients slower (per-piece F1/tables dominate; uneven
   pieces per cell in a warp). Possible: cheaper shifted F1 (phases of
   mu_n c / 2 instead of two sincos per entry), balanced cells.
+* Done (NuTauOsc non-unitarity fits): NUNM analytic averages with exact
+  gradients. `Model::avg_sandwich(P, Ini, Fin)` (`has_avg_sandwich`): the
+  amplitude Fin S Ini with fixed alpha, alpha^dag; B = Fin S0 W, rho_a from
+  Ini^dag W, extra dFin S0 W and d rho o F gradient terms. General sub-bin
+  path only (the fused cells use unitarity); no batch handles. Possible: a
+  non-unitary fused one-segment variant (all N final rows, dFin/dIni
+  tables) and batch support.
+* Later (not urgent): analytic averages for more models. Needs H hermitian
+  and H = A/E + V per segment with one A (read from the vacuum hamiltonian).
+  SNSI: easy-moderate (A depends on density: per-segment A, dA in SegData).
+  LIV: easy for aT^(3) only (constant in E, reject d >= 4); d >= 4 terms grow
+  as E^(d-3), not affine in 1/E (would need A(u0) per sub-bin, new error
+  control). SiderealLIV: as LIV, plus per-event time/azimuth. Decay (non-
+  hermitian), Deco/OQS (density matrices, Gamma E^n): hard, a new method.
 * Possible: host preparation of batches (~5-10 us per point: dual-number
   prepared states and dA per parameter) on the device.
 * Possible: batched fixed-node GL (not needed by PISCES now).
