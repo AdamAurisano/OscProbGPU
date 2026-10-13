@@ -619,13 +619,24 @@ namespace opg {
         Complex<R> gm[N][N], F[N][N];
     };
 
+    /// A sandwiched model (has_avg_sandwich): W = Ini^dag W0 and B = Fin B0
+    /// in the formulas, W0 = V X and B0 = V diag(e^{-i lam L}) X.
+    template <int N, class R> struct FusedStateSW : FusedState<N, R> {
+        Mat<N, R> W0, B0, Fin;
+    };
+
+    template <class Model>
+    using FusedStateOf =
+        std::conditional_t<has_avg_sandwich<Model>::value,
+                           FusedStateSW<Model::N, typename Model::Real>,
+                           FusedState<Model::N, typename Model::Real>>;
+
     /// The state at u0 (all but F, see fused_F).
     template <class Model>
     OPG_HD inline void fused_state(const typename Model::Prepared& P,
                                    const Mat<Model::N, typename Model::Real>& A,
                                    const Segment<typename Model::Real>& seg, bool nubar,
-                                   typename Model::Real u0,
-                                   FusedState<Model::N, typename Model::Real>& s)
+                                   typename Model::Real u0, FusedStateOf<Model>& s)
     {
       using R         = typename Model::Real;
       constexpr int N = Model::N;
@@ -664,6 +675,14 @@ namespace opg {
           for (int n = 0; n < N; n++) PX(i, n) = ph * s.X(i, n);
         }
         s.B = matmul(s.V, PX);
+      }
+      if constexpr (has_avg_sandwich<Model>::value) {
+        Mat<N, R> Ini;
+        Model::avg_sandwich(P, Ini, s.Fin);
+        s.W0 = s.W;
+        s.B0 = s.B;
+        s.W  = mul_ah(Ini, s.W0);
+        s.B  = matmul(s.Fin, s.B0);
       }
     }
 
@@ -749,8 +768,8 @@ namespace opg {
 
     /// Derivative of one parameter (dAt = V^dag dA V, dHt = V^dag dH V) as
     /// dKk = X^dag dKt X (N*N reals: diagonal, then Re, Im of n < l) and
-    /// the rows b < N-1 of dB = V dSt X.
-    template <int N, class R>
+    /// the rows b < NB of dB = V dSt X (N-1 rows suffice for unitary models).
+    template <int N, class R, int NB = N - 1>
     OPG_HD inline void fused_dparam(const FusedState<N, R>& s, const FusedTables<N, R>& t,
                                     const Mat<N, R>& dAt, const Mat<N, R>& dHt, R* dk,
                                     Complex<R> (*db)[N])
@@ -786,9 +805,55 @@ namespace opg {
         dk[k++] = dKk(n, l).im;
       }
       OPG_UNROLL
-      for (int b = 0; b < N - 1; b++)
+      for (int b = 0; b < NB; b++)
         OPG_UNROLL
       for (int n = 0; n < N; n++) db[b][n] = dB(b, n);
+    }
+
+    /// A sandwiched model: db = dB0 (all rows) becomes Fin dB0 + dFin B0, and
+    /// dw = d(Ini^dag W0) = dIni^dag W0.
+    template <int N, class R>
+    OPG_HD inline void fused_dsandwich(const FusedStateSW<N, R>& s, const Mat<N, R>& dFin,
+                                       const Mat<N, R>& dIni, Complex<R> (*db)[N],
+                                       Complex<R> (*dw)[N])
+    {
+      Mat<N, R> d0;
+      OPG_UNROLL
+      for (int b = 0; b < N; b++)
+        OPG_UNROLL
+      for (int n = 0; n < N; n++) d0(b, n) = db[b][n];
+      Mat<N, R> d = matmul(s.Fin, d0);
+      add_to(d, matmul(dFin, s.B0));
+      const Mat<N, R> w = mul_ah(dIni, s.W0);
+      OPG_UNROLL
+      for (int b = 0; b < N; b++)
+        OPG_UNROLL
+      for (int n = 0; n < N; n++) {
+        db[b][n] = d(b, n);
+        dw[b][n] = w(b, n);
+      }
+    }
+
+    /// Channel (a, b) table of the initial-state derivative of a sandwiched
+    /// model, scaled by w: zw . (Re, Im dW_an)_n = 2 w Re sum_n conj(dW_an)
+    /// B_bn Y_n (Y as fused_channel). With add, accumulated.
+    template <int N, class R>
+    OPG_HD inline void fused_channel_ini(const FusedState<N, R>& s, int a, int b, R w, bool add,
+                                         R* zw)
+    {
+      Complex<R> cy[N];
+      OPG_UNROLL
+      for (int m = 0; m < N; m++) cy[m] = conj(s.B(b, m)) * s.W(a, m);
+      OPG_UNROLL
+      for (int n = 0; n < N; n++) {
+        Complex<R> y(0, 0);
+        OPG_UNROLL
+        for (int m = 0; m < N; m++) y += s.F[n][m] * cy[m];
+        const Complex<R> u  = s.B(b, n) * y;
+        const R          ur = 2 * w * u.re, ui = 2 * w * u.im;
+        zw[2 * n]           = add ? zw[2 * n] + ur : ur;
+        zw[2 * n + 1]       = add ? zw[2 * n + 1] + ui : ui;
+      }
     }
 
     /// Channel (a, b) tables, as reals, scaled by w: rs . dk = 2 w Re
@@ -901,6 +966,8 @@ namespace opg {
     /// cell), then one contraction per piece with its channel tables
     /// (parameters x channels in registers). The last final flavour follows
     /// from unitarity: sum_b Pbar_ab = F(0) = 1 exactly, so sum_b dPbar_ab = 0.
+    /// A sandwiched model (has_avg_sandwich) uses W = Ini^dag W0, B = Fin B0,
+    /// all final flavours, and the extra term 2 Re sum_n conj(dW_an) B_bn Y_n.
     template <class Model, int KD>
     OPG_HD void cell_fused(const typename Model::Prepared& P,
                            const Mat<Model::N, typename Model::Real>& A,
@@ -910,13 +977,16 @@ namespace opg {
                            const CellView<typename Model::Real>& cell, unsigned rows,
                            typename Model::Real* sp, typename Model::Real* sg)
     {
-      using R          = typename Model::Real;
-      constexpr int N  = Model::N;
-      constexpr int NK = N * N;
-      using D          = Dual<R, KD>;
+      using R            = typename Model::Real;
+      constexpr int  N   = Model::N;
+      constexpr int  NK  = N * N;
+      using D            = Dual<R, KD>;
+      constexpr bool SW  = has_avg_sandwich<Model>::value;
+      constexpr int  NB  = SW ? N : N - 1;  // final flavours computed
+      constexpr int  NWR = SW ? N : 1;      // rows of dW kept
       static_assert(KD <= FUSED_MAXP, "cell_fused: gradient chunk too large");
 
-      FusedState<N, R> s;
+      FusedStateOf<Model> s;
       fused_state<Model>(P, A, seg, nubar, cell.uc, s);
       for (int j = 0; j < cell.n; j++) {
         fused_F(s, cell.fn(j));
@@ -931,18 +1001,23 @@ namespace opg {
         while (c1 < nchunk && nq + cnt[c1] <= FUSED_MAXP) nq += cnt[c1++];
         int        pid[FUSED_MAXP];
         R          dk[FUSED_MAXP][NK];
-        Complex<R> db[FUSED_MAXP][N - 1][N];
+        Complex<R> db[FUSED_MAXP][NB][N];
+        Complex<R> dw[FUSED_MAXP][NWR][N];
         int        q = 0;
         for (int c = c0; c < c1; c++) {
           const bool st = fused_static(G[c], cnt[c]);
-          Mat<N, D>  HD;
+          Mat<N, D>  HD, IniD, FinD;
           if (!st)
             Model::hamiltonian(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
+          if constexpr (SW) Model::avg_sandwich(G[c].P, IniD, FinD);
           for (int k = 0; k < cnt[c]; k++, q++) {
             pid[q] = off[c] + k;
             Mat<N, R> dAt, dHt;
             fused_dH<Model, KD>(s, dA + off[c], k, st, HD, dAt, dHt);
-            fused_dparam(s, t, dAt, dHt, dk[q], db[q]);
+            fused_dparam<N, R, NB>(s, t, dAt, dHt, dk[q], db[q]);
+            if constexpr (SW)
+              fused_dsandwich(s, dual_full_dir<N, R, KD>(FinD, k), dual_full_dir<N, R, KD>(IniD, k),
+                              db[q], dw[q]);
           }
         }
 
@@ -957,28 +1032,28 @@ namespace opg {
                 for (int b = 0; b < N; b++) dout[(size_t(pid[r]) * N + a) * N + b] = R(0);
               continue;
             }
-            R rs[N - 1][NK], z[N - 1][2 * N];
-            for (int b = 0; b < N - 1; b++) fused_channel(s, t, a, b, R(1), false, rs[b], z[b]);
-            R acc[FUSED_MAXP][N - 1];
+            R rs[NB][NK], z[NB][2 * N];
+            for (int b = 0; b < NB; b++) fused_channel(s, t, a, b, R(1), false, rs[b], z[b]);
+            R acc[FUSED_MAXP][NB];
             OPG_UNROLL
             for (int r = 0; r < FUSED_MAXP; r++)
               OPG_UNROLL
-            for (int b = 0; b < N - 1; b++) acc[r][b] = 0;
+            for (int b = 0; b < NB; b++) acc[r][b] = 0;
             OPG_UNROLL
             for (int k = 0; k < NK; k++) {
-              R tk[N - 1];
+              R tk[NB];
               OPG_UNROLL
-              for (int b = 0; b < N - 1; b++) tk[b] = rs[b][k];
+              for (int b = 0; b < NB; b++) tk[b] = rs[b][k];
               OPG_UNROLL
               for (int r = 0; r < FUSED_MAXP; r++)
                 if (r < nq) {
                   const R d = dk[r][k];
                   OPG_UNROLL
-                  for (int b = 0; b < N - 1; b++) acc[r][b] += d * tk[b];
+                  for (int b = 0; b < NB; b++) acc[r][b] += d * tk[b];
                 }
             }
             OPG_UNROLL
-            for (int b = 0; b < N - 1; b++)
+            for (int b = 0; b < NB; b++)
               OPG_UNROLL
             for (int n = 0; n < N; n++) {
               const R zr = z[b][2 * n], zi = z[b][2 * n + 1];
@@ -986,17 +1061,30 @@ namespace opg {
               for (int r = 0; r < FUSED_MAXP; r++)
                 if (r < nq) acc[r][b] += db[r][b][n].re * zr + db[r][b][n].im * zi;
             }
+            if constexpr (SW) {
+              OPG_UNROLL
+              for (int b = 0; b < NB; b++) {
+                R zw[2 * N];
+                fused_channel_ini(s, a, b, R(1), false, zw);
+                OPG_UNROLL
+                for (int n = 0; n < N; n++)
+                  OPG_UNROLL
+                  for (int r = 0; r < FUSED_MAXP; r++)
+                    if (r < nq)
+                      acc[r][b] += dw[r][a][n].re * zw[2 * n] + dw[r][a][n].im * zw[2 * n + 1];
+              }
+            }
             OPG_UNROLL
             for (int r = 0; r < FUSED_MAXP; r++)
               if (r < nq) {
                 R* o  = dout + (size_t(pid[r]) * N + a) * N;
                 R  sm = 0;
                 OPG_UNROLL
-                for (int b = 0; b < N - 1; b++) {
+                for (int b = 0; b < NB; b++) {
                   o[b] = acc[r][b];
                   sm += acc[r][b];
                 }
-                o[N - 1] = -sm;
+                if constexpr (!SW) o[N - 1] = -sm;
               }
           }
         }
@@ -1026,18 +1114,26 @@ namespace opg {
       constexpr int NK = N * N;
       using D          = Dual<R, KD>;
 
-      FusedState<N, R> s;
+      constexpr bool SW  = has_avg_sandwich<Model>::value;
+      constexpr int  NB  = SW ? N : N - 1;  // final flavours (unitary: w_ab - w_a,N-1)
+      constexpr int  NWR = SW ? N : 1;
+
+      FusedStateOf<Model> s;
       fused_state<Model>(P, A, seg, nubar, cell.uc, s);
       FusedTables<N, R> t;
       fused_tables_H(s, t);
 
-      R rs[NK], z[N - 1][2 * N];
+      R rs[NK], z[NB][2 * N], zw[NWR][2 * N];
       OPG_UNROLL
       for (int i = 0; i < NK; i++) rs[i] = R(0);
       OPG_UNROLL
-      for (int b = 0; b < N - 1; b++)
+      for (int b = 0; b < NB; b++)
         OPG_UNROLL
       for (int i = 0; i < 2 * N; i++) z[b][i] = R(0);
+      OPG_UNROLL
+      for (int a = 0; a < NWR; a++)
+        OPG_UNROLL
+      for (int i = 0; i < 2 * N; i++) zw[a][i] = R(0);
       for (int j = 0; j < cell.n; j++) {
         const int      i  = cell.first + j;
         const AvgFn<R> fn = cell.fn(j);
@@ -1046,30 +1142,42 @@ namespace opg {
         const R* wb = w + cell.sub[i].bin;
         for (int a = 0; a < N; a++) {
           if (!row_on(rows, a)) continue;
-          const R wl = wb[size_t(a * N + N - 1) * nbins];
-          for (int b = 0; b < N - 1; b++)
-            fused_channel(s, t, a, b, (wb[size_t(a * N + b) * nbins] - wl) * subw[i], true, rs,
-                          z[b]);
+          const R wl = SW ? R(0) : wb[size_t(a * N + N - 1) * nbins];
+          for (int b = 0; b < NB; b++) {
+            const R wab = (wb[size_t(a * N + b) * nbins] - wl) * subw[i];
+            fused_channel(s, t, a, b, wab, true, rs, z[b]);
+            if constexpr (SW) fused_channel_ini(s, a, b, wab, true, zw[a]);
+          }
         }
       }
       for (int c = 0; c < nchunk; c++) {
         const bool st = fused_static(G[c], cnt[c]);
-        Mat<N, D>  HD;
+        Mat<N, D>  HD, IniD, FinD;
         if (!st) Model::hamiltonian(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
+        if constexpr (SW) Model::avg_sandwich(G[c].P, IniD, FinD);
         for (int k = 0; k < cnt[c]; k++) {
           Mat<N, R> dAt, dHt;
           fused_dH<Model, KD>(s, dA + off[c], k, st, HD, dAt, dHt);
           R          dk[NK];
-          Complex<R> db[N - 1][N];
-          fused_dparam(s, t, dAt, dHt, dk, db);
+          Complex<R> db[NB][N], dw[NWR][N];
+          fused_dparam<N, R, NB>(s, t, dAt, dHt, dk, db);
+          if constexpr (SW)
+            fused_dsandwich(s, dual_full_dir<N, R, KD>(FinD, k), dual_full_dir<N, R, KD>(IniD, k),
+                            db, dw);
           R acc = 0;
           OPG_UNROLL
           for (int i = 0; i < NK; i++) acc += dk[i] * rs[i];
           OPG_UNROLL
-          for (int b = 0; b < N - 1; b++)
+          for (int b = 0; b < NB; b++)
             OPG_UNROLL
           for (int n = 0; n < N; n++)
             acc += db[b][n].re * z[b][2 * n] + db[b][n].im * z[b][2 * n + 1];
+          if constexpr (SW)
+            OPG_UNROLL
+            for (int a = 0; a < N; a++)
+              OPG_UNROLL
+              for (int n = 0; n < N; n++)
+                acc += dw[a][n].re * zw[a][2 * n] + dw[a][n].im * zw[a][2 * n + 1];
           g[off[c] + k] = acc;
         }
       }
@@ -1210,7 +1318,7 @@ namespace opg {
             off.push_back(c.offset);
             cnt.push_back(c.count);
           }
-      if (nseg == 1 && !has_avg_sandwich<Model>::value) {  // cells uc, cstart over the list order of sub
+      if (nseg == 1) {  // cells uc, cstart over the list order of sub
 #ifdef _OPENMP
         const int nthr1 = opt.threads > 0 ? opt.threads : omp_get_max_threads();
 #pragma omp parallel for schedule(dynamic, 4) num_threads(nthr1)
@@ -1283,7 +1391,7 @@ namespace opg {
       std::vector<int>            perm, cstart;
       std::vector<double>         uc;
       std::vector<AnalyticSubBin> subc;
-      const bool one = path.size() == 1 && !has_avg_sandwich<Model>::value;
+      const bool                  one = path.size() == 1;
       if (one) {
         make_cells(sub_in, opt.cells ? cell_width(path, opt) : 0.0, opt.cell_pieces, perm, uc,
                    cstart);

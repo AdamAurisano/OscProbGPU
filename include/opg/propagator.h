@@ -610,8 +610,6 @@ namespace opg {
                                    const AnalyticAvgOptions& opt = {}, int device = 0)
       {
         if (path.empty()) throw std::invalid_argument("analytic_batch: empty path");
-        if constexpr (has_avg_sandwich<Model>::value)
-          throw std::invalid_argument("analytic_batch: not for sandwiched models (NUNM); use avg_path_analytic");
         for (const auto& s : sub)
           if (s.bin < 0 || size_t(s.bin) >= nbins || !(s.u0 > 0) || !(s.h >= 0))
             throw std::invalid_argument("analytic_batch: bad sub-bin");

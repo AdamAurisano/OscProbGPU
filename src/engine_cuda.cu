@@ -1709,7 +1709,7 @@ namespace opg {
             OPG_CUDA(cudaSetDevice(D.id));
             D.anSub.upload(D.id, sub + off[k], cnt[k], D.stream);
             D.path.upload(D.id, path, size_t(nseg), D.stream);
-            if (nseg == 1 && !has_avg_sandwich<Model>::value) {
+            if (nseg == 1) {
               std::vector<R>   lu;
               std::vector<int> lcs;
               if (cells) {
