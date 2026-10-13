@@ -296,7 +296,62 @@ namespace opg {
         }
       }
 
+      // --- reverse mode (physics/adjoint.h) ----------------------------------
+      // The state is the amplitude before finalize(): the final amplitude is
+      // alpha S, the initial state alpha^dagger. Cotangents X_bar pair with
+      // dX as Re tr(X_bar^dag dX).
+      OPG_HERMITIAN3_ADJOINT_STEPS(NUNM, true)
+
+      /// Sb = alpha^dag Fb, Fb the cotangent of the final amplitude F = alpha S.
+      OPG_HD OPG_INLINE static void adj_final(const Prepared& P, bool, const Mat<3, R>& S,
+                                              const R* w, size_t stride, Mat<3, R>& Sb)
+      {
+        Mat<3, R> F = S, Fb;
+        apply_operator<3, R>(P.alpha, F);
+        amplitude_adj_final<3, R>(F, w, stride, Fb);
+        Sb = matmul(P.alphaD, Fb);
+      }
+
+      /// acc[k] += Re tr(lam^dag d(alpha^dagger)_k), lam the cotangent of the
+      /// initial state.
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>& PD, bool,
+                                                         const Mat<3, R>& lam, R (&acc)[K])
+      {
+        contract_full<K>(lam, PD.alphaD, acc);
+      }
+
+      /// acc[k] += Re tr(Fb^dag dalpha_k S) = Re sum_ij conj((Fb S^dag)_ij) dalpha_k,ij.
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>& PD, bool,
+                                                       const Mat<3, R>& S, const R* w,
+                                                       size_t stride, R (&acc)[K])
+      {
+        Mat<3, R> F, Fb;
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+          for (int j = 0; j < 3; j++) F(i, j) = Complex<R>(PD.alpha(i, j).re.v, PD.alpha(i, j).im.v);
+        F = matmul(F, S);
+        amplitude_adj_final<3, R>(F, w, stride, Fb);
+        contract_full<K>(matmul(Fb, adjoint(S)), PD.alpha, acc);
+      }
+
     private:
+      /// acc[k] += Re sum_ij conj(X_ij) dM_k,ij (general complex M).
+      template <int K>
+      OPG_HD OPG_INLINE static void contract_full(const Mat<3, R>& X,
+                                                  const Mat<3, Dual<R, K>>& M, R (&acc)[K])
+      {
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+          for (int j = 0; j < 3; j++)
+            OPG_UNROLL
+            for (int k = 0; k < K; k++)
+              acc[k] += X(i, j).re * M(i, j).re.d[k] + X(i, j).im * M(i, j).im.d[k];
+      }
+
       template <int K>
       OPG_HD OPG_INLINE static Mat<3, R> derivative(const Mat<3, Dual<R, K>>& M,
                                                     int k)

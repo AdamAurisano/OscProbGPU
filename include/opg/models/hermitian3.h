@@ -239,10 +239,11 @@ namespace opg {
 } // namespace opg
 
 /// Reverse-mode members (physics/adjoint.h) of a hermitian 3-flavour model
-/// whose state is the amplitude matrix (identity initial state, no final
-/// step); MODEL is the model class name, AFFINE whether its hamiltonian is
-/// affine in density and density * Z/A (see physics/adjoint.h).
-#define OPG_HERMITIAN3_ADJOINT(MODEL, AFFINE)                                             \
+/// whose state is the amplitude matrix, except adj_final,
+/// adj_contract_initial and adj_contract_final; MODEL is the model class
+/// name, AFFINE whether its hamiltonian is affine in density and density *
+/// Z/A (see physics/adjoint.h).
+#define OPG_HERMITIAN3_ADJOINT_STEPS(MODEL, AFFINE)                                       \
   static constexpr bool has_adjoint = true;                                              \
   static constexpr bool adj_affine  = AFFINE;                                            \
   using AdjSeg                      = Mat<3, R>;                                         \
@@ -260,11 +261,6 @@ namespace opg {
     const SegmentZ<R, S> s{R(0), rho, zoa, -1};                                          \
     hamiltonian(P, E, nubar, s, H);                                                      \
   }                                                                                      \
-  OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const Mat<3, R>& S,     \
-                                          const R* w, size_t stride, Mat<3, R>& Sb)      \
-  {                                                                                      \
-    amplitude_adj_final<3, R>(S, w, stride, Sb);                                         \
-  }                                                                                      \
   OPG_HD OPG_INLINE static void adj_step(const Prepared& P, R E, bool nubar,             \
                                          const Segment<R>& s, const Mat<3, R>& S,        \
                                          Mat<3, R>& Sb, Mat<3, R>& Hb)                   \
@@ -277,6 +273,16 @@ namespace opg {
       const SegmentZ<R, Dual<R, K>>& sz, const Mat<3, R>& Hb, R (&acc)[K])                \
   {                                                                                      \
     hermitian3_adj_contract<MODEL, R, K>(PD, E, nubar, sz, Hb, acc);                     \
+  }
+
+/// OPG_HERMITIAN3_ADJOINT_STEPS for an identity initial state and no final
+/// step.
+#define OPG_HERMITIAN3_ADJOINT(MODEL, AFFINE)                                             \
+  OPG_HERMITIAN3_ADJOINT_STEPS(MODEL, AFFINE)                                            \
+  OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const Mat<3, R>& S,     \
+                                          const R* w, size_t stride, Mat<3, R>& Sb)      \
+  {                                                                                      \
+    amplitude_adj_final<3, R>(S, w, stride, Sb);                                         \
   }                                                                                      \
   template <int K>                                                                       \
   OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>&, bool, \
