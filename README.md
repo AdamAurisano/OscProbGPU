@@ -473,12 +473,13 @@ mode to ~1e-13 and is used for paths up to 256 segments and up to 96
 parameters (else forward mode); `set_adjoint_gradients(false)` (Python:
 `p.adjoint_gradients = False`) forces forward mode.
 
-**Reverse mode (hermitian models).** Fast, NSI, Sterile, LIV, SNSI and
-SiderealLIV use the same reverse-mode weighted gradients. The backward step
+**Reverse mode (hermitian models).** Fast, NSI, NUNM, Sterile, LIV, SNSI and
+SiderealLIV use the same reverse-mode weighted gradients (NUNM adds its
+initial state α† and final rotation α). The backward step
 is shared: from the segment's eigensystem it gives the cotangent H̄ of the
 hamiltonian (the adjoint of the eigen-decomposition derivative), and the
 parameters are obtained by contracting H̄ with ∂H/∂p. Where the hamiltonian
-is affine in the segment's density and density · Z/A (Fast, NSI, LIV,
+is affine in the segment's density and density · Z/A (Fast, NSI, NUNM, LIV,
 SiderealLIV), the cotangents are first summed over the path into
 Σ H̄, Σ ρH̄ and Σ ρ(Z/A)H̄, so the model parameters are contracted once per
 point instead of once per segment. Sterile contracts per segment: the sums

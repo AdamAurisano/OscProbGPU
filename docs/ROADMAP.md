@@ -141,6 +141,10 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   for ~12%). V100 1000 x 1000 weighted, reverse vs forward: Fast 0.28/0.33 s,
   NSI 0.28/0.90, Sterile 2.0/3.2, LIV 0.59/3.6, SNSI 0.87/1.2, SiderealLIV
   0.49/3.0. Agrees with forward mode to <= 5e-13 (Sterile 3.2e-12).
+* Done: NUNM reverse mode (OPG_HERMITIAN3_ADJOINT_STEPS plus NUNM's
+  adj_final / adj_contract_initial / adj_contract_final for alpha^dag and
+  alpha), affine, both scales. V100 1000 x 1000, 16 params: 0.31 s reverse
+  vs 0.90 s forward; agrees with forward mode to <= 2e-12.
 * Next: EarthModelBinned (uses the per-event azimuth).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
