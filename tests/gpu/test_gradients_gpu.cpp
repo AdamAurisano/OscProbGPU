@@ -165,7 +165,7 @@ TEST_CASE_TEMPLATE("GPU Earth Z/A gradients", M, gradtest::Fast, gradtest::NSI, 
 
 
 TEST_CASE_TEMPLATE("GPU reverse-mode weighted gradients equal forward mode; multi-GPU", M,
-                   gradtest::Fast, gradtest::NSI, gradtest::Sterile, gradtest::LIV,
+                   gradtest::Fast, gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::LIV,
                    gradtest::SNSI, gradtest::SiderealLIV, gradtest::OQS)
 {
   static_assert(opg::Propagator<M>::has_adjoint_gradients());

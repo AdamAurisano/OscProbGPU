@@ -482,7 +482,9 @@ namespace gradtest {
       };
       std::mt19937_64                        rng(9);
       std::uniform_real_distribution<double> u(-1, 1);
-      for (int ip = 0; ip < 2; ip++) {
+      // NUNM: low and high scale (its final rotation and initial state)
+      const int npts = std::is_same<Model, NUNM>::value ? 4 : 2;
+      for (int ip = 0; ip < npts; ip++) {
         prop.set_params(param_points<Model>()[size_t(ip)].second);
         const auto names = prop.gradient_parameter_names();
         REQUIRE(names.size() <= size_t(opg::kAdjMaxPar));  // else forward mode
