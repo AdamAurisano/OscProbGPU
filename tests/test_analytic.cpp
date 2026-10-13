@@ -609,3 +609,93 @@ TEST_CASE("Analytic averages of a sandwiched model (NUNM): brute-force GL and gr
   CHECK(check_grad<NUNM>(variants::nunm(1), sub, E.size() - 1, tp, true, 3000 / 0.5, "NUNM high scale 3 segments") < 1e-6);
 #endif
 }
+
+#ifndef OPG_DISABLE_GRADIENTS
+TEST_CASE("Analytic averages of a sandwiched model (NUNM): fused path, cells, batches")
+{
+  // One segment takes the fused path with all final flavours (no
+  // unitarity); two identical halves take the general one.
+  using NUNM = opg::NUNM<double>;
+  opg::Propagator<NUNM> prop;
+  const Path<double>    one{{1300, 2.848, 0.5, 0}}, two{{650, 2.848, 0.5, 0}, {650, 2.848, 0.5, 0}};
+  std::vector<double>   E;
+  for (int i = 0; i <= 60; i++) E.push_back(0.5 * std::pow(120.0, i / 60.0));
+  const size_t nb = E.size() - 1, n = 9 * nb;
+  auto sub = opg::Propagator<NUNM>::analytic_subbins(E, one, EMeasure::Linear, BinVar::E);
+  for (int v = 0; v < 3; v++)
+    for (int nubar = 0; nubar < 2; nubar++) {
+      const NUNM::Params p =
+          v == 0 ? variants::nunm(0) : v == 1 ? variants::nunm_phases() : variants::nunm(1);
+      prop.set_params(p);
+      auto names = prop.default_gradient_params();
+      names.push_back("zoa_0");
+      names.push_back("rho_0");
+      REQUIRE(names.size() > size_t(opg::analytic::FUSED_MAXP));
+      prop.set_gradient_params(names);
+      std::vector<double> P1, dP1, P2, dP2;
+      prop.avg_path_analytic_subbins_grad(sub, nb, one, nubar, P1, dP1);
+      prop.avg_path_analytic_subbins_grad(sub, nb, two, nubar, P2, dP2);
+      double sg = 1;
+      for (double x : dP2) sg = std::max(sg, std::fabs(x));
+      MESSAGE("NUNM variant " << v << " nubar " << nubar << ", " << names.size()
+                              << " parameters: fused vs general P " << max_abs_diff(P1, P2)
+                              << ", dP (rel) " << max_abs_diff(dP1, dP2) / sg);
+      CHECK(max_abs_diff(P1, P2) < 1e-11);
+      CHECK(max_abs_diff(dP1, dP2) / sg < 1e-10);
+
+      // rows = {e, mu}: those channels unchanged, the others zero
+      opg::AnalyticAvgOptions r;
+      r.rows = 3;
+      std::vector<double> Pr, dPr;
+      prop.avg_path_analytic_subbins_grad(sub, nb, one, nubar, Pr, dPr, r);
+      bool ok = Pr.size() == n;
+      for (size_t q = 0; q < Pr.size() / nb; q++)
+        for (size_t b = 0; b < nb; b++)
+          ok = ok && ((q % 9) / 3 < 2 ? Pr[q * nb + b] == P1[q * nb + b] : Pr[q * nb + b] == 0);
+      for (size_t q = 0; q < dPr.size() / nb; q++)
+        for (size_t b = 0; b < nb; b++)
+          ok = ok && ((q % 9) / 3 < 2 ? dPr[q * nb + b] == dP1[q * nb + b] : dPr[q * nb + b] == 0);
+      CHECK(ok);
+    }
+
+  // ND in L/E bins with cells, batch handles and weighted gradients (host)
+  const Path<double>  nd{{0.574, 2.848, 0.5, 0}};
+  std::vector<double> ne;
+  for (int i = 0; i <= 200; i++) ne.push_back(0.001 * std::pow(1000.0, i / 200.0));
+  opg::AnalyticAvgOptions cel;
+  cel.cells = true;
+  prop.set_gradient_params();
+  for (int v = 0; v < 2; v++) {
+    const NUNM::Params p = v == 0 ? variants::nunm_phases() : variants::nunm(1);
+    prop.set_params(p);
+    std::vector<double> P, dP, Pc, dPc;
+    prop.avg_path_analytic_grad(ne, nd, false, P, dP, EMeasure::InvE, BinVar::LoE);
+    prop.avg_path_analytic_grad(ne, nd, false, Pc, dPc, EMeasure::InvE, BinVar::LoE, cel);
+    double sg = 1;
+    for (double x : dP) sg = std::max(sg, std::fabs(x));
+    MESSAGE("NUNM ND variant " << v << ": cells vs default P " << max_abs_diff(Pc, P)
+                               << ", dP (rel) " << max_abs_diff(dPc, dP) / sg);
+    CHECK(max_abs_diff(Pc, P) < 1.5e-6);
+    CHECK(max_abs_diff(dPc, dP) / sg < 2e-6);
+    for (int o = 0; o < 2; o++) {  // with and without cells
+      const opg::AnalyticAvgOptions opt = o ? cel : opg::AnalyticAvgOptions{};
+      auto b = prop.analytic_batch(ne, nd, false, EMeasure::InvE, BinVar::LoE, opt);
+      std::vector<double> bo, bd;
+      prop.avg_path_analytic_batch(b, {p, variants::nunm(0)}, bo, &bd);
+      const size_t nc = bo.size() / 2, nq = bd.size() / bo.size();
+      CHECK(std::equal(bo.begin(), bo.begin() + long(nc), (o ? Pc : P).begin()));
+      CHECK(std::equal(bd.begin(), bd.begin() + long(nq * nc), (o ? dPc : dP).begin()));
+      std::vector<double> w(bo.size()), g;
+      for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i));
+      prop.avg_path_analytic_batch_weighted(b, {p, variants::nunm(0)}, w, g);
+      REQUIRE(g.size() == 2 * nq);
+      for (size_t pt = 0; pt < 2; pt++)
+        for (size_t q = 0; q < nq; q++) {
+          double ref = 0;
+          for (size_t c = 0; c < nc; c++) ref += w[pt * nc + c] * bd[(pt * nq + q) * nc + c];
+          CHECK(g[pt * nq + q] == doctest::Approx(ref).epsilon(1e-12));
+        }
+    }
+  }
+}
+#endif

@@ -342,3 +342,65 @@ TEST_CASE("GPU weighted batched analytic gradients")
     }
   }
 }
+
+TEST_CASE("GPU batched analytic averages of a sandwiched model (NUNM)")
+{
+  // fused one-segment kernels with all final flavours, cells, general path
+  const int dev = devs("OPG_TEST_DEVICES", "0").front();
+  using M       = opg::NUNM<>;
+  opg::Propagator<M> prop(opg::PremModel(), {dev}), cpu;
+  prop.set_gradient_params();
+  cpu.set_gradient_params();
+  auto ph1  = variants::nunm_phases();
+  ph1.scale = 1;
+  const std::vector<M::Params> pts{variants::nunm(0), variants::nunm_phases(), variants::nunm(1),
+                                   ph1};
+  std::vector<double>          fe, ne;
+  for (int i = 0; i <= 60; i++) fe.push_back(0.5 * std::pow(120.0, i / 60.0));
+  for (int i = 0; i <= 200; i++) ne.push_back(0.001 * std::pow(1000.0, i / 200.0));
+  const std::vector<opg::Segment<double>> fd{{1300, 2.848, 0.5, 0}}, nd{{0.574, 2.848, 0.5, 0}},
+      fd2{{650, 2.848, 0.5, 0}, {650, 2.848, 0.5, 0}};
+  for (int cfg = 0; cfg < 3; cfg++) {
+    const bool  isnd  = cfg == 1;
+    const auto& edges = isnd ? ne : fe;
+    const auto& path  = cfg == 2 ? fd2 : isnd ? nd : fd;
+    const auto  var   = isnd ? opg::BinVar::LoE : opg::BinVar::E;
+    const auto  meas  = isnd ? opg::EMeasure::InvE : opg::EMeasure::Linear;
+    opg::AnalyticAvgOptions o;
+    o.cells = isnd;
+    for (int nubar = 0; nubar < 2; nubar++) {
+      auto b  = prop.analytic_batch(edges, path, nubar, meas, var, o);
+      auto bc = cpu.analytic_batch(edges, path, nubar, meas, var, o);
+      REQUIRE(b.on_device());
+      std::vector<double> out, dout, co, cd;
+      prop.avg_path_analytic_batch(b, pts, out, &dout);
+      cpu.avg_path_analytic_batch(bc, pts, co, &cd);
+      const size_t n = out.size() / pts.size(), nq = dout.size() / out.size();
+      const double ep = rel_diff(out, co, 1.0, n, 0, n), eg = rel_diff(dout, cd, 1.0, n, 0, n);
+
+      std::vector<double> w(out.size()), g, gc, ref(pts.size() * nq, 0.0), sc(ref.size(), 0.0);
+      for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i) + 1.0);
+      prop.avg_path_analytic_batch_weighted(b, pts, w, g);
+      cpu.avg_path_analytic_batch_weighted(bc, pts, w, gc);
+      for (size_t p = 0; p < pts.size(); p++)
+        for (size_t k = 0; k < nq; k++)
+          for (size_t c = 0; c < n; c++) {
+            const double t = w[p * n + c] * dout[(p * nq + k) * n + c];
+            ref[p * nq + k] += t;
+            sc[p * nq + k] += std::fabs(t);
+          }
+      double ew = 0, ec = 0;
+      for (size_t i = 0; i < g.size(); i++) {
+        ew = std::max(ew, std::fabs(g[i] - ref[i]) / std::max(sc[i], 1e-300));
+        ec = std::max(ec, std::fabs(g[i] - gc[i]) / std::max(sc[i], 1e-300));
+      }
+      MESSAGE("NUNM config " << cfg << " nubar " << nubar << ": GPU vs host P " << ep
+                             << ", dP (rel) " << eg << "; weighted vs contracted " << ew
+                             << ", vs host " << ec);
+      CHECK(ep < 1e-12);
+      CHECK(eg < 1e-11);
+      CHECK(ew < 1e-9);
+      CHECK(ec < 1e-9);
+    }
+  }
+}
