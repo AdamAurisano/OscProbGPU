@@ -75,6 +75,18 @@ namespace opg {
   struct has_static_matter<Model, std::void_t<decltype(Model::analytic_static_matter)>>
       : std::bool_constant<Model::analytic_static_matter> {};
 
+  /// Whether a model's amplitude is sandwiched, A_ba = (Fin S Ini)_ba with
+  /// the evolution S of hamiltonian() and fixed matrices Ini (the initial
+  /// states, Model::initial) and Fin (Model::finalize), given by
+  /// Model::avg_sandwich(P, Ini, Fin) for any scalar type of the prepared
+  /// state (Model::analytic_sandwich = true; NUNM). Such models need not
+  /// conserve probability, so they take the general sub-bin path (no fused
+  /// one-segment cells, which use unitarity) and no batch handles.
+  template <class Model, class = void> struct has_avg_sandwich : std::false_type {};
+  template <class Model>
+  struct has_avg_sandwich<Model, std::void_t<decltype(Model::analytic_sandwich)>>
+      : std::bool_constant<Model::analytic_sandwich> {};
+
   namespace analytic {
 
     /// 1 / (k! (n + k + 1)): coefficient of (iz)^k in the series of J_n.
@@ -327,6 +339,16 @@ namespace opg {
       return d;
     }
 
+    /// Derivative direction k of a general dual matrix.
+    template <int N, class R, int K>
+    OPG_HD inline Mat<N, R> dual_full_dir(const Mat<N, Dual<R, K>>& M, int k)
+    {
+      Mat<N, R> d;
+      for (int i = 0; i < N; i++)
+        for (int j = 0; j < N; j++) d(i, j) = Complex<R>(M(i, j).re.d[k], M(i, j).im.d[k]);
+      return d;
+    }
+
     template <int N, class R> OPG_HD inline Mat<N, R> mul_ah(const Mat<N, R>& A, const Mat<N, R>& B)
     {
       return matmul(adjoint(A), B);  // A^dag B
@@ -364,15 +386,27 @@ namespace opg {
         Complex<R> gm[N][N], Gam[N][N], G1[N][N][N];
     };
 
+    /// The extra value-pass results of a sandwiched model (has_avg_sandwich):
+    /// B0 = S0 W, Wr = Ini^dag W, Fin and F[n][m] = F(mu_n - mu_m).
+    template <int N, class R, bool SW> struct KStateSandwich {};
+    template <int N, class R> struct KStateSandwich<N, R, true> {
+        Mat<N, R>  B0, Wr, Fin;
+        Complex<R> F[N][N];
+    };
+
     /// Value-pass results of a sub-bin reused by the derivatives: K =
     /// W diag(mu) W^dag, B = S0 W, rho_a = W^dag e_a e_a^dag W, M_a = rho_a o F.
-    template <int N, class R> struct KState {
+    /// A sandwiched model (SW): B = Fin S0 W and rho_a from Wr in place of W.
+    template <int N, class R, bool SW = false> struct KState : KStateSandwich<N, R, SW> {
         Mat<N, R>  W, B, M[N], rho[N];
         R          mu[N];
         /// F1[n][l][m] = F[mu_n - mu_m, mu_l - mu_m] (with gradients); the
         /// other table is -conj F1[l][m][n] (F(-x) = conj F(x)).
         Complex<R> F1[N][N][N];
     };
+
+    template <class Model>
+    using KStateOf = KState<Model::N, typename Model::Real, has_avg_sandwich<Model>::value>;
 
     /// Average over one sub-bin: out[a*N + b]. seg: scratch of size nseg
     /// (with want_grad, also filled with what subbin_grad needs).
@@ -382,7 +416,7 @@ namespace opg {
                 typename Model::Real u0, const AvgFn<typename Model::Real>& fn,
                 typename Model::Real* out, bool want_grad,
                 SegData<Model::N, typename Model::Real>* seg,
-                KState<Model::N, typename Model::Real>& ks)
+                KStateOf<Model>& ks)
     {
       using R         = typename Model::Real;
       constexpr int N = Model::N;
@@ -428,15 +462,27 @@ namespace opg {
       }
       jacobi_hermitian<N, R>(herm_part(K), ks.W, ks.mu);
       ks.B = matmul(S, ks.W);
+      const Mat<N, R>* Wr = &ks.W;
+      if constexpr (has_avg_sandwich<Model>::value) {
+        Mat<N, R> Ini;
+        Model::avg_sandwich(P, Ini, ks.Fin);
+        ks.B0 = ks.B;
+        ks.B  = matmul(ks.Fin, ks.B0);
+        ks.Wr = mul_ah(Ini, ks.W);
+        Wr    = &ks.Wr;
+      }
 
       Complex<R> F[N][N];
       for (int n = 0; n < N; n++)
         for (int m = 0; m < N; m++) F[n][m] = fn.F(ks.mu[n] - ks.mu[m]);
+      if constexpr (has_avg_sandwich<Model>::value)
+        for (int n = 0; n < N; n++)
+          for (int m = 0; m < N; m++) ks.F[n][m] = F[n][m];
 
       for (int a = 0; a < N; a++) {
         for (int n = 0; n < N; n++)
           for (int m = 0; m < N; m++) {
-            ks.rho[a](n, m) = conj(ks.W(a, n)) * ks.W(a, m);
+            ks.rho[a](n, m) = conj((*Wr)(a, n)) * (*Wr)(a, m);
             ks.M[a](n, m)   = ks.rho[a](n, m) * F[n][m];
           }
         for (int b = 0; b < N; b++) {
@@ -466,7 +512,7 @@ namespace opg {
                             const Segment<typename Model::Real>* path, int nseg, bool nubar,
                             typename Model::Real u0,
                             const SegData<Model::N, typename Model::Real>* seg,
-                            const KState<Model::N, typename Model::Real>& ks,
+                            const KStateOf<Model>& ks,
                             typename Model::Real* dout)
     {
       using R         = typename Model::Real;
@@ -512,12 +558,22 @@ namespace opg {
           dT[k] = nT;
         }
       }
+      // A sandwiched model: dB = Fin dS0 W + dFin S0 W, and rho_a also moves with
+      // dWr = dIni^dag W (W fixed): d rho_a(n, m) = conj(dWr_an) Wr_am + conj(Wr_an) dWr_am.
+      Mat<N, D> IniD, FinD;
+      if constexpr (has_avg_sandwich<Model>::value) Model::avg_sandwich(G.P, IniD, FinD);
       for (int k = 0; k < count; k++) {
         // In the eigenbasis of K: dM_a = sum_l (dK_nl rho_lm F[..]_nlm -
         // rho_nl dK_lm F[mu_n - mu_l, mu_n - mu_m]); dPbar_ab = 2 Re (dB M_a B^dag)_bb +
         // (B dM_a B^dag)_bb with dB = dS0 W.
         const Mat<N, R> dKt = sandwich(ks.W, herm_part(dK[k]));
-        const Mat<N, R> dB  = matmul(dT[k], ks.W);
+        Mat<N, R>       dB  = matmul(dT[k], ks.W);
+        Mat<N, R>       dWr = Mat<N, R>::zero();
+        if constexpr (has_avg_sandwich<Model>::value) {
+          dB = matmul(ks.Fin, dB);
+          add_to(dB, matmul(dual_full_dir<N, R, KD>(FinD, k), ks.B0));
+          dWr = mul_ah(dual_full_dir<N, R, KD>(IniD, k), ks.W);
+        }
         R*              o   = dout + size_t(offset + k) * N * N;
         for (int a = 0; a < N; a++) {
           Mat<N, R> dM;
@@ -527,6 +583,9 @@ namespace opg {
               for (int l = 0; l < N; l++)
                 acc += dKt(n, l) * ks.rho[a](l, m) * ks.F1[n][l][m] +
                        ks.rho[a](n, l) * dKt(l, m) * conj(ks.F1[l][m][n]);
+              if constexpr (has_avg_sandwich<Model>::value)
+                acc += (conj(dWr(a, n)) * ks.Wr(a, m) + conj(ks.Wr(a, n)) * dWr(a, m)) *
+                       ks.F[n][m];
               dM(n, m) = acc;
             }
           for (int b = 0; b < N; b++) {
@@ -1151,7 +1210,7 @@ namespace opg {
             off.push_back(c.offset);
             cnt.push_back(c.count);
           }
-      if (nseg == 1) {  // cells uc, cstart over the list order of sub
+      if (nseg == 1 && !has_avg_sandwich<Model>::value) {  // cells uc, cstart over the list order of sub
 #ifdef _OPENMP
         const int nthr1 = opt.threads > 0 ? opt.threads : omp_get_max_threads();
 #pragma omp parallel for schedule(dynamic, 4) num_threads(nthr1)
@@ -1180,7 +1239,7 @@ namespace opg {
         for (long i = 0; i < long(ns); i++) {
           const AnalyticSubBin& s = sub[size_t(i)];
           const AvgFn<R>        fn{R(s.h), R(s.beta), R(opt.fast_begin), R(opt.fast_end)};
-          KState<N, R>          ks;
+          KStateOf<Model>       ks;
           subbin<Model>(P, A, path.data(), nseg, nubar, R(s.u0), fn, sp + size_t(i) * nch,
                         chunks != nullptr, seg.data(), ks);
           if constexpr (grad_traits<Model>::enabled)
@@ -1224,7 +1283,7 @@ namespace opg {
       std::vector<int>            perm, cstart;
       std::vector<double>         uc;
       std::vector<AnalyticSubBin> subc;
-      const bool                  one = path.size() == 1;
+      const bool one = path.size() == 1 && !has_avg_sandwich<Model>::value;
       if (one) {
         make_cells(sub_in, opt.cells ? cell_width(path, opt) : 0.0, opt.cell_pieces, perm, uc,
                    cstart);

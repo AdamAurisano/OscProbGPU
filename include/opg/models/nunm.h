@@ -60,6 +60,11 @@ namespace opg {
       using Real                        = R;
       static constexpr int         N    = 3;
       static constexpr const char* name = "NUNM";
+      /// Hermitian and affine in 1/E, the amplitude sandwiched between
+      /// alpha^dagger (initial) and alpha (final): analytic bin averages
+      /// (avg/analytic.h, has_avg_sandwich).
+      static constexpr bool analytic_avg      = true;
+      static constexpr bool analytic_sandwich = true;
 
       /// Derivative directions per gradient pass (see opg::grad_traits).
 #ifdef OPG_NUNM_GRAD_CHUNK
@@ -222,6 +227,16 @@ namespace opg {
             H(i, j) = h + w;
           }
         }
+      }
+
+      /// The amplitude's fixed factors for the analytic averages: initial
+      /// states alpha^dagger, final rotation alpha (as initial(), finalize()).
+      template <class S>
+      OPG_HD OPG_INLINE static void avg_sandwich(const PreparedT<S>& P, Mat<3, S>& ini,
+                                                 Mat<3, S>& fin)
+      {
+        ini = P.alphaD;
+        fin = P.alpha;
       }
 
       OPG_HD OPG_INLINE static Mat<3, R> initial(const Prepared& P, bool)

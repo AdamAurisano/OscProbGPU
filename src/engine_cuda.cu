@@ -569,7 +569,7 @@ namespace opg {
                                           bool nubar, R fast_begin, R fast_end, bool want_grad,
                                           R* __restrict__ sp,
                                           analytic::SegData<Model::N, R>* __restrict__ seg,
-                                          analytic::KState<Model::N, R>* __restrict__ ks)
+                                          analytic::KStateOf<Model>* __restrict__ ks)
     {
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < ns;
@@ -590,7 +590,7 @@ namespace opg {
                                          const Segment<R>* __restrict__ path, int nseg,
                                          bool nubar,
                                          const analytic::SegData<Model::N, R>* __restrict__ seg,
-                                         const analytic::KState<Model::N, R>* __restrict__ ks,
+                                         const analytic::KStateOf<Model>* __restrict__ ks,
                                          int npar, R* __restrict__ sg)
     {
       constexpr int N = Model::N;
@@ -661,7 +661,7 @@ namespace opg {
         const AnalyticSubBin* __restrict__ sub, size_t ns, size_t npts,
         const Segment<R>* __restrict__ path, int nseg, bool nubar, R fast_begin, R fast_end,
         bool want_grad, R* __restrict__ sp, analytic::SegData<Model::N, R>* __restrict__ seg,
-        analytic::KState<Model::N, R>* __restrict__ ks)
+        analytic::KStateOf<Model>* __restrict__ ks)
     {
       constexpr int N = Model::N;
       for (size_t t = blockIdx.x * size_t(blockDim.x) + threadIdx.x; t < npts * ns;
@@ -681,7 +681,7 @@ namespace opg {
         int npar, const AnalyticSubBin* __restrict__ sub, size_t ns, size_t npts,
         const Segment<R>* __restrict__ path, int nseg, bool nubar,
         const analytic::SegData<Model::N, R>* __restrict__ seg,
-        const analytic::KState<Model::N, R>* __restrict__ ks, R* __restrict__ sg)
+        const analytic::KStateOf<Model>* __restrict__ ks, R* __restrict__ sg)
     {
       constexpr int N = Model::N;
       for (size_t t = blockIdx.x * size_t(blockDim.x) + threadIdx.x; t < npts * ns * nchunk;
@@ -1709,7 +1709,7 @@ namespace opg {
             OPG_CUDA(cudaSetDevice(D.id));
             D.anSub.upload(D.id, sub + off[k], cnt[k], D.stream);
             D.path.upload(D.id, path, size_t(nseg), D.stream);
-            if (nseg == 1) {
+            if (nseg == 1 && !has_avg_sandwich<Model>::value) {
               std::vector<R>   lu;
               std::vector<int> lcs;
               if (cells) {
@@ -1813,7 +1813,7 @@ namespace opg {
           DevBuf<typename grad_traits<Model>::Prepared> G;
           DevBuf<int>                                   off, cnt;
           DevBuf<analytic::SegData<N, R>>               seg;
-          DevBuf<analytic::KState<N, R>>                ks;
+          DevBuf<analytic::KStateOf<Model>>                ks;
           DevBuf<R>                                     sp, sg, out, dout;
           DevBuf<R>                                     subw, wts, gs, gout;
           size_t                                        ncell = 0;
@@ -1945,7 +1945,7 @@ namespace opg {
           const size_t per_pt =
               ns * ((fused ? 0
                            : size_t(B.nseg) * sizeof(analytic::SegData<N, R>) +
-                                 sizeof(analytic::KState<N, R>)) +
+                                 sizeof(analytic::KStateOf<Model>)) +
                     (nch + nq) * sizeof(R));
           const size_t mp = std::max<size_t>(1, std::min(npts, B.scratch / std::max<size_t>(per_pt, 1)));
           ensure(B.P, id, mp);
@@ -2167,7 +2167,7 @@ namespace opg {
           // analytic averages
           DevBuf<AnalyticSubBin>                         anSub;
           DevBuf<analytic::SegData<N, R>>               anSeg;
-          DevBuf<analytic::KState<N, R>>                anKs;
+          DevBuf<analytic::KStateOf<Model>>                anKs;
           DevBuf<Mat<N, R>>                             anDA;
           DevBuf<typename grad_traits<Model>::Prepared> anG;
           DevBuf<int>                                   anOff, anCnt, anCs;
