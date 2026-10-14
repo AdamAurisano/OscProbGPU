@@ -210,10 +210,12 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
 * Done (NuTauOsc non-unitarity fits): NUNM analytic averages with exact
   gradients. `Model::avg_sandwich(P, Ini, Fin)` (`has_avg_sandwich`): the
   amplitude Fin S Ini with fixed alpha, alpha^dag; B = Fin S0 W, rho_a from
-  Ini^dag W, extra dFin S0 W and d rho o F gradient terms. General sub-bin
-  path only (the fused cells use unitarity); no batch handles. Possible: a
-  non-unitary fused one-segment variant (all N final rows, dFin/dIni
-  tables) and batch support.
+  Ini^dag W, extra dFin S0 W and d rho o F gradient terms.
+* Done: non-unitary fused one-segment path (cell_fused/cell_weighted generic
+  over has_avg_sandwich: W = Ini^dag W0, B = Fin B0, all N final rows,
+  dB = Fin dB0 + dFin B0, initial-state term 2 Re sum_n conj(dW_an) B_bn Y_n).
+  NUNM one-segment paths use the fused kernels and cells; batch handles and
+  weighted batches work for NUNM.
 * Later (not urgent): analytic averages for more models. Needs H hermitian
   and H = A/E + V per segment with one A (read from the vacuum hamiltonian).
   SNSI: easy-moderate (A depends on density: per-segment A, dA in SegData).

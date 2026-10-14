@@ -220,9 +220,11 @@ prop.avg_path_analytic_grad(E_edges, fd, /*nubar=*/false, P, dP,
                             opg::BinVar::E);         // edges in E (or LoE, km/GeV)
 ```
 
-* NUNM's amplitude is α S α†, not unitary: it takes the general sub-bin
-  path (no fused one-segment kernels or cells) and has no batch handles
-  (`analytic_batch` throws).
+* NUNM's amplitude is Fin S Ini (α S α† with fixed α), not unitary: its
+  one-segment kernels compute all final flavours instead of taking the last
+  one from unitarity, and add the dIni/dFin gradient terms; fused paths,
+  cells and batch handles (`analytic_batch`, weighted batches) work as for
+  the unitary models.
 * Measures: uniform in E (`Linear`, the default as for `avg_path`), log E or
   1/E (`InvE`, uniform in L/E); the measure's weight enters each sub-bin
   exactly to first order.
@@ -529,7 +531,7 @@ carries three density matrices and their derivatives; OQS differentiates an
 ~17 KB of registers. The weighted modes of OQS and the hermitian models use
 reverse mode (see above), whose cost grows only weakly with the number of
 parameters: ~13 probability evaluations in total for all 43 OQS parameters,
-~20 for all 60 LIV parameters. NUNM, Decay and Deco use forward mode.
+~20 for all 60 LIV parameters. Decay and Deco use forward mode.
 
 ## Validation
 
