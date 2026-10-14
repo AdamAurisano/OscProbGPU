@@ -222,9 +222,13 @@ prop.avg_path_analytic_grad(E_edges, fd, /*nubar=*/false, P, dP,
 
 * NUNM's amplitude is Fin S Ini (α S α† with fixed α), not unitary: its
   one-segment kernels compute all final flavours instead of taking the last
-  one from unitarity, and add the dIni/dFin gradient terms; fused paths,
-  cells and batch handles (`analytic_batch`, weighted batches) work as for
-  the unitary models.
+  one from unitarity, and add the dIni/dFin gradient terms; cells and batch
+  handles (`analytic_batch`, weighted batches) work as for the unitary
+  models. On the GPU its single calls without cells take the general
+  sub-bin path, faster there with gradients (V100, 16 gradients, ~500
+  sub-bins: 0.72 vs 0.9 ms per call), so they agree with batches to
+  round-off (~1e-12) rather than bit for bit. V100 batches, 1024 points,
+  16 gradients: FD 93 ms, ND 82 ms per handle (weighted: ~70 ms).
 * Measures: uniform in E (`Linear`, the default as for `avg_path`), log E or
   1/E (`InvE`, uniform in L/E); the measure's weight enters each sub-bin
   exactly to first order.

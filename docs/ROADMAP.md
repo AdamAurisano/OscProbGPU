@@ -214,8 +214,12 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
 * Done: non-unitary fused one-segment path (cell_fused/cell_weighted generic
   over has_avg_sandwich: W = Ini^dag W0, B = Fin B0, all N final rows,
   dB = Fin dB0 + dFin B0, initial-state term 2 Re sum_n conj(dW_an) B_bn Y_n).
-  NUNM one-segment paths use the fused kernels and cells; batch handles and
-  weighted batches work for NUNM.
+  NUNM batches, weighted batches and cells use the fused kernels; GPU single
+  calls without cells stay on the general path (one thread per cell is too
+  few threads there: two- and three-stage fused variants, chunk groups per
+  thread all measured 0.85-1.0 ms vs 0.72 ms, V100, 16 grads, ~500 sub-bins).
+  The same holds for Sterile single calls (fused ~1.4 ms vs general ~1.07 ms
+  with 12 grads), kept fused for bit identity with batches (PISCES).
 * Later (not urgent): analytic averages for more models. Needs H hermitian
   and H = A/E + V per segment with one A (read from the vacuum hamiltonian).
   SNSI: easy-moderate (A depends on density: per-segment A, dA in SegData).
