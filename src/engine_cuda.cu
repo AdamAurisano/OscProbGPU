@@ -1689,6 +1689,11 @@ namespace opg {
             }
           // one segment: whole cells per device
           const bool          cells = nseg == 1 && ncell > 0;
+          // Fused kernels: one thread per cell. A sandwiched model's
+          // single calls (all final flavours, dIni/dFin terms) are faster on
+          // the general path unless cells are shared (V100: 0.72 vs 0.9 ms
+          // for ~500 sub-bins with 16 gradients); its batches stay fused.
+          const bool          fused = cells && (!has_avg_sandwich<Model>::value || ncell < ns);
           const size_t        kper  = cells ? (ncell + nd - 1) / nd : 0;
           std::vector<size_t> off(nd), cnt(nd), c0(nd), c1(nd);
           for (size_t k = 0; k < nd; k++) {
@@ -1709,7 +1714,7 @@ namespace opg {
             OPG_CUDA(cudaSetDevice(D.id));
             D.anSub.upload(D.id, sub + off[k], cnt[k], D.stream);
             D.path.upload(D.id, path, size_t(nseg), D.stream);
-            if (nseg == 1) {
+            if (fused) {
               std::vector<R>   lu;
               std::vector<int> lcs;
               if (cells) {
