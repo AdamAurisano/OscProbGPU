@@ -604,34 +604,26 @@ namespace opg {
       }
     }
 
-    /// One-segment paths: values and gradient passes of the sub-bins of a
-    /// cell (analytic::cell_fused), no per-sub-bin scratch. One thread per
-    /// cell and group of chunks [gs[g], gs[g+1]) (ngroup >= 1); group 0 also
-    /// writes the values.
+    /// One-segment paths: values and all gradient passes of the sub-bins of
+    /// a cell in one thread (analytic::cell_fused), no per-sub-bin scratch.
     template <class Model, class R, int K>
     __global__ void __launch_bounds__(64)
         analytic_fused_kernel(const typename Model::Prepared P, const Mat<Model::N, R> A,
                               const GradPrepared<Model, K>* __restrict__ G,
                               const int* __restrict__ off, const int* __restrict__ cnt,
-                              const int* __restrict__ gs, int ngroup,
-                              const Mat<Model::N, R>* __restrict__ dA, int npar,
+                              int nchunk, const Mat<Model::N, R>* __restrict__ dA, int npar,
                               const AnalyticSubBin* __restrict__ sub,
                               const R* __restrict__ uc, const int* __restrict__ cs,
                               size_t ncell, const Segment<R>* __restrict__ path, bool nubar,
                               R fast_begin, R fast_end, unsigned rows, R* __restrict__ sp,
                               R* __restrict__ sg)
     {
-      for (size_t t = blockIdx.x * size_t(blockDim.x) + threadIdx.x; t < ncell * ngroup;
-           t += size_t(gridDim.x) * blockDim.x) {
-        const size_t                k = t / ngroup;
-        const int                   g = int(t % ngroup), c0 = gs ? gs[g] : 0;
-        const int                   nc = gs ? gs[g + 1] - c0 : 0;
+      for (size_t k = blockIdx.x * size_t(blockDim.x) + threadIdx.x; k < ncell;
+           k += size_t(gridDim.x) * blockDim.x) {
         const analytic::CellView<R> cell{uc[k], sub, cs[k], cs[k + 1] - cs[k], fast_begin,
                                          fast_end};
-        analytic::cell_fused<Model, K>(P, A, G ? G + c0 : nullptr, off ? off + c0 : nullptr,
-                                       cnt ? cnt + c0 : nullptr, nc, dA, npar, path[0], nubar,
-                                       cell, rows, g == 0 ? sp : nullptr,
-                                       nc > 0 ? sg : nullptr);
+        analytic::cell_fused<Model, K>(P, A, G, off, cnt, nchunk, dA, npar, path[0], nubar, cell,
+                                       rows, sp, nchunk > 0 ? sg : nullptr);
       }
     }
 
@@ -1736,49 +1728,28 @@ namespace opg {
               const GradPrepared<Model, GK>* g  = nullptr;
               const int*                     go = nullptr;
               const int*                     gc = nullptr;
-              const int*                     gg = nullptr;
               const Mat<N, R>*               da = nullptr;
               R*                             sgd = nullptr;
-              int                            ngroup = 1;
+              int                            nchunk = 0;
               if constexpr (GT::enabled)
                 if (want_grad) {
-                  // Chunk groups of at most `cap` parameters, the largest cap
-                  // that still gives enough threads (results do not depend
-                  // on the grouping).
-                  const int        nchunk = int(coff.size());
-                  std::vector<int> gs;
-                  for (int cap = analytic::FUSED_MAXP;; cap--) {
-                    gs.assign(1, 0);
-                    for (int c = 0, nq = 0; c < nchunk; c++) {
-                      if (nq > 0 && nq + ccnt[size_t(c)] > cap) {
-                        gs.push_back(c);
-                        nq = 0;
-                      }
-                      nq += ccnt[size_t(c)];
-                    }
-                    gs.push_back(nchunk);
-                    if (cap <= GK || lu.size() * (gs.size() - 1) >= 8192) break;
-                  }
-                  ngroup = int(gs.size()) - 1;
+                  nchunk = int(coff.size());
                   D.anDA.upload(D.id, dA, size_t(npar), D.stream);
                   D.anG.upload(D.id, fPDHost.data(), fPDHost.size(), D.stream);
                   D.anOff.upload(D.id, coff.data(), coff.size(), D.stream);
                   D.anCnt.upload(D.id, ccnt.data(), ccnt.size(), D.stream);
-                  D.anGs.upload(D.id, gs.data(), gs.size(), D.stream);
                   D.pGrad.resize(D.id, cnt[k] * ng);
                   g   = D.anG.ptr;
                   go  = D.anOff.ptr;
                   gc  = D.anCnt.ptr;
-                  gg  = D.anGs.ptr;
                   da  = D.anDA.ptr;
                   sgd = D.pGrad.ptr;
                 }
               D.pOut.resize(D.id, cnt[k] * nch);
-              analytic_fused_kernel<Model, R, GK>
-                  <<<blocks_for(lu.size() * size_t(ngroup), 64), 64, 0, D.stream>>>(
-                      P, A, g, go, gc, gg, ngroup, da, npar, D.anSub.ptr, D.anUc.ptr,
-                      D.anCs.ptr, lu.size(), D.path.ptr, nubar, R(fast_begin), R(fast_end),
-                      rows, D.pOut.ptr, sgd);
+              analytic_fused_kernel<Model, R, GK><<<blocks_for(lu.size(), 64), 64, 0, D.stream>>>(
+                  P, A, g, go, gc, nchunk, da, npar, D.anSub.ptr, D.anUc.ptr, D.anCs.ptr,
+                  lu.size(), D.path.ptr, nubar, R(fast_begin), R(fast_end), rows, D.pOut.ptr,
+                  sgd);
               OPG_CUDA(cudaGetLastError());
               continue;
             }
@@ -2199,7 +2170,7 @@ namespace opg {
           DevBuf<analytic::KStateOf<Model>>                anKs;
           DevBuf<Mat<N, R>>                             anDA;
           DevBuf<typename grad_traits<Model>::Prepared> anG;
-          DevBuf<int>                                   anOff, anCnt, anCs, anGs;
+          DevBuf<int>                                   anOff, anCnt, anCs;
           DevBuf<R>                                     anUc;  ///< cells (one segment)
       };
 

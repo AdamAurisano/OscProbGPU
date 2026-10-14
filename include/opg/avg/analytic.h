@@ -968,8 +968,6 @@ namespace opg {
     /// from unitarity: sum_b Pbar_ab = F(0) = 1 exactly, so sum_b dPbar_ab = 0.
     /// A sandwiched model (has_avg_sandwich) uses W = Ini^dag W0, B = Fin B0,
     /// all final flavours, and the extra term 2 Re sum_n conj(dW_an) B_bn Y_n.
-    /// Each parameter's result does not depend on the other chunks passed, so
-    /// the chunks of a cell may be split over calls (sp = nullptr: no values).
     template <class Model, int KD>
     OPG_HD void cell_fused(const typename Model::Prepared& P,
                            const Mat<Model::N, typename Model::Real>& A,
@@ -990,11 +988,10 @@ namespace opg {
 
       FusedStateOf<Model> s;
       fused_state<Model>(P, A, seg, nubar, cell.uc, s);
-      if (sp)
-        for (int j = 0; j < cell.n; j++) {
-          fused_F(s, cell.fn(j));
-          fused_values(s, rows, sp + size_t(cell.first + j) * NK);
-        }
+      for (int j = 0; j < cell.n; j++) {
+        fused_F(s, cell.fn(j));
+        fused_values(s, rows, sp + size_t(cell.first + j) * NK);
+      }
       if (sg == nullptr || nchunk <= 0) return;
       FusedTables<N, R> t;
       fused_tables_H(s, t);
