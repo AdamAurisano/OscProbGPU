@@ -7,7 +7,7 @@ Portions derived from OscProb, Copyright (c) 2017 joaoabcoelho (MIT License).
 Exceptions: the files in include/opg/linalg/kopp/ derive from code
 Copyright (C) 2006 Joachim Kopp and are licensed under the GNU Lesser General
 Public License v2.1 or later (include/opg/linalg/kopp/COPYING), not under the
-terms below. Code in third_party/ is under its own licences.
+terms below. Code in third_party/ is under its own licenses.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

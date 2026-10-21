@@ -24,6 +24,7 @@
 // possible exception of the complex division in the QL fallback, where the
 // compiler runtime's complex division algorithm may differ in the last ulp).
 //
+// Modified by the OscProbGPU contributors, 2026-10-02 (LGPL-2.1 section 2a):
 // Changes from the original:
 //  * templated on the real type, operating on opg::Mat<3,Real>;
 //  * A is passed by const reference; Q and w are outputs;
