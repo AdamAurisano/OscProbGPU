@@ -679,5 +679,5 @@ publication, please also cite OscProb through its Zenodo record
   as included in OscProb. It remains under the **GNU LGPL v2.1 or later** (`include/opg/linalg/kopp/COPYING`),
   not the MIT terms.
 - **Vendored third-party code** in `third_party/`: nanobind (BSD-3-Clause, Copyright (c) 2022 Wenzel Jakob) and
-  doctest (MIT, Copyright (c) 2016-2023 Viktor Kirilov), each under its own licence.
+  doctest (MIT, Copyright (c) 2016-2023 Viktor Kirilov), each under its own license.
 - Everything else is MIT (see `LICENSE`).
