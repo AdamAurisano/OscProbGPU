@@ -670,14 +670,16 @@ reference all follow OscProb, and much of the physics code is a direct port. If 
 publication, please also cite OscProb through its Zenodo record
 ([![DOI](https://zenodo.org/badge/91241668.svg)](https://zenodo.org/badge/latestdoi/91241668)).
 
-- **OscProb** (MIT, Copyright (c) 2017 Joao Coelho): the portions derived from it are covered by the
-  notice in `LICENSE`. The Earth model tables in `data/` come from OscProb, which builds them from the
-  Preliminary Reference Earth Model (A. M. Dziewonski and D. L. Anderson, Phys. Earth Planet. Inter. 25
-  (1981) 297).
+- **OscProb** (MIT, Copyright (c) 2017 Joao Coelho): the portions derived from it remain subject to its
+  license as well, reproduced in `LICENSE-OscProb`. The Earth model tables in `data/` come from OscProb,
+  which builds them from the Preliminary Reference Earth Model (A. M. Dziewonski and D. L. Anderson,
+  Phys. Earth Planet. Inter. 25 (1981) 297).
 - **The 3x3 Hermitian eigensolver** in `include/opg/linalg/kopp/` is ported from Joachim Kopp's code
   (Copyright (C) 2006 Joachim Kopp; J. Kopp, Int. J. Mod. Phys. C 19 (2008) 523, arXiv:physics/0610206),
   as included in OscProb. It remains under the **GNU LGPL v2.1 or later** (`include/opg/linalg/kopp/COPYING`),
-  not the MIT terms.
+  not the BSD terms.
 - **Vendored third-party code** in `third_party/`: nanobind (BSD-3-Clause, Copyright (c) 2022 Wenzel Jakob) and
   doctest (MIT, Copyright (c) 2016-2023 Viktor Kirilov), each under its own license.
-- Everything else is MIT (see `LICENSE`).
+- The source code is licensed under the **BSD 3-Clause License** (`LICENSE`), Copyright (c) 2026,
+  University of Cincinnati.
+- The documentation (this README and `docs/`) is licensed under **CC BY 4.0** (`LICENSE-docs`).
