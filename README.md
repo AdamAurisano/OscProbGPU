@@ -163,7 +163,7 @@ flavour indices 0 = e, 1 = μ, 2 = τ, 3 = s.
 
 | Model | Per-segment evolution |
 |-------|-----------------------|
-| Fast, NSI, NUNM, SNSI, LIV | Kopp's `zheevh3` (Cardano + QL fallback), ported bit-exactly; vacuum (ρ < 1e-6) uses the analytic PMNS eigensystem as OscProb (not for LIV, whose terms persist in vacuum) |
+| Fast, NSI, NUNM, SNSI, LIV | `eigh3`: analytic (trigonometric Cardano eigenvalues, eigenvectors from row cross products) on the matrix scaled to O(1), Jacobi for near-degenerate matrices; with `OPG_OSCPROB_BITWISE`, Kopp's `zheevh3` ported bit-exactly. Vacuum (ρ < 1e-6) uses the analytic PMNS eigensystem as OscProb (not for LIV, whose terms persist in vacuum) |
 | Sterile (4x4) | cyclic complex Jacobi with Numerical Recipes' stable update, fully unrolled (register-resident) |
 | Decay | `exp(-iHL)` by scaling and squaring with Padé degree 3–13 and Eigen's thresholds (Higham 2005), LU with partial pivoting |
 
@@ -562,14 +562,18 @@ Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and 
 | NUNM (scale 1) | 4e-14 | 5e-14 | see note below |
 | Sterile 3+1 | 1.1e-11 | 1.1e-11 | dominated by round-off amplified by phases ~1e4 rad at Δm²₄₁ = 1.3 eV²; against a long-double calculation ours is 3–4x closer than OscProb in 3 of 4 test cases and comparable in the 4th |
 | Decay | 1e-14 | 1.6e-14 | |
-| LIV | 7.9e-12 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
-| SNSI | 1.2e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
-| Deco | 9e-14 (**0** with `OPG_OSCPROB_BITWISE`) | 9e-14 | |
-| SiderealLIV | 1.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.8e-13 | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
+| LIV | 7.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
+| SNSI | 3.3e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
+| Deco | 1.4e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 9e-14 | |
+| SiderealLIV | 1.6e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.8e-13 | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
 | OQS | 2.9e-15 | 4.3e-14 | the 8x8 exponential follows Eigen's MatrixExponential (same Padé degrees and scaling), with a different summation order |
 
-Other checks: the ported Kopp eigensolver is bit-identical to OscProb's
-`MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;
+The CPU column was measured with `eigh3` (2026-10-27), the GPU column with the
+rescaled `zheevh3` it replaced; both are dominated by OscProb's own round-off.
+
+Other checks: `eigh3` has an eigen-residual below 3e-13 relative on random,
+degenerate and near-degenerate matrices (1e-14 on atmospheric Hamiltonians);
+the ported Kopp eigensolver is bit-identical to OscProb's `MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;
 PREM paths are bit-identical; `expm` agrees with Eigen to 1e-15; multi-GPU
 results are bit-identical to single-GPU; bin averages agree with a 400²
 brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
@@ -580,11 +584,14 @@ brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
 * **No eigensystem cache.** On the GPU recomputation is cheaper. (OscProb's
   cache also rescales cached eigenvalues by E_cached/E, which differs from a
   fresh computation at the ulp level.)
-* **Rescaled 3x3 eigensolver.** OscProb calls Kopp's `zheevh3` on the raw
+* **Own 3x3 eigensolver.** OscProb calls Kopp's `zheevh3` on the raw
   Hamiltonian in eV (~1e-12); its error test, designed for O(1) matrices,
-  then *always* takes the iterative QL fallback. We rescale H to O(1) first
-  (2.2x faster on V100; P agrees to ~1e-13). `OPG_OSCPROB_BITWISE=ON` restores
-  OscProb's exact call.
+  then *always* takes the iterative QL fallback. We use `eigh3`
+  (`include/opg/linalg/eigh3.h`), an analytic solver on H scaled to O(1) with
+  a Jacobi fallback near degeneracy: ~40x more accurate than the rescaled
+  `zheevh3` on atmospheric Hamiltonians (eigen-residual 1e-14 against 4e-13)
+  and BSD-licensed; P agrees with OscProb to ~1e-13.
+  `OPG_OSCPROB_BITWISE=ON` restores OscProb's exact call to the Kopp port.
 * **NUNM high-scale normalisation** is applied once when parameters are set.
   OscProb normalises α inside `PropagatePath`, after the initial state has
   already been rotated by the *unnormalised* α, so the first call on a fresh
@@ -649,7 +656,7 @@ Levenberg–Marquardt iterations in 0.06 s on one V100.
 
 ```
 include/opg/core      Complex, Mat/Vec, constants, macros
-include/opg/linalg    zheevh3 (Kopp, LGPL), Jacobi, expm, general 3x3 eigensystem
+include/opg/linalg    eigh3, Jacobi, expm, general 3x3 eigensystem; kopp/ (zheevh3, LGPL, bitwise mode only)
 include/opg/physics   mixing (BuildHms port), propagation, gradients
 include/opg/models    fast, nsi, nunm, sterile, decay
 include/opg/earth     PremModel and on-device path walker
@@ -677,7 +684,8 @@ publication, please also cite OscProb through its Zenodo record
 - **The 3x3 Hermitian eigensolver** in `include/opg/linalg/kopp/` is ported from Joachim Kopp's code
   (Copyright (C) 2006 Joachim Kopp; J. Kopp, Int. J. Mod. Phys. C 19 (2008) 523, arXiv:physics/0610206),
   as included in OscProb. It remains under the **GNU LGPL v2.1 or later** (`include/opg/linalg/kopp/COPYING`),
-  not the BSD terms.
+  not the BSD terms. It is compiled only with `OPG_OSCPROB_BITWISE` (bit-for-bit OscProb reproduction); the
+  default build uses `eigh3` and contains no LGPL code.
 - **Vendored third-party code** in `third_party/`: nanobind (BSD-3-Clause, Copyright (c) 2022 Wenzel Jakob) and
   doctest (MIT, Copyright (c) 2016-2023 Viktor Kirilov), each under its own license.
 - The source code is licensed under the **BSD 3-Clause License** (`LICENSE`), Copyright (c) 2026,
