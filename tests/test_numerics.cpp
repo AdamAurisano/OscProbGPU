@@ -15,6 +15,7 @@
 #include "opg/propagator.h"
 #include "opg/linalg/expm.h"
 #include "opg/physics/eigen_grad_general.h"
+#include "opg/linalg/eigh3.h"
 #include "opg/linalg/jacobi_herm.h"
 #include "opg/models/decay.h"
 #include "opg/linalg/kopp/zheevh3.h"
@@ -89,6 +90,87 @@ TEST_CASE("zheevh3 port: eigen-decomposition is correct")
     for (int i = 0; i < 3; i++)
       for (int j = 0; j < 3; j++) amax = std::max(amax, opg::abs(A(i, j)));
     CHECK(eig_residual(A, Q, w) <= 1e-12 * amax);
+  }
+}
+
+//.............................................................................
+TEST_CASE("eigh3: eigen-decomposition is correct, including near-degenerate spectra")
+{
+  std::mt19937_64                        rng(43);
+  std::uniform_real_distribution<double> u(-1, 1);
+  int                                    nfallback = 0;
+  for (int t = 0; t < 4000; t++) {
+    double scale = std::pow(10.0, -14 + 2 * (t % 8));
+    M3     A;
+    if (t % 2 == 0)
+      A = random_hermitian(rng, scale, t % 4 == 2);
+    else {
+      // W diag(l) W^dag with a random unitary W and a pair of eigenvalues
+      // 10^-g apart (g = 0 ... 14): the analytic path down to its threshold,
+      // then the Jacobi fallback.
+      const int g = (t / 2) % 15;
+      M3        W = M3::zero();
+      for (int c = 0; c < 3; c++) {
+        for (int r = 0; r < 3; r++) W(r, c) = C(u(rng), u(rng));
+        for (int c2 = 0; c2 < c; c2++) {
+          C d(0, 0);
+          for (int r = 0; r < 3; r++) d += opg::conj(W(r, c2)) * W(r, c);
+          for (int r = 0; r < 3; r++) W(r, c) -= d * W(r, c2);
+        }
+        double nn = 0;
+        for (int r = 0; r < 3; r++) nn += opg::norm(W(r, c));
+        for (int r = 0; r < 3; r++) W(r, c) = W(r, c) * (1 / std::sqrt(nn));
+      }
+      const double l0 = u(rng), l[3] = {l0, l0 + std::pow(10.0, -g) * u(rng), u(rng)};
+      A = M3::zero();
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) {
+          C s(0, 0);
+          for (int k = 0; k < 3; k++) s += W(i, k) * opg::conj(W(j, k)) * (l[k] * scale);
+          A(i, j) = s;
+        }
+      opg::hermitize_from_upper(A);
+    }
+    M3     Q;
+    double w[3];
+    nfallback += opg::eigh3<double>(A, Q, w);
+    double amax = 0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) amax = std::max(amax, opg::abs(A(i, j)));
+    CAPTURE(t);
+    CHECK(eig_residual(A, Q, w) <= 1e-12 * amax);
+    double orth = 0;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) {
+        C d(0, 0);
+        for (int k = 0; k < 3; k++) d += opg::conj(Q(k, i)) * Q(k, j);
+        orth = std::max(orth, opg::abs(d - C(i == j ? 1 : 0)));
+      }
+    CHECK(orth <= 1e-14);
+    CHECK(std::fabs(w[0] + w[1] + w[2] - (A(0, 0).re + A(1, 1).re + A(2, 2).re)) <= 1e-13 * amax);
+  }
+  // Both paths are exercised.
+  CHECK(nfallback > 100);
+  CHECK(nfallback < 3500);
+
+  // Single precision, generic matrices.
+  for (int t = 0; t < 1000; t++) {
+    const M3              A = random_hermitian(rng, std::pow(10.0, -12 + 2 * (t % 6)), false);
+    opg::Mat<3, float>    Af, Qf;
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++) Af(i, j) = opg::Complex<float>(float(A(i, j).re), float(A(i, j).im));
+    float wf[3];
+    opg::eigh3<float>(Af, Qf, wf);
+    M3     Q;
+    double w[3], amax = 0;
+    for (int i = 0; i < 3; i++) {
+      w[i] = wf[i];
+      for (int j = 0; j < 3; j++) {
+        Q(i, j) = C(Qf(i, j).re, Qf(i, j).im);
+        amax    = std::max(amax, opg::abs(A(i, j)));
+      }
+    }
+    CHECK(eig_residual(A, Q, w) <= 1e-5 * amax);
   }
 }
 
