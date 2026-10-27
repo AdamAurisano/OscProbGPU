@@ -6,7 +6,8 @@
 ///        (PMNS_Fast, PMNS_NSI, PMNS_NUNM).
 ///
 /// In matter, the Hamiltonian built by the model's hamiltonian() is
-/// diagonalised with the ported Kopp zheevh3. For densities below 1e-6
+/// diagonalised with the analytic eigh3 (linalg/eigh3.h), or with the
+/// ported Kopp zheevh3 under OPG_OSCPROB_BITWISE. For densities below 1e-6
 /// g/cm^3, OscProb uses the analytic vacuum eigensystem
 /// (PMNS_Fast::SetVacuumEigensystem), which we precompute in prepare().
 ///////////////////////////////////////////////////////////////////////////////
@@ -19,7 +20,10 @@
 #include <type_traits>
 
 #include "opg/core/constants.h"
+#include "opg/linalg/eigh3.h"
+#ifdef OPG_OSCPROB_BITWISE
 #include "opg/linalg/kopp/zheevh3.h"
+#endif
 #include "opg/physics/eigen_grad.h"
 #include "opg/physics/mixing.h"
 #include "opg/physics/propagate.h"
@@ -91,48 +95,27 @@ namespace opg {
     prepare_hermitian3_generic<R>(cast_mixing<R>(p), c);
   }
 
-  /// Diagonalise a hermitian 3x3 matrix (upper triangle) with zheevh3.
+  /// Diagonalise a hermitian 3x3 matrix (upper triangle).
   ///
-  /// Hamiltonians in eV are O(1e-12). Kopp's zheevh3 decides whether to
-  /// trust Cardano's analytic solution with an absolute error estimate made
-  /// for O(1) matrices, so OscProb, which calls it on the raw Hamiltonian,
-  /// always falls back to the slower iterative QL algorithm (and in single
-  /// precision the cubic invariants would underflow). We therefore rescale
-  /// H to O(1) first; near-degenerate cases still fall back to QL. This is
-  /// ~2x faster on GPUs and agrees with OscProb to round-off (~1e-13 in P).
+  /// By default with eigh3 (analytic, BSD; Jacobi for near-degenerate
+  /// matrices), which scales H to O(1) itself (Hamiltonians in eV are
+  /// O(1e-12)). It replaced the rescaled Kopp zheevh3 on 2026-10-27: on
+  /// atmospheric Hamiltonians ~20% slower per call on the CPU but ~40x more
+  /// accurate (eigen-residual 1e-14 against 4e-13, and zheevh3 reaches 1e-3
+  /// on some generic matrices).
   /// Define OPG_OSCPROB_BITWISE (CMake option of the same name) to call
-  /// zheevh3 on the unscaled matrix in double precision, which reproduces
-  /// OscProb bit-for-bit on the CPU.
+  /// the ported Kopp zheevh3 (LGPL) on the unscaled matrix in double
+  /// precision, which reproduces OscProb bit-for-bit on the CPU.
   template <class R>
   OPG_HD OPG_INLINE void diagonalize3(Mat<3, R>& H, Mat<3, R>& V, R lam[3])
   {
 #ifdef OPG_OSCPROB_BITWISE
-    if constexpr (sizeof(R) < sizeof(double)) {
-#else
-    if constexpr (true) {
+    if constexpr (sizeof(R) >= sizeof(double)) {
+      kopp::zheevh3(H, V, lam);
+      return;
+    }
 #endif
-      R sc = 0;
-      OPG_UNROLL
-      for (int i = 0; i < 3; i++)
-        OPG_UNROLL
-      for (int j = i; j < 3; j++) {
-        using std::fmax;
-        sc = fmax(sc, abs(H(i, j)));
-      }
-      if (sc > 0) {
-        R inv = R(1) / sc;
-        OPG_UNROLL
-        for (int i = 0; i < 3; i++)
-          OPG_UNROLL
-        for (int j = i; j < 3; j++) H(i, j) *= inv;
-      }
-      kopp::zheevh3(H, V, lam);
-      OPG_UNROLL
-      for (int i = 0; i < 3; i++) lam[i] *= sc;
-    }
-    else {
-      kopp::zheevh3(H, V, lam);
-    }
+    eigh3<R>(H, V, lam);
   }
 
   /// Whether a model uses PMNS_Fast's analytic vacuum eigensystem for

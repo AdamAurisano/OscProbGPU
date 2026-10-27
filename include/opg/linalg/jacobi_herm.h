@@ -18,9 +18,20 @@
 #include <cmath>
 
 #include "opg/core/matrix.h"
-#include "opg/linalg/kopp/zheevh3.h"  // kopp::Eps
 
 namespace opg {
+
+  /// Machine epsilon, usable in device code.
+  template <class R> struct MachineEps;
+  template <> struct MachineEps<double> {
+      static constexpr double value = 2.2204460492503131e-16;
+  };
+  template <> struct MachineEps<float> {
+      static constexpr float value = 1.19209290e-07f;
+  };
+  template <> struct MachineEps<long double> {
+      static constexpr long double value = 1.0842021724855044340e-19L;
+  };
 
   /// Diagonalise the hermitian matrix A (only the diagonal and the upper
   /// triangle are read). On output V holds the eigenvectors as columns and
@@ -39,7 +50,7 @@ namespace opg {
     for (int i = 0; i < N; i++)
       OPG_UNROLL
     for (int j = 0; j < N; j++) fro2 += norm(A(i, j));
-    const R eps  = kopp::Eps<R>::value;
+    const R eps  = MachineEps<R>::value;
     const R tol2 = eps * eps * fro2 * R(1e-2);
 
     int sweep = 0;
