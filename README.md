@@ -570,6 +570,7 @@ Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and 
 
 The CPU column was measured with `eigh3` (2026-10-27), the GPU column with the
 rescaled `zheevh3` it replaced; both are dominated by OscProb's own round-off.
+On the GPU `eigh3` passes the same suite (GTX 1650 Ti).
 
 Other checks: `eigh3` has an eigen-residual below 3e-13 relative on random,
 degenerate and near-degenerate matrices (1e-14 on atmospheric Hamiltonians);
@@ -633,6 +634,14 @@ and `reference/bench_oscprob.cxx`.
 ¹ Intel Core Ultra 5 225H (a different machine from the GPU host), so the last
 column is indicative. GPU times exclude the one-off set-up (context creation,
 uploads) and the device-to-host copy of the 144 MB result (~12 ms).
+
+The V100 numbers were measured with the rescaled Kopp `zheevh3`. Its
+replacement `eigh3` (the default since 2026-10-27; see
+[Differences from OscProb](#differences-from-oscprob)) is about 20% slower in
+the 3x3 hermitian models on the GPU (GTX 1650 Ti: Fast probabilities 1.28 s
+against 1.05 s, weighted gradient 5.9 s against 5.0 s, binned 0.29 s against
+0.24 s) and about 12% slower end to end in a CPU fit. `OPG_OSCPROB_BITWISE=ON`
+restores the Kopp solver.
 
 Binned: 40 x 20 bins with 8 nodes per direction (and per layer piece):
 5.4 ms per evaluation on 1 V100, 3.4 ms on 2 (4.3 s single-thread CPU).
