@@ -160,6 +160,26 @@ namespace opg {
       }
     }
 
+    /// The Gauss-Legendre average of bin (icb, ieb) of one channel's node
+    /// grid pc[nCn][nEn].
+    template <class R>
+    __device__ inline R reduce_bin(const R* __restrict__ pc, size_t nEn,
+                                   const R* __restrict__ wE, const R* __restrict__ wC,
+                                   const size_t* __restrict__ offC, int nglE, size_t icb,
+                                   size_t ieb)
+    {
+      R acc = 0;
+      for (size_t rc = offC[icb]; rc < offC[icb + 1]; rc++) {
+        R rowacc = 0;
+        for (int i = 0; i < nglE; i++) {
+          const size_t ce = ieb * nglE + i;
+          rowacc += wE[ce] * pc[rc * nEn + ce];
+        }
+        acc += wC[rc] * rowacc;
+      }
+      return acc;
+    }
+
     /// Weighted Gauss-Legendre reduction of a node grid into bin averages.
     /// node: [2][nch_nb][nCn][nEn] (local C nodes), out: [2][nch_nb][nCb][nEb]
     /// (nch_nb = N*N for probabilities, npar*N*N for gradients).
@@ -174,19 +194,31 @@ namespace opg {
       const size_t ieb = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
       if (ieb >= nEb) return;
       const int ch = blockIdx.z + nb_first * nch_nb;  // channel incl. nubar
-      for (size_t icb = blockIdx.y; icb < nCb; icb += gridDim.y) {
-        const R* pc  = node + size_t(ch) * nCn * nEn;
-        R        acc = 0;
-        for (size_t rc = offC[icb]; rc < offC[icb + 1]; rc++) {
-          R rowacc = 0;
-          for (int i = 0; i < nglE; i++) {
-            const size_t ce = ieb * nglE + i;
-            rowacc += wE[ce] * pc[rc * nEn + ce];
-          }
-          acc += wC[rc] * rowacc;
-        }
-        out[(size_t(ch) * nCb + icb) * nEb + ieb] = acc;
-      }
+      for (size_t icb = blockIdx.y; icb < nCb; icb += gridDim.y)
+        out[(size_t(ch) * nCb + icb) * nEb + ieb] =
+            reduce_bin(node + size_t(ch) * nCn * nEn, nEn, wE, wC, offC, nglE, icb, ieb);
+    }
+
+    /// reduce_bins_kernel for a batch of points: blockIdx.z = point * nz +
+    /// the channel among the computed halves (nz of them); each point's node
+    /// and output slabs follow the single-point layouts (2 * nch_nb channels).
+    template <class R>
+    __global__ void reduce_bins_batch_kernel(const R* __restrict__ node, size_t nCn,
+                                             size_t nEn, const R* __restrict__ wE,
+                                             const R* __restrict__ wC,
+                                             const size_t* __restrict__ offC, int nglE,
+                                             size_t nEb, size_t nCb, int nb_first, int nch_nb,
+                                             int nz, R* __restrict__ out)
+    {
+      const size_t ieb = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
+      if (ieb >= nEb) return;
+      const size_t p     = blockIdx.z / nz;
+      const int    ch    = int(blockIdx.z % nz) + nb_first * nch_nb;
+      const size_t nchan = 2 * size_t(nch_nb);
+      const R*     pn    = node + (p * nchan + ch) * nCn * nEn;
+      R*           po    = out + (p * nchan + ch) * nCb * nEb;
+      for (size_t icb = blockIdx.y; icb < nCb; icb += gridDim.y)
+        po[icb * nEb + ieb] = reduce_bin(pn, nEn, wE, wC, offC, nglE, icb, ieb);
     }
 
     //.........................................................................
@@ -246,6 +278,76 @@ namespace opg {
         store_model_grads<Model, R, K>(S, dS, count,
                              grad + (size_t(nb) * npar + offset) * N * N * stride + pt,
                              stride);
+      }
+    }
+
+    /// The Earth of point p of a batch: per-point densities and Z/A when
+    /// given (rows of earth.nlayers), the shared radii and types.
+    template <class R>
+    __device__ inline EarthView<R> batch_earth(EarthView<R> earth, const R* dens, const R* zoa,
+                                               size_t p)
+    {
+      if (dens) {
+        earth.density = dens + p * earth.nlayers;
+        earth.zoa     = zoa + p * earth.nlayers;
+      }
+      return earth;
+    }
+
+    /// grid_kernel for a batch of points: x runs over points x E nodes
+    /// (packed, so blocks stay full when nE is small), y over C rows, z over
+    /// the halves. Point p writes the single-point node layout at
+    /// out + p * 2 N^2 nC nE.
+    template <class Model, class R>
+    __global__ void grid_batch_kernel(const typename Model::Prepared* __restrict__ P,
+                                      const EarthView<R> earth, const R* __restrict__ dens,
+                                      const R* __restrict__ zoa, const R* __restrict__ E,
+                                      int nE, const R* __restrict__ C, int nC, int nb_first,
+                                      size_t npts, R* __restrict__ out)
+    {
+      constexpr int N = Model::N;
+      const size_t  t = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
+      if (t >= npts * nE) return;
+      const size_t       p      = t / nE;
+      const int          ie     = int(t % nE);
+      const int          nb     = nb_first + blockIdx.z;
+      const size_t       stride = size_t(nC) * nE;
+      const EarthView<R> e      = batch_earth(earth, dens, zoa, p);
+      R* base = out + (p * 2 + nb) * N * N * stride;
+      for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+        auto S = evolve_prem<Model, R>(P[p], e, E[ie], C[ic], nb == 1);
+        store_model_probs<Model, R>(S, base + size_t(ic) * nE + ie, stride);
+      }
+    }
+
+    /// grid_grad_kernel for a batch of points (layout as grid_batch_kernel):
+    /// gradient pass c of point p is PD[p * nchunk + c].
+    template <class Model, class R, int K>
+    __global__ void grid_grad_batch_kernel(
+        const typename Model::Prepared* __restrict__ P,
+        const typename grad_traits<Model>::Prepared* __restrict__ PD, int nchunk, int c,
+        const EarthView<R> earth, const R* __restrict__ dens, const R* __restrict__ zoa,
+        const R* __restrict__ E, int nE, const R* __restrict__ C, int nC, int nb_first, int npar,
+        int offset, int count, bool write_probs, size_t npts, R* __restrict__ probs,
+        R* __restrict__ grad)
+    {
+      constexpr int N = Model::N;
+      const size_t  t = blockIdx.x * size_t(blockDim.x) + threadIdx.x;
+      if (t >= npts * nE) return;
+      const size_t       p      = t / nE;
+      const int          ie     = int(t % nE);
+      const int          nb     = nb_first + blockIdx.z;
+      const size_t       stride = size_t(nC) * nE;
+      const EarthView<R> e      = batch_earth(earth, dens, zoa, p);
+      const auto&        pd     = PD[p * nchunk + c];
+      for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+        StateOf<Model> S, dS[K];
+        evolve_prem_grad<Model, R, K>(P[p], pd, e, E[ie], C[ic], nb == 1, S, dS);
+        const size_t pt = size_t(ic) * nE + ie;
+        if (write_probs)
+          store_model_probs<Model, R>(S, probs + (p * 2 + nb) * N * N * stride + pt, stride);
+        store_model_grads<Model, R, K>(
+            S, dS, count, grad + ((p * 2 + nb) * npar + offset) * N * N * stride + pt, stride);
       }
     }
 
@@ -1415,6 +1517,115 @@ namespace opg {
         return fDev[k]->bgslab.probs.ptr;
       }
 
+      /// Points are processed in sub-batches whose node scratch stays below
+      /// kBnScratch; each point runs the single-point kernels' code on its own
+      /// inputs, so results do not depend on the batch.
+      void binned_batch(size_t npts, const Prepared* P, const GradChunk<Model>* G, int nchunk,
+                        int npar, const R* dens, const R* zoa, Flavor which, R* out, R* dout,
+                        void* stream) override
+      {
+        if (fDev.size() != 1)
+          throw std::logic_error("OscProbGPU: batched bin averages need a propagator on one "
+                                 "device");
+        if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+        const bool want = nchunk > 0 && npar > 0 && dout != nullptr;
+        if (want && !GT::enabled) this->no_grad();
+        const int lo = (int(which) & 1) ? 0 : 1;
+        const int hi = (int(which) & 2) ? 1 : 0;
+        if (hi < lo || npts == 0) return;
+        Device&      D  = *fDev[0];
+        const int    id = D.id;
+        BnBatch&     B  = fBn;
+        cudaStream_t st = stream ? static_cast<cudaStream_t>(stream) : D.stream;
+        OPG_CUDA(cudaSetDevice(id));
+        if (!B.ev) {
+          OPG_CUDA(cudaEventCreateWithFlags(&B.ev, cudaEventDisableTiming));
+          B.dev = id;
+        }
+        // the pinned staging of the previous call must have been consumed
+        OPG_CUDA(cudaEventSynchronize(B.ev));
+        const size_t nl = size_t(D.earth.nlayers);
+        ensure(B.hP, npts);
+        std::copy(P, P + npts, B.hP.ptr);
+        if constexpr (GT::enabled)
+          if (want) {
+            ensure(B.hG, npts * size_t(nchunk));
+            for (size_t i = 0; i < npts * size_t(nchunk); i++) B.hG.ptr[i] = G[i].P;
+          }
+        if (dens) {
+          ensure(B.hDens, npts * nl);
+          ensure(B.hZoa, npts * nl);
+          std::copy(dens, dens + npts * nl, B.hDens.ptr);
+          std::copy(zoa, zoa + npts * nl, B.hZoa.ptr);
+        }
+        const size_t nEn = fBins.nodesE.size(), nrow = D.nodes.C.n, ncb = D.binned.rows.size();
+        const size_t nEb = fBins.nEb, nch = size_t(N) * N, nq = want ? size_t(npar) * nch : 0;
+        const int    nzP = (hi - lo + 1) * int(nch), nzG = (hi - lo + 1) * int(nq);
+        const size_t per_pt = 2 * (nch + nq) * nrow * nEn * sizeof(R);
+        size_t       mp = std::max<size_t>(1, std::min(npts, kBnScratch / per_pt));
+        mp = std::max<size_t>(1, std::min<size_t>(mp, 65535 / size_t(std::max(nzP, nzG))));
+        ensure(B.P, id, mp);
+        ensure(B.node, id, mp * 2 * nch * nrow * nEn);
+        if (want) {
+          ensure(B.G, id, mp * size_t(nchunk));
+          ensure(B.ngrad, id, mp * 2 * nq * nrow * nEn);
+        }
+        if (dens) {
+          ensure(B.dens, id, mp * nl);
+          ensure(B.zoa, id, mp * nl);
+        }
+        for (size_t p0 = 0; p0 < npts; p0 += mp) {
+          const size_t n = std::min(mp, npts - p0);
+          OPG_CUDA(cudaMemcpyAsync(B.P.ptr, B.hP.ptr + p0, n * sizeof(Prepared),
+                                   cudaMemcpyHostToDevice, st));
+          if constexpr (GT::enabled)
+            if (want)
+              OPG_CUDA(cudaMemcpyAsync(B.G.ptr, B.hG.ptr + p0 * size_t(nchunk),
+                                       n * size_t(nchunk) * sizeof(*B.G.ptr),
+                                       cudaMemcpyHostToDevice, st));
+          if (dens) {
+            OPG_CUDA(cudaMemcpyAsync(B.dens.ptr, B.hDens.ptr + p0 * nl, n * nl * sizeof(R),
+                                     cudaMemcpyHostToDevice, st));
+            OPG_CUDA(cudaMemcpyAsync(B.zoa.ptr, B.hZoa.ptr + p0 * nl, n * nl * sizeof(R),
+                                     cudaMemcpyHostToDevice, st));
+          }
+          const R* dd = dens ? B.dens.ptr : nullptr;
+          const R* dz = dens ? B.zoa.ptr : nullptr;
+          dim3     block(kBlockE);
+          dim3     grid(unsigned((n * nEn + kBlockE - 1) / kBlockE),
+                        unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
+          if (!want || kSepP) {
+            grid_batch_kernel<Model, R><<<grid, block, 0, st>>>(
+                B.P.ptr, D.earth, dd, dz, D.nodes.E.ptr, int(nEn), D.nodes.C.ptr, int(nrow), lo,
+                n, B.node.ptr);
+            OPG_CUDA(cudaGetLastError());
+          }
+          if constexpr (GT::enabled)
+            if (want)
+              for (int c = 0; c < nchunk; c++) {
+                grid_grad_batch_kernel<Model, R, GK><<<grid, block, 0, st>>>(
+                    B.P.ptr, B.G.ptr, nchunk, c, D.earth, dd, dz, D.nodes.E.ptr, int(nEn),
+                    D.nodes.C.ptr, int(nrow), lo, npar, G[c].offset, G[c].count,
+                    c == 0 && !kSepP, n, B.node.ptr, B.ngrad.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+          dim3 rgrid(unsigned((nEb + 63) / 64), unsigned(std::min<size_t>(ncb, 65535)),
+                     unsigned(n * size_t(nzP)));
+          reduce_bins_batch_kernel<R><<<rgrid, 64, 0, st>>>(
+              B.node.ptr, nrow, nEn, D.wE.ptr, D.wC.ptr, D.offC.ptr, fBins.nglE, nEb, ncb, lo,
+              int(nch), nzP, out + p0 * 2 * nch * ncb * nEb);
+          OPG_CUDA(cudaGetLastError());
+          if (want) {
+            rgrid.z = unsigned(n * size_t(nzG));
+            reduce_bins_batch_kernel<R><<<rgrid, 64, 0, st>>>(
+                B.ngrad.ptr, nrow, nEn, D.wE.ptr, D.wC.ptr, D.offC.ptr, fBins.nglE, nEb, ncb,
+                lo, int(nq), nzG, dout + p0 * 2 * nq * ncb * nEb);
+            OPG_CUDA(cudaGetLastError());
+          }
+        }
+        OPG_CUDA(cudaEventRecord(B.ev, st));
+      }
+
       void weighted_grad_binned(const Prepared& P, const Chunks& chunks, int npar,
                                 Flavor which, const R* w, R* g) override
       {
@@ -2403,6 +2614,27 @@ namespace opg {
       bool                                 fHaveEarth   = false;
       bool                                 fHostValid   = false;
       bool                                 fBinnedValid = false;
+
+      /// Staging and scratch of binned_batch (the event: staging in use).
+      struct BnBatch {
+          PinnedBuf<Prepared>                              hP;
+          PinnedBuf<typename grad_traits<Model>::Prepared> hG;
+          PinnedBuf<R>                                     hDens, hZoa;
+          DevBuf<Prepared>                                 P;
+          DevBuf<typename grad_traits<Model>::Prepared>    G;
+          DevBuf<R>                                        dens, zoa, node, ngrad;
+          int                                              dev = -1;
+          cudaEvent_t                                      ev  = nullptr;
+          ~BnBatch()
+          {
+            if (ev) {
+              cudaSetDevice(dev);
+              cudaEventDestroy(ev);
+            }
+          }
+      };
+      BnBatch fBn;
+      static constexpr size_t kBnScratch = size_t(512) << 20;  ///< node scratch per call (bytes)
   };
 
   //...........................................................................

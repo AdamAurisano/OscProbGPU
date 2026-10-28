@@ -195,6 +195,30 @@ Measured on the reference bins (`tests/test_averaging.cpp`), error vs order:
 (The E column is dominated by a 1–1.5 GeV core-crossing bin spanning ~2
 oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 
+**Batched parameter points** (fits, samplers): a coarse grid fills a GPU
+poorly, one launch per parameter point (40 x 20 bins with 1 x 5 nodes is
+8000 paths, 200 blocks of 64 threads). `calculate_binned_batch()` evaluates
+many points per launch, with the E nodes of all points packed into the
+blocks, and each point may have its own Earth (layer densities and Z/A, e.g.
+for fitted Earth parameters):
+
+```cpp
+prop.set_bins(E_edges, cosZ_edges, 1, 5);           // as for calculate_binned()
+prop.set_gradient_params({"th23", "dm31"});
+std::vector<opg::PremModel> earths = ...;          // optional, one per point
+// out[p][nubar][a][b][iCb][iEb], dout[p][nubar][q][a][b][iCb][iEb] in device memory
+prop.calculate_binned_batch(points, &earths, out_dev, dout_dev, stream);
+```
+
+A point's result is bit-identical to `set_params()` (and `set_earth()`)
+followed by `calculate_binned()` for it alone, whatever the batch; the
+per-point Earths must have the layers of `earth()` (only densities and Z/A
+may differ). One device per propagator; points are processed in sub-batches
+whose node scratch stays below 512 MB. `binned_batch()` gives the same into
+host vectors on any backend, one point at a time. On a V100 (Fast, 40 x 20
+bins at 1 x 5 nodes, with gradients, batches of about 25 points) this is
+0.25 ms per point, against 1.39 ms with one point per call.
+
 ### Analytic averages (fixed paths)
 
 `avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, NUNM, Sterile;

@@ -458,6 +458,97 @@ namespace opg {
       size_t n_energy_bins() const { return fNEb; }
       size_t n_cosine_bins() const { return fNCb; }
 
+      //.......................................................................
+      // Batched bin averages: many parameter points per launch on one GPU,
+      // each with the propagator's Earth or its own layer densities and Z/A.
+      // A point's result is that of set_params (and set_earth) followed by
+      // calculate_binned for it alone, whatever the batch.
+
+      /// out (device memory of the propagator's GPU): avg[p][nubar][a][b][iCb][iEb]
+      /// (binned()'s layout per point); dout (nullptr: values only):
+      /// grad[p][nubar][q][a][b][iCb][iEb] for the selected gradient
+      /// parameters (binned_grad()'s layout per point). earths: nullptr (all
+      /// points use earth()), or one per point with the layers of earth(), of
+      /// which only densities and Z/A may differ. Asynchronous on `stream`
+      /// (nullptr: the propagator's); the inputs are staged before return.
+      /// Halves outside `which` are not written. Needs a propagator on one
+      /// device.
+      void calculate_binned_batch(const std::vector<Params>& points,
+                                  const std::vector<PremModel>* earths, R* out,
+                                  R* dout = nullptr, void* stream = nullptr,
+                                  Flavor which = Flavor::Both)
+      {
+        if (!on_gpu())
+          throw std::logic_error("calculate_binned_batch: device output needs the CUDA "
+                                 "backend (binned_batch: host output on any backend)");
+        if (fNCb == 0) throw std::logic_error("calculate_binned_batch: call set_bins first");
+        const bool want = dout != nullptr;
+        if (want && fGradIdx.empty())
+          throw std::logic_error("calculate_binned_batch: gradients requested but no "
+                                 "parameters selected (set_gradient_params)");
+        const size_t np = points.size();
+        if (np == 0) return;
+        if (earths && earths->size() != np)
+          throw std::invalid_argument("calculate_binned_batch: one Earth per point");
+        int nchunk = 0;
+        if (want) {
+          std::vector<GradChunk<Model>> c0;
+          build_chunks(points[0], c0);
+          nchunk = int(c0.size());
+        }
+        std::vector<Prepared>         P(np);
+        std::vector<GradChunk<Model>> G(np * size_t(nchunk));
+#pragma omp parallel for schedule(static)
+        for (long p = 0; p < long(np); p++) {
+          P[size_t(p)] = Model::prepare(points[size_t(p)]);
+          if (want) {
+            std::vector<GradChunk<Model>> ch;
+            build_chunks(points[size_t(p)], ch);
+            std::copy(ch.begin(), ch.end(), G.begin() + long(p) * nchunk);
+          }
+        }
+        std::vector<R> dens, zoa;
+        if (earths) batch_earth_tables(*earths, dens, zoa);
+        fEngine->binned_batch(np, P.data(), G.data(), nchunk, want ? int(fGradIdx.size()) : 0,
+                              earths ? dens.data() : nullptr, earths ? zoa.data() : nullptr,
+                              which, out, dout, stream);
+      }
+
+      /// The same into host vectors on any backend, one point at a time
+      /// through set_params, set_earth and calculate_binned (the reference
+      /// for calculate_binned_batch); the parameters and Earth are restored.
+      void binned_batch(const std::vector<Params>& points, const std::vector<PremModel>* earths,
+                        std::vector<R>& out, std::vector<R>* dout = nullptr)
+      {
+        const size_t np = points.size();
+        if (earths && earths->size() != np)
+          throw std::invalid_argument("binned_batch: one Earth per point");
+        const size_t per = 2 * size_t(N) * N * fNCb * fNEb, nq = fGradIdx.size();
+        out.assign(np * per, R(0));
+        if (dout) dout->assign(np * per * nq, R(0));
+        const Params    p0 = fParams;
+        const bool      had = fHaveParams;
+        const PremModel e0 = fEarth;
+        if (earths) {
+          std::vector<R> dens, zoa;
+          batch_earth_tables(*earths, dens, zoa);  // the same checks as the device batch
+        }
+        for (size_t p = 0; p < np; p++) {
+          set_params(points[p]);
+          if (earths) set_earth((*earths)[p]);
+          calculate_binned(Flavor::Both, dout != nullptr);
+          const R* b = binned();
+          std::copy(b, b + per, out.begin() + long(p * per));
+          if (dout) {
+            const R* g = binned_grad();
+            std::copy(g, g + per * nq, dout->begin() + long(p * per * nq));
+          }
+        }
+        if (earths) set_earth(e0);
+        if (had) set_params(p0);
+        else fHaveParams = false;
+      }
+
       /// 1D bin averages along E for a fixed path (e.g. long baseline),
       /// using nglE Gauss-Legendre nodes per bin. Returns out[a][b][iEbin].
       std::vector<R> avg_path(const std::vector<double>& Eedges, int nglE,
@@ -960,6 +1051,27 @@ namespace opg {
           fChunksValid = true;
         }
         return fChunks;
+      }
+
+      /// Layer densities and Z/A of per-point Earths, dens[p][l] and
+      /// zoa[p][l]; each must have the layers of earth() (radii, types and
+      /// detector position), only densities and Z/A may differ.
+      void batch_earth_tables(const std::vector<PremModel>& earths, std::vector<R>& dens,
+                              std::vector<R>& zoa) const
+      {
+        const PremModel::HostTable<R> base(fEarth);
+        const size_t                  nl = base.radius.size();
+        dens.resize(earths.size() * nl);
+        zoa.resize(earths.size() * nl);
+        for (size_t p = 0; p < earths.size(); p++) {
+          const PremModel::HostTable<R> t(earths[p]);
+          if (t.radius != base.radius || t.type != base.type || t.det_layer != base.det_layer ||
+              t.det_radius != base.det_radius)
+            throw std::invalid_argument("batched bin averages: a point's Earth must have the "
+                                        "layers of earth() (only densities and Z/A may differ)");
+          std::copy(t.density.begin(), t.density.end(), dens.begin() + long(p * nl));
+          std::copy(t.zoa.begin(), t.zoa.end(), zoa.begin() + long(p * nl));
+        }
       }
 
       /// The gradient passes of the selected parameters at parameters p.
