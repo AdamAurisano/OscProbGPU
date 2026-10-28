@@ -637,11 +637,13 @@ uploads) and the device-to-host copy of the 144 MB result (~12 ms).
 
 The V100 numbers were measured with the rescaled Kopp `zheevh3`. Its
 replacement `eigh3` (the default since 2026-10-27; see
-[Differences from OscProb](#differences-from-oscprob)) is about 20% slower in
-the 3x3 hermitian models on the GPU (GTX 1650 Ti: Fast probabilities 1.28 s
-against 1.05 s, weighted gradient 5.9 s against 5.0 s, binned 0.29 s against
-0.24 s) and about 12% slower end to end in a CPU fit. `OPG_OSCPROB_BITWISE=ON`
-restores the Kopp solver.
+[Differences from OscProb](#differences-from-oscprob)) gives, on 1 V100:
+Fast 7.8e7 /s (float 1.7e8 /s), NSI 7.3e7 /s, NUNM 6.7e7 /s, LIV 6.2e7 /s,
+SNSI 6.5e7 /s, i.e. 0–14% slower than the table. On a GTX 1650 Ti it is
+about 20% slower (Fast probabilities 1.28 s against 1.05 s, weighted
+gradient 5.9 s against 5.0 s, binned 0.29 s against 0.24 s), and about 12%
+slower end to end in a CPU fit. `OPG_OSCPROB_BITWISE=ON` restores the Kopp
+solver.
 
 Binned: 40 x 20 bins with 8 nodes per direction (and per layer piece):
 5.4 ms per evaluation on 1 V100, 3.4 ms on 2 (4.3 s single-thread CPU).
