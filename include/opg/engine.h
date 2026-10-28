@@ -251,6 +251,24 @@ namespace opg {
                                "analytic averages for this backend/model");
       }
 
+      /// Bin averages (set_bins) of npts parameter points in one pass on
+      /// a single device: point p has the prepared state P[p], the gradient
+      /// passes G[p * nchunk + c] (nchunk 0: values only) and the layer
+      /// densities and Z/A dens[p][l], zoa[p][l] (nullptr: those of
+      /// set_earth; the radii and types are always set_earth's). Device
+      /// memory out[p][nubar][a][b][iCb][iEb] and, with nchunk > 0,
+      /// dout[p][nubar][q][a][b][iCb][iEb] (npar parameters), written for
+      /// the halves in `which`, asynchronously on `stream` (nullptr: the
+      /// engine's stream).
+      virtual void binned_batch(size_t /*npts*/, const Prepared*, const GradChunk<Model>*,
+                                int /*nchunk*/, int /*npar*/, const R* /*dens*/,
+                                const R* /*zoa*/, Flavor, R* /*out*/, R* /*dout*/,
+                                void* /*stream*/)
+      {
+        throw std::logic_error("OscProbGPU: no device implementation of batched bin "
+                               "averages for this backend");
+      }
+
       /// Grid probabilities and gradients (probs as in calculate()).
       virtual void calculate_grad(const Prepared&, const Chunks&, int /*npar*/,
                                   Flavor)
