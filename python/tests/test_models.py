@@ -272,3 +272,30 @@ def test_absorption():
     assert [opg.path_transmission(TEST_PATH, x) for x in xs] == list(tp)
     X = e.column_depth(C)
     assert np.allclose(np.exp(-X * xs[2] / 1.660539066e-24), ref[:, 2], rtol=1e-13, atol=0)
+
+
+def test_misuse_raises_instead_of_crashing(devices):
+    """Getters before a computation, stale gradient layouts and bad indices
+    raise (they used to read out of bounds and could segfault)."""
+    p = set_nominal(opg.Fast(devices=devices))
+    p.set_grid(np.array([1.0, 10.0]), np.array([-1.0, -0.5]))
+    with pytest.raises(RuntimeError):
+        p.probs()
+    p.set_gradient_params()
+    with pytest.raises(RuntimeError):
+        p.grad()
+    p.calculate_gradient()
+    assert p.grad().shape[1] == len(p.gradient_params)
+    p.set_gradient_params(["th23"])
+    with pytest.raises(RuntimeError):
+        p.grad()
+    with pytest.raises(RuntimeError):
+        p.binned_grad()
+    with pytest.raises(IndexError):
+        p.get_angle(0, 400)
+    with pytest.raises(IndexError):
+        p.get_dm(7)
+    p.calculate()
+    with pytest.raises(IndexError):
+        p.prob(7, 7, 10**9, 0, False)
+

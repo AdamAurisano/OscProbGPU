@@ -85,6 +85,7 @@ namespace opg {
     State S    = initial_state<Model, R>(P, nubar, cosZ, ex);
     int   nseg = 0;
     bool  ok   = true;
+    ckpt[0]    = S;  // read by adj_hamiltonian below even if the path has no segments
     for_each_segment(earth, cosZ, [&](const Segment<R>& s) {
       if (nseg % kAdjBlock == 0) {
         if (nseg / kAdjBlock >= kAdjMaxCkpt) ok = false;

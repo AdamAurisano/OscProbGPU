@@ -920,6 +920,7 @@ namespace opg {
 
       ~CudaEngine() override
       {
+        wait_binned_batch();
         for (auto& D : fDev) {
           cudaSetDevice(D->id);
           cudaStreamSynchronize(D->stream);
@@ -927,8 +928,19 @@ namespace opg {
         }
       }
 
+      /// calculate_binned_batch may run on a caller's stream and read the
+      /// Earth, bin and node buffers: wait for it before changing or freeing them.
+      void wait_binned_batch() noexcept
+      {
+        if (fBn.ev) {
+          cudaSetDevice(fBn.dev);
+          cudaEventSynchronize(fBn.ev);
+        }
+      }
+
       void set_earth(const PremModel& earth) override
       {
+        wait_binned_batch();
         PremModel::HostTable<R> t(earth);
         for (auto& Dp : fDev) {
           Device& D = *Dp;
@@ -1007,6 +1019,7 @@ namespace opg {
       //.......................................................................
       void set_bins(const BinSpec<R>& B) override
       {
+        wait_binned_batch();
         fBins           = B;
         const size_t nd = fDev.size();
         for (size_t k = 0; k < nd; k++) {
@@ -1256,6 +1269,7 @@ namespace opg {
         if constexpr (GT::enabled) {
           const size_t nd   = fDev.size();
           const int    npar = chunks.empty() ? 0 : chunks.back().offset + chunks.back().count;
+          release_partials();  // no stale sums from an earlier call
           if constexpr (has_adjoint_v<Model>)
             if (use_adj(npar)) {
               upload_adj_chunks(chunks);
@@ -1375,6 +1389,7 @@ namespace opg {
             D.wts.upload(D.id, loc.data(), loc.size(), D.stream);
             OPG_CUDA(cudaStreamSynchronize(D.stream));
           }
+          release_partials();  // no stale sums from an earlier call
           if constexpr (has_adjoint_v<Model>)
             if (use_adj(npar)) {
               upload_adj_chunks(chunks);
@@ -1702,6 +1717,7 @@ namespace opg {
             D.binOfRow.upload(D.id, bor.data(), bor.size(), D.stream);
           }
           const int npar = chunks.empty() ? 0 : chunks.back().offset + chunks.back().count;
+          release_partials();  // no stale sums from an earlier call
           if constexpr (has_adjoint_v<Model>)
             if (use_adj(npar)) {
               upload_adj_chunks(chunks);
@@ -1794,6 +1810,7 @@ namespace opg {
             D.contrib.resize(D.id, cnt[k] * GK);
             OPG_CUDA(cudaStreamSynchronize(D.stream));
           }
+          release_partials();  // no stale sums from an earlier call
           if constexpr (has_adjoint_v<Model>)
             if (use_adj(npar)) {
               upload_adj_chunks(chunks);
@@ -1828,6 +1845,7 @@ namespace opg {
                 for (int b = 0; b < nbins; b++)
                   for (int p = 0; p < npar; p++)
                     G[size_t(b) * npar + p] += D.partialHost[size_t(b) * kAdjMaxPar + p];
+                D.partial.release();
               }
               check_adj_err();
               return;
@@ -1865,6 +1883,7 @@ namespace opg {
               for (int b = 0; b < nbins; b++)
                 for (int kk = 0; kk < ch.count; kk++)
                   G[size_t(b) * npar + ch.offset + kk] += D.partialHost[size_t(b) * GK + kk];
+              D.partial.release();  // sum_partials adds every device with partial.n != 0
             }
           }
         }
@@ -2460,6 +2479,14 @@ namespace opg {
             std::copy(D.pHost.begin() + ch * cnt[k],
                       D.pHost.begin() + (ch + 1) * cnt[k], out + ch * n + off[k]);
         }
+      }
+
+      /// Drop per-block partial sums left by an earlier call (one that threw
+      /// before summing, say): sum_partials and sum_adj_partials add every
+      /// device whose buffer is allocated, including devices given no work.
+      void release_partials()
+      {
+        for (auto& Dp : fDev) Dp->partial.release();
       }
 
       /// Add per-block partial sums of one gradient chunk from all devices

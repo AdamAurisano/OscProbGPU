@@ -113,7 +113,8 @@ namespace opg {
   /// triangle are read). On output V holds orthonormal eigenvectors as
   /// columns and w the eigenvalues (largest, middle, smallest when the
   /// analytic path is taken; unsorted after the fallback). Returns 0 for the
-  /// analytic path, 1 when it fell back to Jacobi.
+  /// analytic path, 1 when it fell back to Jacobi or A holds a NaN (then V and
+  /// w are NaN).
   template <class R>
   OPG_HD inline int eigh3(const Mat<3, R>& A, Mat<3, R>& V, R w[3])
   {
@@ -126,12 +127,25 @@ namespace opg {
     using std::sin;
     using std::sqrt;
 
-    // Scale to O(1).
-    R sc = 0;
+    // Scale to O(1). fmax drops NaN, so NaN entries are detected through a
+    // plain sum: an all-NaN matrix would otherwise take the zero exit below.
+    R sc = 0, nanchk = 0;
     OPG_UNROLL
     for (int i = 0; i < 3; i++)
       OPG_UNROLL
-    for (int j = i; j < 3; j++) sc = fmax(sc, fmax(fabs(A(i, j).re), fabs(A(i, j).im)));
+    for (int j = i; j < 3; j++) {
+      sc = fmax(sc, fmax(fabs(A(i, j).re), fabs(A(i, j).im)));
+      nanchk += A(i, j).re + A(i, j).im;
+    }
+    if (nanchk != nanchk) {  // NaN in, NaN out
+      OPG_UNROLL
+      for (int i = 0; i < 3; i++) {
+        w[i] = nanchk;
+        OPG_UNROLL
+        for (int j = 0; j < 3; j++) V(i, j) = Complex<R>(nanchk, nanchk);
+      }
+      return 1;
+    }
     if (sc == R(0)) {
       V    = Mat<3, R>::identity();
       w[0] = w[1] = w[2] = 0;

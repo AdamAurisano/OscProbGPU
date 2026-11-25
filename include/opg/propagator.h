@@ -91,16 +91,39 @@ namespace opg {
 
       void set_earth(const PremModel& earth)
       {
-        fEarth = earth;
+        std::vector<int> types;
+        for (const auto& l : earth.GetLayers())
+          if (std::find(types.begin(), types.end(), l.type) == types.end())
+            types.push_back(l.type);
+        std::sort(types.begin(), types.end());
+        // Check the selected Earth parameters against the new layer types
+        // before changing anything, so a throw leaves the propagator as it was.
+        if constexpr (grad_traits<Model>::enabled)
+          for (const auto& n : fGradNames) {
+            const bool zoa = n.rfind("zoa_", 0) == 0, rho = n.rfind("rho_", 0) == 0;
+            if (!zoa && !rho) continue;
+            const auto pn = Model::param_names();
+            if (std::find(pn.begin(), pn.end(), n) != pn.end()) continue;
+            bool found = false;
+            for (int t : types) found = found || n.substr(4) == std::to_string(t);
+            if (!found)
+              throw std::invalid_argument("opg::Propagator::set_earth: selected gradient "
+                                          "parameter '" + n + "' has no layer of that type "
+                                          "in the new Earth model");
+          }
+        // Layer-adapted cosZ nodes sit at the old Earth's grazing cosines.
+        const bool rebin = fHaveBins && fBinArgs.rule == CosZRule::LayerAdapted &&
+                           earth.GetGrazingCosines() != fEarth.GetGrazingCosines();
         fEngine->set_earth(earth);
-        fZoaTypes.clear();
-        for (const auto& l : fEarth.GetLayers())
-          if (std::find(fZoaTypes.begin(), fZoaTypes.end(), l.type) == fZoaTypes.end())
-            fZoaTypes.push_back(l.type);
-        std::sort(fZoaTypes.begin(), fZoaTypes.end());
+        fEarth    = earth;
+        fZoaTypes = types;
         // the meaning of zoa_<type> parameters may have changed
         if (!fGradNames.empty()) set_gradient_params(std::vector<std::string>(fGradNames));
         fChunksValid = false;
+        if (rebin) {
+          const BinArgs a = fBinArgs;
+          set_bins(a.Eedges, a.Cedges, a.nglE, a.nglC, a.measure, a.rule);
+        }
       }
 
       const PremModel& earth() const { return fEarth; }
@@ -108,9 +131,10 @@ namespace opg {
       /// Set the (E, cosZ) grid. E in GeV.
       void set_grid(const std::vector<R>& E, const std::vector<R>& cosZ)
       {
+        fProbsValid = fGradValid = false;
+        fEngine->set_grid(E, cosZ);
         fNE = E.size();
         fNC = cosZ.size();
-        fEngine->set_grid(E, cosZ);
       }
 
       /// Set the model parameters (runs Model::prepare on the host).
@@ -208,6 +232,7 @@ namespace opg {
         fGradNames   = names;
         fGradIdx     = idx;
         fChunksValid = false;
+        fGradValid = fBinnedGradValid = false;  // their layout depends on the selection
         if (names.empty()) fChunks.clear();
       }
 
@@ -220,18 +245,28 @@ namespace opg {
       {
         if (!gradient) return calculate(which);
         require_params();
+        fProbsValid = fGradValid = false;
         fEngine->calculate_grad(fPrepared, chunks(), int(fGradIdx.size()), which);
+        fProbsValid = fGradValid = true;
       }
 
       /// Grid gradients grad[nubar][p][a][b][iC][iE] = dP(a -> b)/dp, with p
       /// in the order given to set_gradient_params(). Waits for completion.
-      const R* grad() { return fEngine->host_grad(); }
+      const R* grad()
+      {
+        require_result(fGradValid, "grad", "calculate(which, true) since the last "
+                                           "set_grid or set_gradient_params");
+        return fEngine->host_grad();
+      }
       const R* device_grad(int device_index = 0)
       {
         return fEngine->device_grad(device_index);
       }
       R grad(size_t p, int a, int b, size_t iC, size_t iE, bool nubar)
       {
+        check_index(p < fGradIdx.size() && a >= 0 && a < N && b >= 0 && b < N && iC < fNC &&
+                        iE < fNE,
+                    "grad");
         const R* g = grad();
         return g[((((size_t(nubar) * fGradIdx.size() + p) * N + a) * N + b) *
                       fNC + iC) * fNE + iE];
@@ -288,13 +323,19 @@ namespace opg {
       void calculate(Flavor which = Flavor::Both)
       {
         require_params();
+        fProbsValid = false;
         fEngine->calculate(fPrepared, which);
+        fProbsValid = true;
       }
 
       void wait() { fEngine->wait(); }
 
       /// Host array probs[nubar][a][b][iC][iE]; waits for completion.
-      const R* probs() { return fEngine->host_probs(); }
+      const R* probs()
+      {
+        require_result(fProbsValid, "probs", "calculate() since the last set_grid");
+        return fEngine->host_probs();
+      }
 
       /// Device array (same layout) on the given device index (GPU only).
       const R* device_probs(int device_index = 0)
@@ -305,6 +346,7 @@ namespace opg {
       /// P(a -> b) at grid point (iC, iE).
       R prob(int a, int b, size_t iC, size_t iE, bool nubar)
       {
+        check_index(a >= 0 && a < N && b >= 0 && b < N && iC < fNC && iE < fNE, "prob");
         const R* p = probs();
         return p[(((size_t(nubar) * N + a) * N + b) * fNC + iC) * fNE + iE];
       }
@@ -395,16 +437,21 @@ namespace opg {
           }
           B.offC.push_back(B.nodesC.size());
         }
+        fBinnedValid = fBinnedGradValid = false;
+        fEngine->set_bins(B);
         fNEb = B.nEb;
         fNCb = B.nCb;
-        fEngine->set_bins(B);
+        fBinArgs  = BinArgs{Eedges, Cedges, nglE, nglC, measure, rule};
+        fHaveBins = true;
       }
 
       /// Launch the bin-averaged computation (asynchronous on GPU).
       void calculate_binned(Flavor which = Flavor::Both)
       {
         require_params();
+        fBinnedValid = false;
         fEngine->calculate_binned(fPrepared, which);
+        fBinnedValid = true;
       }
 
       /// Launch the bin-averaged computation; with gradient = true also the
@@ -414,11 +461,19 @@ namespace opg {
       {
         if (!gradient) return calculate_binned(which);
         require_params();
+        fBinnedValid = fBinnedGradValid = false;
         fEngine->calculate_binned_grad(fPrepared, chunks(), int(fGradIdx.size()), which);
+        fBinnedValid = fBinnedGradValid = true;
       }
 
       /// Bin-averaged gradients grad[nubar][p][a][b][iCb][iEb]; waits.
-      const R* binned_grad() { return fEngine->host_binned_grad(); }
+      const R* binned_grad()
+      {
+        require_result(fBinnedGradValid, "binned_grad",
+                       "calculate_binned(which, true) since the last set_bins or "
+                       "set_gradient_params");
+        return fEngine->host_binned_grad();
+      }
       const R* device_binned_grad(int device_index = 0)
       {
         return fEngine->device_binned_grad(device_index);
@@ -441,7 +496,11 @@ namespace opg {
       }
 
       /// Host array avg[nubar][a][b][iCbin][iEbin]; waits for completion.
-      const R* binned() { return fEngine->host_binned(); }
+      const R* binned()
+      {
+        require_result(fBinnedValid, "binned", "calculate_binned() since the last set_bins");
+        return fEngine->host_binned();
+      }
 
       const R* device_binned(int device_index = 0)
       {
@@ -451,6 +510,7 @@ namespace opg {
       /// Bin-averaged P(a -> b) in bin (iCb, iEb).
       R binned(int a, int b, size_t iCb, size_t iEb, bool nubar)
       {
+        check_index(a >= 0 && a < N && b >= 0 && b < N && iCb < fNCb && iEb < fNEb, "binned");
         const R* p = binned();
         return p[(((size_t(nubar) * N + a) * N + b) * fNCb + iCb) * fNEb + iEb];
       }
@@ -533,20 +593,29 @@ namespace opg {
           std::vector<R> dens, zoa;
           batch_earth_tables(*earths, dens, zoa);  // the same checks as the device batch
         }
-        for (size_t p = 0; p < np; p++) {
-          set_params(points[p]);
-          if (earths) set_earth((*earths)[p]);
-          calculate_binned(Flavor::Both, dout != nullptr);
-          const R* b = binned();
-          std::copy(b, b + per, out.begin() + long(p * per));
-          if (dout) {
-            const R* g = binned_grad();
-            std::copy(g, g + per * nq, dout->begin() + long(p * per * nq));
+        auto restore = [&] {
+          if (earths) set_earth(e0);
+          if (had) set_params(p0);
+          else fHaveParams = false;
+        };
+        try {
+          for (size_t p = 0; p < np; p++) {
+            set_params(points[p]);
+            if (earths) set_earth((*earths)[p]);
+            calculate_binned(Flavor::Both, dout != nullptr);
+            const R* b = binned();
+            std::copy(b, b + per, out.begin() + long(p * per));
+            if (dout) {
+              const R* g = binned_grad();
+              std::copy(g, g + per * nq, dout->begin() + long(p * per * nq));
+            }
           }
         }
-        if (earths) set_earth(e0);
-        if (had) set_params(p0);
-        else fHaveParams = false;
+        catch (...) {
+          restore();
+          throw;
+        }
+        restore();
       }
 
       /// 1D bin averages along E for a fixed path (e.g. long baseline),
@@ -1159,6 +1228,20 @@ namespace opg {
         return extra.empty() ? nullptr : extra.data();
       }
 
+      static void require_result(bool valid, const char* what, const char* need)
+      {
+        if (!valid)
+          throw std::logic_error(std::string("opg::Propagator::") + what + ": no result; call " +
+                                 need);
+      }
+
+      static void check_index(bool ok, const char* what)
+      {
+        if (!ok)
+          throw std::out_of_range(std::string("opg::Propagator::") + what +
+                                  ": index out of range");
+      }
+
       void require_params() const
       {
         if (!fHaveParams)
@@ -1178,6 +1261,19 @@ namespace opg {
       bool                                fHaveParams = false;
       size_t                              fNE = 0, fNC = 0;
       size_t                              fNEb = 0, fNCb = 0;
+      /// set_bins arguments, to rebuild layer-adapted nodes on set_earth
+      struct BinArgs {
+        std::vector<double> Eedges, Cedges;
+        int                 nglE = 0, nglC = 0;
+        EMeasure            measure = EMeasure::Linear;
+        CosZRule            rule    = CosZRule::LayerAdapted;
+      };
+      BinArgs                             fBinArgs;
+      bool                                fHaveBins = false;
+      /// Which host results match the current grid, bins and gradient
+      /// selection (the getters throw otherwise rather than read past them).
+      bool fProbsValid = false, fGradValid = false;
+      bool fBinnedValid = false, fBinnedGradValid = false;
   };
 
 } // namespace opg

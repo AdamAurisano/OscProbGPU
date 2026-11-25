@@ -8,7 +8,8 @@ set(OPG_OSCPROB_DIR "${PROJECT_SOURCE_DIR}/../OscProb"
 
 add_executable(opg_tests_cpu test_main.cpp test_core.cpp test_numerics.cpp
                              test_models_cpu.cpp test_averaging.cpp
-                             test_gradients.cpp test_analytic.cpp)
+                             test_gradients.cpp test_analytic.cpp
+                             test_regressions.cpp)
 target_link_libraries(opg_tests_cpu PRIVATE oscprobgpu opg_doctest)
 
 # Compile the original Kopp eigensolvers (LGPL) into the test, if available,

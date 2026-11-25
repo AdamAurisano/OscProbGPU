@@ -112,7 +112,10 @@ namespace opg {
           const auto&        B     = fBins;
           const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size(), npt = nEn * nCn;
           const size_t nbin = B.nCb * B.nEb;
-          fBinnedGrad.assign(2 * size_t(npar) * N * N * nbin, R(0));
+          // Keep the other half (as the CUDA engine does): computing nu then
+          // nubar in two calls must leave both.
+          const size_t ng = 2 * size_t(npar) * N * N * nbin;
+          if (fBinnedGrad.size() != ng) fBinnedGrad.assign(ng, R(0));
           std::vector<R> node(size_t(GK) * N * N * npt);
           for (int nb = 0; nb < 2; nb++) {
             if (!(int(which) & (1 << nb))) continue;

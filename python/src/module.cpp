@@ -195,9 +195,27 @@ namespace {
                w.mix().SetDm(j, v);
              },
              "j"_a, "dm"_a, "Set dm^2_j1 in eV^2.")
-        .def("get_angle", [](W& w, int i, int j) { return w.params.mix.th[i - 1][j - 1]; })
-        .def("get_delta", [](W& w, int i, int j) { return w.params.mix.dcp[i - 1][j - 1]; })
-        .def("get_dm", [](W& w, int j) { return w.params.mix.dm[j - 1]; })
+        .def("get_angle",
+             [](W& w, int i, int j) {
+               if (i > j) std::swap(i, j);
+               if (i < 1 || j > N || i == j) throw std::out_of_range("invalid angle indices");
+               return w.params.mix.th[i - 1][j - 1];
+             },
+             "i"_a, "j"_a)
+        .def("get_delta",
+             [](W& w, int i, int j) {
+               if (i > j) std::swap(i, j);
+               if (i < 1 || j > N || j < i + 2)
+                 throw std::out_of_range("invalid delta indices (i+1 < j)");
+               return w.params.mix.dcp[i - 1][j - 1];
+             },
+             "i"_a, "j"_a)
+        .def("get_dm",
+             [](W& w, int j) {
+               if (j < 1 || j > N) throw std::out_of_range("invalid dm index");
+               return w.params.mix.dm[j - 1];
+             },
+             "j"_a)
         .def("set_std_pars", [](W& w) { opg::set_std_pars(w.mix()); },
              "Reset mixing parameters to OscProb's PDG defaults.")
         // earth
@@ -748,7 +766,12 @@ NB_MODULE(_oscprobgpu, m)
              w.params.SetPower(n);
            },
            "n"_a, "Gamma_ij ~ (E/GeV)^n.")
-      .def("get_gamma", [](PyModel<Deco>& w, int i, int j) { return w.params.GetGamma(i, j); },
+      .def("get_gamma",
+           [](PyModel<Deco>& w, int i, int j) {
+             if (i < j) std::swap(i, j);
+             if (j < 1 || i > 3 || i == j) throw std::out_of_range("invalid Gamma indices");
+             return w.params.GetGamma(i, j);
+           },
            "i"_a, "j"_a);
 
   using OQS = opg::OQS<double>;

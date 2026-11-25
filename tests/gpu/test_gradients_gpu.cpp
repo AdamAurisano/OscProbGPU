@@ -176,6 +176,44 @@ TEST_CASE_TEMPLATE("GPU reverse-mode weighted gradients equal forward mode; mult
   }
 }
 
+TEST_CASE("Multi-GPU: no stale per-device sums after weighted_gradient_points_binned")
+{
+  // weighted_gradient_points_binned left its per-bin partial sums allocated;
+  // a later weighted gradient in which a device got no work added them.
+  const auto one = devs("OPG_TEST_DEVICES", "0");
+  const auto two = devs("OPG_TEST_MULTI_DEVICES", "0,1");
+  if (two.size() < 2 || opg::cuda_device_count() < int(two.size())) return;
+  using M = gradtest::Fast;
+  for (int adj = 0; adj < 2; adj++) {
+    CAPTURE(adj);
+    opg::Propagator<M> pm(opg::PremModel(), two), ps(opg::PremModel(), one);
+    for (auto* p : {&pm, &ps}) {
+      p->set_params(gradtest::param_points<M>()[0].second);
+      p->set_gradient_params();
+      p->set_adjoint_gradients(adj == 1);
+    }
+    const size_t        n = 64, nbins = 4;
+    std::vector<double> E, C, w(9 * n);
+    std::vector<uint8_t> nb;
+    std::vector<int>     bin;
+    for (size_t i = 0; i < n; i++) {
+      E.push_back(std::pow(10.0, 0.3 + 1.5 * double(i) / n));
+      C.push_back(-1 + 1.9 * double(i) / n);
+      nb.push_back(uint8_t(i % 2));
+      bin.push_back(int(i % nbins));
+    }
+    for (size_t k = 0; k < w.size(); k++) w[k] = std::sin(0.37 * double(k));
+    pm.weighted_gradient_points_binned(E, C, nb, w, bin, int(nbins));
+    // one event: the second device gets none
+    const std::vector<double>  E1 = {E[5]}, C1 = {C[5]};
+    const std::vector<uint8_t> nb1 = {nb[5]};
+    std::vector<double>        w1(9);
+    for (int k = 0; k < 9; k++) w1[size_t(k)] = w[size_t(k) * n + 5];
+    CHECK(pm.weighted_gradient_points(E1, C1, nb1, w1) ==
+          ps.weighted_gradient_points(E1, C1, nb1, w1));
+  }
+}
+
 TEST_CASE("GPU weighted gradients from device-resident weights")
 {
   // the device probabilities serve as weights already on the GPU(s)
