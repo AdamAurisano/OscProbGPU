@@ -227,10 +227,22 @@ followed by `calculate_binned()` for it alone, whatever the batch; the
 per-point Earths must have the layers of `earth()` (only densities and Z/A
 may differ). One device per propagator; points are processed in sub-batches
 whose node scratch stays below 512 MB. `binned_batch()` gives the same into
-host vectors on any backend, one point at a time. Both are C++ only for
-now, as are the analytic averages below (no Python bindings yet). On a V100 (Fast, 40 x 20
+host vectors on any backend, one point at a time. On a V100 (Fast, 40 x 20
 bins at 1 x 5 nodes, with gradients, batches of about 25 points) this is
 0.25 ms per point, against 1.39 ms with one point per call.
+
+In Python a list of points is the model's current parameters with some
+model parameters replaced (names from `parameter_names`, values one row per
+point):
+
+```python
+vals = np.array([[0.70, 2.45e-3], [0.80, 2.50e-3]])       # th23, dm31 per point
+A, dA = p.binned_batch(["th23", "dm31"], vals, earths=None, gradient=True)
+# A[p, nubar, a, b, iCb, iEb], dA[p, nubar, q, a, b, iCb, iEb]
+out = opg.cuda_empty(A.shape)                            # or CuPy / PyTorch arrays
+p.calculate_binned_batch(["th23", "dm31"], vals, out, earths=earths)  # one launch
+p.wait(); A = out.get()
+```
 
 ### Analytic averages (fixed paths)
 
@@ -380,6 +392,32 @@ values 4x and 6 gradients 1.6x faster; on the GPU only the values gain (ND
 4.9 → 2.9 ms per 1024 points): the per-sub-bin tables dominate the
 gradients there. Off by default.
 
+**Python** (`Fast`, `NSI`, `NUNM`, `Sterile`): the same calls, with points
+given as for `binned_batch` (names and one row of values per point) and the
+options as an `AnalyticAvgOptions` object:
+
+```python
+p = opg.Sterile(devices=[0])
+fd = np.array([[810.0, 2.84, 0.5]])                      # path rows: L, rho, Z/A
+A = p.avg_path_analytic(E_edges, fd, nubar=False, measure="invE", var="E")
+p.set_gradient_params(["th24", "dm41"])
+A, dA = p.avg_path_analytic_grad(E_edges, fd, measure="invE")   # A[a, b, bin], dA[q, a, b, bin]
+sub = opg.Sterile.analytic_subbins(E_edges, fd, "invE")         # rows bin, u0, h, weight, beta
+opt = opg.AnalyticAvgOptions(); opt.rows = 3                     # e and mu only
+h = p.analytic_batch(E_edges, fd, nubar=False, measure="invE", options=opt)
+A, dA = p.avg_path_analytic_batch(h, ["th24", "dm41"], vals, gradient=True)  # host arrays
+g = p.avg_path_analytic_batch_weighted(h, ["th24", "dm41"], vals, w)         # g[p, q]
+p.avg_path_analytic_batch_device(h, ["th24", "dm41"], vals, out_dev, dout_dev)  # CUDA arrays
+p.avg_path_analytic_batch_weighted(h, ["th24", "dm41"], vals, w_dev, g_dev)
+```
+
+`avg_path_analytic_subbins(_grad)` and `analytic_batch_subbins` take
+explicit sub-bins. Device outputs are CUDA arrays (DLPack: `opg.cuda_empty`,
+CuPy, PyTorch); the device calls are asynchronous on `stream` (an integer
+`cudaStream_t`, 0: the propagator's), so call `p.wait()` or synchronise the
+stream before reading. All long calls release the GIL: other Python threads
+run meanwhile (use one propagator from one thread at a time).
+
 ## Absorption
 
 `OscProb::Absorption` is available as flavour- and model-independent
@@ -452,7 +490,10 @@ P, G = p.probs(), p.grad()        # G[nubar, p, a, b, iC, iE] = dP(a->b)/dp
 g = p.weighted_gradient(w)        # w has the shape of probs(); g[p]
                                   # w may be a CUDA array (CuPy, PyTorch, ...)
                                   # on the propagator's GPU: no upload
-d = p.device_probs()              # zero-copy DeviceArray of the GPU results
+d = p.device_probs()              # zero-copy DeviceArray of the GPU results:
+                                  # waits for pending work when handed out;
+                                  # stale (RuntimeError on use, d.valid False)
+                                  # after set_grid/set_bins/set_earth
 
 P, dP = p.prob_points_grad(E_ev, cosZ_ev, nubar_ev)   # dP[p, a, b, i]
 g     = p.weighted_gradient_points(E_ev, cosZ_ev, nubar_ev, w_ev)

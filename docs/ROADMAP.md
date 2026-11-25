@@ -265,9 +265,17 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   below 512 MB of node scratch, one device) and `binned_batch` (host, any
   backend, the reference). V100, Fast, 40 x 20 bins at 1 x 5 nodes with
   gradients: 1.39 -> 0.25 ms per point.
-* Next: Python bindings for the analytic averages, their batch API and the
-  binned batch. Models with E-dependent matter terms are out of scope for
-  the analytic averages (the expansion needs H affine in 1/E).
+* Done (2026-11-25): Python bindings for the analytic averages
+  (`avg_path_analytic*`, `analytic_subbins`, `AnalyticAvgOptions`), their
+  batch API (`analytic_batch*`, `avg_path_analytic_batch`,
+  `_device`, `_weighted`) and the binned batch (`binned_batch`,
+  `calculate_binned_batch`); points as parameter names plus one row of
+  values each; CUDA outputs through DLPack (`cuda_empty` without CuPy).
+  Long calls release the GIL; `DeviceArray` views raise once
+  `set_grid`/`set_bins`/`set_earth` may have freed their buffer and wait
+  for the propagator before being handed out. Models with E-dependent
+  matter terms are out of scope for the analytic averages (the expansion
+  needs H affine in 1/E).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast).
 
 ## Working notes
