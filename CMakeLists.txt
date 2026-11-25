@@ -52,8 +52,13 @@ target_include_directories(
   opg_core INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
                      $<INSTALL_INTERFACE:include>)
 target_compile_features(opg_core INTERFACE cxx_std_17)
-target_compile_definitions(
-  opg_core INTERFACE OPG_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+# Builds from the source tree find data/ through its compiled-in path. Wheels
+# do not: they ship the tables in the package (python/CMakeLists.txt), so no
+# build path ends up in a distributed binary.
+if(NOT SKBUILD)
+  target_compile_definitions(
+    opg_core INTERFACE OPG_DATA_DIR="${PROJECT_SOURCE_DIR}/data")
+endif()
 if(OpenMP_CXX_FOUND)
   target_link_libraries(opg_core INTERFACE OpenMP::OpenMP_CXX)
 endif()

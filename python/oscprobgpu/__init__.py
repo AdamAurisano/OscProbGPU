@@ -33,7 +33,16 @@ earth_parameter_names (Z/A per Earth layer type). See
 examples/gradient_fit.py for a binned likelihood fit with exact Jacobians.
 """
 
-from ._oscprobgpu import (  # noqa: F401
+import os as _os
+
+# Installed wheels carry the Earth model tables in oscprobgpu/data; PremModel()
+# finds them through OPG_DATA_DIR (a user setting wins). Builds from the source
+# tree have no such directory and use the path compiled into the module.
+_data = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data")
+if _os.path.isfile(_os.path.join(_data, "prem_default.txt")):
+    _os.environ.setdefault("OPG_DATA_DIR", _data)
+
+from ._oscprobgpu import (  # noqa: E402,F401
     LIV,
     NSI,
     Deco,

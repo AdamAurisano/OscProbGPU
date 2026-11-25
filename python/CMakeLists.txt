@@ -13,6 +13,10 @@ configure_file(oscprobgpu/__init__.py ${_pkg}/__init__.py COPYONLY)
 if(SKBUILD)
   install(TARGETS _oscprobgpu LIBRARY DESTINATION oscprobgpu)
   install(FILES oscprobgpu/__init__.py DESTINATION oscprobgpu)
+  file(GLOB _prem_tables ${PROJECT_SOURCE_DIR}/data/prem_*layers.txt)
+  install(FILES ${PROJECT_SOURCE_DIR}/data/prem_default.txt
+                ${PROJECT_SOURCE_DIR}/data/prem_lbl.txt ${_prem_tables}
+          DESTINATION oscprobgpu/data)
 endif()
 
 if(OPG_ENABLE_TESTS)

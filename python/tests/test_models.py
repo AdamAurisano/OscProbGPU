@@ -299,3 +299,21 @@ def test_misuse_raises_instead_of_crashing(devices):
     with pytest.raises(IndexError):
         p.prob(7, 7, 10**9, 0, False)
 
+
+def test_default_earth_from_package_data(tmp_path, monkeypatch):
+    """PremModel() reads $OPG_DATA_DIR/prem_default.txt when set (installed
+    wheels point it at oscprobgpu/data)."""
+    import os
+    import shutil
+    repo_data = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data")
+    d = tmp_path / "data"
+    d.mkdir()
+    shutil.copy(os.path.join(repo_data, "prem_15layers.txt"), d / "prem_default.txt")
+    monkeypatch.setenv("OPG_DATA_DIR", str(d))
+    assert (opg.PremModel().grazing_cosines()
+            == opg.PremModel(os.path.join(repo_data, "prem_15layers.txt")).grazing_cosines())
+    assert opg.PremModel().grazing_cosines() != opg.PremModel(
+        os.path.join(repo_data, "prem_default.txt")).grazing_cosines()
+    monkeypatch.setenv("OPG_DATA_DIR", str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError):
+        opg.PremModel()

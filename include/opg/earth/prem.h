@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -151,8 +152,14 @@ namespace opg {
         LoadModel(filename);
       }
 
+      /// The default model file: $OPG_DATA_DIR/prem_default.txt if that
+      /// environment variable is set (the Python package sets it to its own
+      /// data directory), else the source tree's data/ for builds that
+      /// compiled its path in, else prem_default.txt in the working directory.
       static std::string DefaultFile()
       {
+        const char* env = std::getenv("OPG_DATA_DIR");
+        if (env && *env) return std::string(env) + "/prem_default.txt";
 #ifdef OPG_DATA_DIR
         return std::string(OPG_DATA_DIR) + "/prem_default.txt";
 #else
