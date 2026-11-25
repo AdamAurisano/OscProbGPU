@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use OscProbGPU, please cite it as below, and cite OscProb, from which it is derived."
+title: "OscProbGPU"
+abstract: >-
+  A CUDA and CPU (OpenMP) reimplementation of the OscProb neutrino oscillation
+  calculators through PREM, with exact gradients for every exposed parameter,
+  Gauss-Legendre and analytic bin averages, multi-GPU support and Python bindings.
+type: software
+authors:
+  - family-names: Aurisano
+    given-names: Adam
+    affiliation: University of Cincinnati
+version: 0.1.0
+license: BSD-3-Clause
+repository-code: "https://github.com/AdamAurisano/OscProbGPU"
+keywords:
+  - neutrino oscillations
+  - CUDA
+  - GPU
+  - automatic differentiation
+references:
+  - type: software
+    title: "OscProb"
+    authors:
+      - family-names: Coelho
+        given-names: Joao
+    repository-code: "https://github.com/joaoabcoelho/OscProb"

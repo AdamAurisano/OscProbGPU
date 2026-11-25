@@ -625,6 +625,12 @@ brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
   `zheevh3` on atmospheric Hamiltonians (eigen-residual 1e-14 against 4e-13)
   and BSD-licensed; P agrees with OscProb to ~1e-13.
   `OPG_OSCPROB_BITWISE=ON` restores OscProb's exact call to the Kopp port.
+  On the GPU, eigh3's analytic path uses products nvcc cannot fuse into FMAs
+  (`__dmul_rn`), so different kernels round it the same way. The Jacobi
+  fallback (shared with Sterile and the analytic averages) is left unchanged,
+  so for near-degenerate matrices, mostly in matter above ~10 TeV, the
+  bit-identity between GPU code paths (gradients on or off, points or bins)
+  is not guaranteed there (differences at the rounding level).
 * **NUNM high-scale normalisation** is applied once when parameters are set.
   OscProb normalises α inside `PropagatePath`, after the initial state has
   already been rotated by the *unnormalised* α, so the first call on a fresh
@@ -719,7 +725,7 @@ tests/                doctest suites (cpu, gpu) and reference data
 OscProbGPU is a reimplementation of **[OscProb](https://github.com/joaoabcoelho/OscProb)** by
 Joao Coelho and the OscProb contributors. Its models, parameter conventions, Earth model and validation
 reference all follow OscProb, and much of the physics code is a direct port. If you use OscProbGPU in a
-publication, please also cite OscProb through its Zenodo record
+publication, please cite it as given in `CITATION.cff` and also cite OscProb through its Zenodo record
 ([![DOI](https://zenodo.org/badge/91241668.svg)](https://zenodo.org/badge/latestdoi/91241668)).
 
 - **OscProb** (MIT, Copyright (c) 2017 Joao Coelho): the portions derived from it remain subject to its
