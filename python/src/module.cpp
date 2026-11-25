@@ -533,6 +533,7 @@ namespace {
 
 NB_MODULE(_oscprobgpu, m)
 {
+  m.attr("__version__") = OPG_VERSION;
   m.doc() = "OscProbGPU: CUDA port of OscProb oscillation calculators";
   m.def("cuda_device_count", &opg::cuda_device_count);
   m.def("_dlpack", &dlpack_capsule, "ptr"_a, "shape"_a, "device"_a, "owner"_a);

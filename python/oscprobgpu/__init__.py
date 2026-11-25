@@ -51,6 +51,7 @@ from ._oscprobgpu import (  # noqa: E402,F401
     SNSI,
     SiderealLIV,
     Decay,
+    __version__,
     Fast,
     PremModel,
     Sterile,
@@ -61,7 +62,7 @@ from ._oscprobgpu import (  # noqa: E402,F401
     has_cuda,
 )
 
-__all__ = ["Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "Deco", "SiderealLIV", "OQS", "PremModel",
+__all__ = ["__version__", "Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "Deco", "SiderealLIV", "OQS", "PremModel",
            "DeviceArray", "cuda_device_count", "has_cuda", "default_devices",
            "path_column_depth", "path_transmission"]
 

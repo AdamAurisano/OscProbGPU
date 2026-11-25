@@ -317,3 +317,14 @@ def test_default_earth_from_package_data(tmp_path, monkeypatch):
     monkeypatch.setenv("OPG_DATA_DIR", str(tmp_path / "missing"))
     with pytest.raises(RuntimeError):
         opg.PremModel()
+
+
+def test_version_matches_pyproject():
+    """oscprobgpu.__version__ comes from the CMake project version; it must
+    match the wheel version in pyproject.toml."""
+    import os
+    import re
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+    with open(os.path.join(root, "pyproject.toml")) as f:
+        v = re.search(r'^version = "([^"]+)"', f.read(), re.M).group(1)
+    assert opg.__version__ == v

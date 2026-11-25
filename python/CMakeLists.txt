@@ -4,6 +4,7 @@ add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/nanobind
 
 nanobind_add_module(_oscprobgpu NB_STATIC src/module.cpp)
 target_link_libraries(_oscprobgpu PRIVATE oscprobgpu)
+target_compile_definitions(_oscprobgpu PRIVATE OPG_VERSION="${PROJECT_VERSION}")
 
 # Lay out an importable package in the build tree: build/python/oscprobgpu
 set(_pkg ${CMAKE_CURRENT_BINARY_DIR}/oscprobgpu)
