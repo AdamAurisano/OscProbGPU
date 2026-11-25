@@ -14,7 +14,7 @@ concurrency:
 jobs:
   cpu:
     name: CPU tests (${{ matrix.mode }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -22,9 +22,13 @@ jobs:
         include:
           # default build: eigh3 eigensolver, CPU and Python tests
           - mode: default
+            os: ubuntu-latest
             cmake: -DOPG_ENABLE_PYTHON=ON
-          # OscProb's exact eigensolver call, checked bit for bit against OscProb's own Kopp sources
+          # OscProb's exact eigensolver call, checked bit for bit against OscProb's own Kopp sources and the
+          # reference data. Bit-identity holds for the toolchain the data was made with (GCC 13, glibc 2.39:
+          # OscProb's Kopp path goes through libgcc's complex division and libm), hence the pinned image.
           - mode: bitwise
+            os: ubuntu-24.04
             cmake: -DOPG_OSCPROB_BITWISE=ON
     steps:
       - uses: actions/checkout@v4

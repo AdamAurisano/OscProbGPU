@@ -592,7 +592,12 @@ or regenerate it with `reference/make_reference.sh`, which builds OscProb
 plus variants with complex phases.
 
 Maximum |ΔP| against OscProb (all channels, ν and ν̄; test path, vacuum and a
-101 x 120 PREM grid):
+101 x 120 PREM grid). The **0** entries need the toolchain the reference data
+was made with (GCC 13, glibc 2.39, x86-64 without FMA): OscProb's Kopp path
+goes through libgcc's complex division and libm, whose last bits vary between
+versions. Host code is always built with `-ffp-contract=off`, so FMA-capable
+targets (`-march=x86-64-v3`, or compilers defaulting to it) do not change the
+results.
 
 | Model | CPU | GPU (V100) | Notes |
 |-------|-----|------------|-------|

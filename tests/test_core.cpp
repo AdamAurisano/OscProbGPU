@@ -30,8 +30,10 @@ TEST_CASE("Complex arithmetic matches std::complex<double>")
     CHECK(to_std(a * s) == sa * s);
     CHECK(to_std(conj(a)) == std::conj(sa));
     CHECK(opg::norm(a) == std::norm(sa));
+    // Smith division vs libgcc's __divdc3: each is within ~2 ulp of the exact
+    // quotient, and libgcc's rounding differs between GCC versions.
     SC q = to_std(a / b) - sa / sb;
-    CHECK(std::abs(q) <= 4e-16 * std::abs(sa / sb));
+    CHECK(std::abs(q) <= 1e-15 * std::abs(sa / sb));
   }
 }
 
