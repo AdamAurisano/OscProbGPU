@@ -119,6 +119,12 @@ OPG_TEST_DATA_DIR=$PWD/tests/data pytest python/tests
 The pip build has been tested with the CPU backend (Python 3.12, numpy 2.5);
 the CUDA module is tested through the CMake build.
 
+`PremModel()` without a file name loads `prem_default.txt` from
+`$OPG_DATA_DIR` when that is set, else from the source tree's `data/` (CMake
+builds compile that path in). Wheels ship the Earth model tables in
+`oscprobgpu/data` and point `OPG_DATA_DIR` there on import, so an installed
+package does not depend on the source tree.
+
 On pre-Ampere GPUs with old drivers (no PTX JIT), set
 `CMAKE_CUDA_ARCHITECTURES` to the exact SM of the card.
 
@@ -215,7 +221,8 @@ followed by `calculate_binned()` for it alone, whatever the batch; the
 per-point Earths must have the layers of `earth()` (only densities and Z/A
 may differ). One device per propagator; points are processed in sub-batches
 whose node scratch stays below 512 MB. `binned_batch()` gives the same into
-host vectors on any backend, one point at a time. On a V100 (Fast, 40 x 20
+host vectors on any backend, one point at a time. Both are C++ only for
+now, as are the analytic averages below (no Python bindings yet). On a V100 (Fast, 40 x 20
 bins at 1 x 5 nodes, with gradients, batches of about 25 points) this is
 0.25 ms per point, against 1.39 ms with one point per call.
 
@@ -386,8 +393,7 @@ C++: `opg::transmission(path, xsec)`, `opg::column_depth(path)`
 ## Gradients
 
 Exact derivatives dP/dp with respect to the model parameters, on CPU and GPU.
-**Status:** available for all models (`Fast`, `NSI`, `NUNM`, `Sterile`,
-`Decay`), for grids, event lists, fixed paths and bin averages, with respect to
+**Status:** available for all ten models, for grids, event lists, fixed paths and bin averages, with respect to
 the model parameters and the Earth model's Z/A per layer type (see
 [docs/ROADMAP.md](docs/ROADMAP.md) for what is next). Parameters
 (`parameter_names`):
@@ -535,7 +541,9 @@ and CPU gradients agree to 1e-13; grid, event-list and weighted modes are
 consistent; multi-GPU results equal single-GPU results.
 
 **Cost** (1000 × 1000 grid, ν and ν̄, all parameters, one V100, relative to
-a probability-only evaluation of the same model; two GPUs halve the times):
+a probability-only evaluation of the same model; two GPUs halve the times;
+measured with the Kopp `zheevh3` before `eigh3` replaced it, which made the
+3x3 hermitian models up to ~14% slower on a V100, see [Performance](#performance)):
 
 | Model | Parameters | P + full gradients | Weighted mode | per parameter |
 |-------|-----------:|-------------------:|--------------:|--------------:|
@@ -551,7 +559,7 @@ a probability-only evaluation of the same model; two GPUs halve the times):
 | OQS     | 43 | 377x (180 s)   | 13x (reverse mode; 378x forward) | 8.8 (weighted: 0.3) |
 
 The weighted times include uploading the weights. On the CPU the factors are
-9x, 28x, 28x, 17x and 6x. This is about 1.5–2 probability evaluations per
+9x, 28x, 28x, 17x and 6x for Fast, NSI, NUNM, Sterile and Decay. This is about 1.5–2 probability evaluations per
 parameter: comparable to central finite differences (2 per parameter), but
 exact. Deco (5.4) and OQS (8.8; 3.3 on the CPU) are the exceptions: Deco
 carries three density matrices and their derivatives; OQS differentiates an
@@ -672,7 +680,8 @@ solver.
 Binned: 40 x 20 bins with 8 nodes per direction (and per layer piece):
 5.4 ms per evaluation on 1 V100, 3.4 ms on 2 (4.3 s single-thread CPU).
 
-Gradients (Fast, 6 parameters, 1 V100; 2 V100 in brackets; `opg_bench ... grad*`):
+Gradients (Fast, 6 parameters, 1 V100; 2 V100 in brackets; `opg_bench ... grad*`; Kopp `zheevh3`
+era, Fast's throughput is unchanged with `eigh3`):
 
 | Mode | Probabilities | + gradients | Weighted |
 |------|------:|------:|------:|
@@ -693,7 +702,8 @@ Levenberg–Marquardt iterations in 0.06 s on one V100.
 include/opg/core      Complex, Mat/Vec, constants, macros
 include/opg/linalg    eigh3, Jacobi, expm, general 3x3 eigensystem; kopp/ (zheevh3, LGPL, bitwise mode only)
 include/opg/physics   mixing (BuildHms port), propagation, gradients
-include/opg/models    fast, nsi, nunm, sterile, decay
+include/opg/models    fast, nsi, nunm, sterile, decay, liv, snsi, deco, sidereal_liv, oqs
+                      (hermitian3: shared 3x3 hermitian machinery)
 include/opg/earth     PremModel and on-device path walker
 include/opg/avg       Gauss-Legendre, analytic (Maltoni) averages
 include/opg/propagator.h, engine*.h   user API and CPU backend

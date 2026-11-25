@@ -1,10 +1,16 @@
 # Roadmap
 
-Status as of 2026-10-02: all five models (Fast, NSI, NUNM, Sterile 3+1, Decay)
-validated against OscProb on CPU and GPU; bin averaging; multi-GPU; Python
-bindings. Gradients (G0–G6) are done for all five models, including bin
-averages, Earth Z/A and per-analysis-bin weighted modes, with Python bindings,
+Status as of 2026-11-24: ten models (Fast, NSI, NUNM, Sterile 3+1, Decay,
+LIV, SNSI, Deco, SiderealLIV, OQS) validated against OscProb on CPU and GPU;
+GL and analytic bin averages, batched over parameter points; multi-GPU;
+Python bindings. Exact gradients for every model (forward mode, and reverse
+mode for the weighted modes of the hermitian models and OQS), including bin
+averages, Earth Z/A and density and per-analysis-bin weighted modes, with
 tests, an example fit (`python/examples/gradient_fit.py`) and benchmarks.
+The 3x3 hermitian eigensolver is our own `eigh3` (Kopp's LGPL `zheevh3`
+only in the `OPG_OSCPROB_BITWISE` mode).
+
+The phases below record the design history (2026-10-02 onwards).
 
 ## Gradient phases (all done)
 
@@ -82,6 +88,31 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   assets (testdata-v1; testdata-v2 adds OQS); `scripts/fetch_test_data.sh`
   (default testdata-v2) checks them against
   `tests/data/SHA256SUMS`. A new data version needs a new tag and manifest.
+* Done (2026-10-27): analytic 3x3 hermitian eigensolver `eigh3`
+  (`include/opg/linalg/eigh3.h`, BSD) replaces the rescaled Kopp `zheevh3`
+  by default: residual ~1e-14 against 4e-13 (and 1e-3 on some generic
+  random matrices), ~20% slower on a GTX 1650 Ti, 0–14% on a V100. Its
+  products are unfusable on the device (`__dmul_rn`/`__fmul_rn`): with
+  ordinary products nvcc contracted the a*b - c*d differences into FMAs
+  differently per kernel and broke the bit identity of probabilities with
+  and without gradients. Any new inlined kernel with differences of
+  products needs the same treatment. Open: its Jacobi fallback (reached
+  above ~10–20 TeV in matter) is not protected that way.
+* Done (2026-10-24): licensing. BSD 3-Clause code, CC BY 4.0 docs; OscProb
+  credited (MIT, `LICENSE-OscProb`); the Kopp port (LGPL) is compiled only
+  in the bitwise mode.
+* Done (2026-11-24): fixes from a code review. Stale per-device partial sums
+  after `weighted_gradient_points_binned` on several GPUs; `eigh3` returned
+  the identity for an all-NaN matrix; the CPU binned gradient zeroed the
+  other half (ν/ν̄) on every call; result getters (`probs`, `grad`,
+  `binned`, `binned_grad`, scalar accessors) now throw instead of reading
+  missing or stale results (segfaults from Python); `set_earth` is atomic
+  when it throws and rebuilds layer-adapted cosZ nodes when the grazing
+  cosines change; `binned_batch` restores the state when it throws;
+  `calculate_binned_batch` on a caller's stream is waited for before
+  `set_earth`/`set_bins`/destruction; the adjoint no longer reads an
+  unwritten checkpoint on zero-segment paths; wheels ship the Earth tables
+  (`OPG_DATA_DIR`) instead of compiling in the source path.
 
 ## More OscProb calculators
 * Done: LIV (`PMNS_LIV`, SME d = 3..8) and SNSI (`PMNS_SNSI`), bit-identical to
@@ -229,9 +260,14 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   hermitian), Deco/OQS (density matrices, Gamma E^n): hard, a new method.
 * Possible: host preparation of batches (~5-10 us per point: dual-number
   prepared states and dA per parameter) on the device.
-* Possible: batched fixed-node GL (not needed by PISCES now).
-* Next for the analytic averages: Python bindings. Models with E-dependent matter terms are
-  out of scope (the expansion needs H affine in 1/E).
+* Done (2026-10-28, for PISCES): batched fixed-node GL,
+  `calculate_binned_batch` (device output, per-point Earths, sub-batches
+  below 512 MB of node scratch, one device) and `binned_batch` (host, any
+  backend, the reference). V100, Fast, 40 x 20 bins at 1 x 5 nodes with
+  gradients: 1.39 -> 0.25 ms per point.
+* Next: Python bindings for the analytic averages, their batch API and the
+  binned batch. Models with E-dependent matter terms are out of scope for
+  the analytic averages (the expansion needs H affine in 1/E).
 * Not planned: PMNS_Avg (obsolete), PMNS_Iter (approximate solver for Fast).
 
 ## Working notes
