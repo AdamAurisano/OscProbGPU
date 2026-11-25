@@ -62,6 +62,13 @@ endif()
 if(OpenMP_CXX_FOUND)
   target_link_libraries(opg_core INTERFACE OpenMP::OpenMP_CXX)
 endif()
+# No contraction of a*b + c into FMAs in host code: results, and their bit-identity with OscProb and between
+# code paths, must not depend on the target ISA (GCC contracts by default whenever FMA instructions are
+# available, e.g. with -march=x86-64-v3 or on toolchains that default to it). Device code uses __dmul_rn.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(opg_core INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>
+                                            $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-ffp-contract=off>)
+endif()
 if(OPG_OSCPROB_BITWISE)
   target_compile_definitions(opg_core INTERFACE OPG_OSCPROB_BITWISE)
 endif()

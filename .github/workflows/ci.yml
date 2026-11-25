@@ -49,6 +49,8 @@ jobs:
       - name: Fetch the reference data
         if: steps.data.outputs.cache-hit != 'true'
         run: scripts/fetch_test_data.sh testdata-v2
+      - name: Compiler target (FMA availability)
+        run: g++ --version | head -1; g++ -Q --help=target | grep -E '^ +-march=|^ +-mfma ' || true
       - name: Configure
         run: >
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOPG_ENABLE_CUDA=OFF
