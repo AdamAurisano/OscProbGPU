@@ -186,9 +186,28 @@ def _device_binned(self):
     return _view(self, "binned")
 
 
+def _checks_device_arrays(f):
+    """Wrap a method taking CUDA arrays: a stale DeviceArray argument raises
+    RuntimeError (nanobind would report a failed conversion as TypeError)."""
+    def g(self, *args, **kwargs):
+        for a in list(args) + list(kwargs.values()):
+            if isinstance(a, DeviceArray):
+                a._ready()
+        return f(self, *args, **kwargs)
+    g.__name__ = getattr(f, "__name__", "method")
+    g.__doc__ = getattr(f, "__doc__", None)
+    return g
+
+
+_CUDA_ARG_METHODS = ("weighted_gradient", "weighted_gradient_binned", "calculate_binned_batch",
+                     "avg_path_analytic_batch_device", "avg_path_analytic_batch_weighted")
+
 for _cls in (Fast, NSI, NUNM, Sterile, Decay, LIV, SNSI, Deco, SiderealLIV, OQS):
     _cls.device_probs = _device_probs
     _cls.device_binned = _device_binned
+    for _m in _CUDA_ARG_METHODS:
+        if hasattr(_cls, _m):
+            setattr(_cls, _m, _checks_device_arrays(getattr(_cls, _m)))
 
 
 def default_devices():
