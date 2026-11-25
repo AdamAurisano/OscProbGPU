@@ -85,8 +85,9 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   (5e-9 vs 1e-11 in the gradient tests, 1e-13 vs 1e-14 against OscProb) and
   1.8x slower on the CPU, so Decay keeps Padé for values.
 * Done: `tests/data` (OscProb references, ~39 MB) published as release
-  assets (testdata-v1; testdata-v2 adds OQS); `scripts/fetch_test_data.sh`
-  (default testdata-v2) checks them against
+  assets (testdata-v1; testdata-v2 adds OQS; testdata-v3 regenerates
+  SiderealLIV with OscProb 7c06b3e); `scripts/fetch_test_data.sh`
+  (default testdata-v3) checks them against
   `tests/data/SHA256SUMS`. A new data version needs a new tag and manifest.
 * Done (2026-10-27): analytic 3x3 hermitian eigensolver `eigh3`
   (`include/opg/linalg/eigh3.h`, BSD) replaces the rescaled Kopp `zheevh3`
@@ -127,9 +128,11 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   the eigensystem in dual arithmetic.
 * Done: SiderealLIV (`PMNS_SiderealLIV`): per-path direction in a custom
   state (Earth paths: zenith from cosZ unless a fixed direction is set),
-  bit-identical to OscProb with `OPG_OSCPROB_BITWISE`, with gradients. Note
-  (OscProb behaviour, ported as is): the cT terms lack the GeV -> eV factor of
-  the aT terms, and the sidereal terms are dropped in vacuum.
+  bit-identical to OscProb with `OPG_OSCPROB_BITWISE`, with gradients.
+  Follows OscProb 7c06b3e (PR #76, 2026-10): the cT terms carry the GeV -> eV
+  factor of the aT terms, and the Hamiltonian is diagonalised in vacuum too
+  (before, as OscProb 5f2d719, cT was ~1e9 too small and the sidereal terms
+  were dropped in vacuum). Reference data testdata-v3.
 * Done (51e2387, 481803c):
   - Deco gradients from an analytic eigenbasis formula instead of dual
     arithmetic, K = 1 (done; V100 2.8 s vs 3.7 s before for 10 params on

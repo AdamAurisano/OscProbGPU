@@ -8,11 +8,10 @@
 /// and cT (dimension 4, a tensor of which XX, YY, XY, XZ, YZ enter) are
 /// combined with the neutrino direction N (from the detector colatitude and
 /// the zenith and azimuth of arrival) and the local sidereal time T into a
-/// real term added to the Hamiltonian (see hamiltonian()). As in OscProb:
-/// * the cT terms enter as E[GeV] * cT without the GeV -> eV factor that the
-///   aT terms carry;
-/// * in vacuum (density < 1e-6) PMNS_Fast's analytic eigensystem is used, so
-///   the sidereal terms do not act there.
+/// real term added to the Hamiltonian (see hamiltonian()). As in OscProb
+/// since 7c06b3e (PR #76): the aT and cT terms both carry the GeV -> eV
+/// factor, and the Hamiltonian is always diagonalised (the sidereal terms
+/// act in vacuum too; no PMNS_Fast vacuum shortcut).
 ///
 /// Direction: for paths through the Earth the zenith is that of the path,
 /// zenith = acos(cosZ) (as SetNeutrinoDirection(acos(cosZ) [deg], azimuth)),
@@ -211,12 +210,10 @@ namespace opg {
       }
 
       /// Port of PMNS_SiderealLIV::UpdateHam (upper triangle + diagonal), for
-      /// any scalar type S of the prepared state and segment type Seg; with
-      /// liv = false only the standard part (vacuum shortcut, see header).
+      /// any scalar type S of the prepared state and segment type Seg.
       template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, const State& st, R E,
-                                                bool nubar, const Seg& s, Mat<3, S>& H,
-                                                bool liv = true)
+                                                bool nubar, const Seg& s, Mat<3, S>& H)
       {
         const S lv = S(2 * R(constants::kGeV2eV) * E);  // 2*E in eV
         const Mat<3, S>& Hms = P.common.Hms;
@@ -234,9 +231,10 @@ namespace opg {
         else
           H(0, 0).re -= kr2GNe;
 
-        if (liv) {
+        {
           const R sw = st.sw, cw = st.cw;
-          const R sign = nubar ? -R(constants::kGeV2eV) : R(constants::kGeV2eV);
+          const R ev   = R(constants::kGeV2eV);
+          const R sign = nubar ? -ev : ev;
           const R N0 = st.N[0], N1 = st.N[1], N2 = st.N[2];
           OPG_UNROLL
           for (int i = 0; i < 3; i++)
@@ -254,12 +252,13 @@ namespace opg {
             const S C0  = -sign * a2 * N2;
             const S As0 = sign * (a0 * N1 - a1 * N0);
             const S Ac0 = -sign * (a0 * N0 + a1 * N1);
-            const S As1 = R(2) * N1 * N2 * c02 - R(2) * N0 * N2 * c12;
-            const S Ac1 = R(-2) * N0 * N2 * c02 - R(2) * N1 * N2 * c12;
-            const S Bs1 = N0 * N1 * (c00 - c11) - (N0 * N0 - N1 * N1) * c01;
+            // cT terms: CPT-even (no sign flip for antineutrinos)
+            const S As1 = ev * (R(2) * N1 * N2 * c02 - R(2) * N0 * N2 * c12);
+            const S Ac1 = ev * (R(-2) * N0 * N2 * c02 - R(2) * N1 * N2 * c12);
+            const S Bs1 = ev * (N0 * N1 * (c00 - c11) - (N0 * N0 - N1 * N1) * c01);
             const S Bs  = E * Bs1;
-            const S Bc1 = R(-0.5) * (N0 * N0 - N1 * N1) * (c00 - c11) -
-                          R(2.0) * N0 * N1 * c01;
+            const S Bc1 = ev * (R(-0.5) * (N0 * N0 - N1 * N1) * (c00 - c11) -
+                                R(2.0) * N0 * N1 * c01);
             const S Bc  = E * Bc1;
             const S As  = As0 + E * As1;
             const S Ac  = Ac0 + E * Ac1;
@@ -320,21 +319,14 @@ namespace opg {
         return st;
       }
 
-      /// Eigensystem of a segment (PMNS_Fast::SolveHam with the sidereal H).
+      /// Eigensystem of a segment (PMNS_SiderealLIV::SolveHam: always
+      /// PMNS_Fast::SolveHamMatter, also in vacuum).
       OPG_HD OPG_INLINE static void eigen(const Prepared& P, const State& st, R E, bool nubar,
                                           const Segment<R>& s, Mat<3, R>& V, R lam[3])
       {
-        if (s.density < R(1.0e-6)) {
-          V      = P.common.Uvac[nubar ? 1 : 0];
-          lam[0] = 0;
-          lam[1] = P.common.dm[1] / (2 * R(constants::kGeV2eV) * E);
-          lam[2] = P.common.dm[2] / (2 * R(constants::kGeV2eV) * E);
-        }
-        else {
-          Mat<3, R> H;
-          hamiltonian(P, st, E, nubar, s, H);
-          diagonalize3(H, V, lam);
-        }
+        Mat<3, R> H;
+        hamiltonian(P, st, E, nubar, s, H);
+        diagonalize3(H, V, lam);
       }
 
       OPG_HD OPG_INLINE static void step(const Prepared& P, R E, bool nubar,
@@ -379,12 +371,8 @@ namespace opg {
         R                lam[3];
         eigen(P, st, E, nubar, s, V, lam);
 
-        // dual Hamiltonian; in vacuum H = Hms/2E (no sidereal terms)
-        const bool              vac = s.density < R(1.0e-6);
-        SegmentZ<R, Dual<R, K>> sd  = sz;
-        if (vac) sd.density = 0;
         Mat<3, Dual<R, K>> HD;
-        hamiltonian(PD, st, E, nubar, sd, HD, !vac);
+        hamiltonian(PD, st, E, nubar, sz, HD);
 
         Mat<3, R> dSm[K];
         OPG_UNROLL
@@ -429,14 +417,13 @@ namespace opg {
           Mat<3, R> Hb;
           State     st;
       };
-      // affine in density and density * Z/A, except on vacuum segments
-      // (no sidereal terms there), which are contracted per segment
+      // affine in density and density * Z/A on every segment
       static constexpr bool adj_affine = true;
       OPG_HD OPG_INLINE static const Mat<3, R>& adj_hbar(const AdjSeg& G) { return G.Hb; }
       OPG_HD OPG_INLINE static bool adj_affine_segment(const Segment<R>& s, R& rho)
       {
         rho = s.density;
-        return !(s.density < R(1.0e-6));
+        return true;
       }
       template <class S>
       OPG_HD OPG_INLINE static void adj_hamiltonian(const PreparedT<S>& P, const State& st,
@@ -444,7 +431,7 @@ namespace opg {
                                                     Mat<3, S>& H)
       {
         const SegmentZ<R, S> s{R(0), rho, zoa, -1};
-        hamiltonian(P, st, E, nubar, s, H, true);
+        hamiltonian(P, st, E, nubar, s, H);
       }
       OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const State& S,
                                               const R* w, size_t stride, State& lam)
@@ -468,12 +455,8 @@ namespace opg {
                                                       const SegmentZ<R, Dual<R, K>>& sz,
                                                       const AdjSeg& G, R (&acc)[K])
       {
-        // as step_grad: in vacuum H = Hms/2E (no sidereal terms)
-        const bool              vac = sz.density.v < R(1.0e-6);
-        SegmentZ<R, Dual<R, K>> sd  = sz;
-        if (vac) sd.density = 0;
         Mat<3, Dual<R, K>> HD;
-        hamiltonian(PD, G.st, E, nubar, sd, HD, !vac);
+        hamiltonian(PD, G.st, E, nubar, sz, HD);
         contract_hbar<3, R, K>(G.Hb, HD, acc);
       }
       template <int K>

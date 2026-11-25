@@ -624,11 +624,12 @@ averages and `AvgProb` values (≈ 39 MB, not committed). Download it into
 `tests/data/` with
 
 ```sh
-scripts/fetch_test_data.sh          # release asset testdata-v2, checked against tests/data/SHA256SUMS
+scripts/fetch_test_data.sh          # release asset testdata-v3, checked against tests/data/SHA256SUMS
 ```
 
 or regenerate it with `reference/make_reference.sh`, which builds OscProb
-(needs ROOT; the published data is from OscProb v2.4.0-5-g5f2d719) and runs
+(needs ROOT; the published data is from OscProb v2.4.0-6-g7c06b3e, which only changed
+SiderealLIV since v2.4.0-5-g5f2d719) and runs
 `reference/dump_reference.cxx`. Parameter sets follow `OscProb/test/Utils.h`
 plus variants with complex phases.
 
@@ -649,7 +650,7 @@ results.
 | LIV | 7.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
 | SNSI | 3.3e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |
 | Deco | 1.4e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 9e-14 | |
-| SiderealLIV | 1.6e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.8e-13 | as OscProb: no sidereal terms in vacuum (ρ < 1e-6), and the cT terms enter as E[GeV]·cT without the GeV → eV factor of the aT terms |
+| SiderealLIV | 2.3e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 3.2e-13 | as OscProb since 7c06b3e (PR #76): the cT terms carry the GeV → eV factor of the aT terms, and the sidereal terms act in vacuum too |
 | OQS | 2.9e-15 | 4.3e-14 | the 8x8 exponential follows Eigen's MatrixExponential (same Padé degrees and scaling), with a different summation order |
 
 The CPU column was measured with `eigh3` (2026-10-27), the GPU column with the

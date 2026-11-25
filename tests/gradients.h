@@ -153,12 +153,12 @@ namespace gradtest {
   {
     return param_scale(name);
   }
-  /// SiderealLIV: P varies on scales of aT ~ 1e-22 GeV and (as cT enters
-  /// as E[GeV] cT, without the GeV -> eV factor, as OscProb) cT ~ 1e-14.
+  /// SiderealLIV: P varies on scales of aT ~ 1e-22 GeV and (cT enters as
+  /// E cT) cT ~ 1e-23 at the test energies.
   template <> inline double model_scale<opg::SiderealLIV<double>>(const std::string& name)
   {
     if (name.size() > 2 && name[0] == 'a' && name[2] == '_') return 1e-22;
-    if (name.size() > 3 && name[0] == 'c' && name[3] == '_') return 1e-14;
+    if (name.size() > 3 && name[0] == 'c' && name[3] == '_') return 1e-23;
     return param_scale(name);
   }
 
@@ -257,8 +257,8 @@ namespace gradtest {
     // sizes with visible effects (see model_scale)
     p.SetA(0, 1, 1, 2e-20);
     p.SetA(1, 2, 0, -1e-20);
-    p.SetC(0, 1, 0, 2, 3e-12);
-    p.SetC(1, 1, 1, 2, -2e-12);
+    p.SetC(0, 1, 0, 2, 3e-21);
+    p.SetC(1, 1, 1, 2, -2e-21);
     v.push_back({"sidereal (path zenith)", p});
     v.push_back({"sidereal_fixed", variants::sidereal_fixed()});
     SiderealLIV::Params q;

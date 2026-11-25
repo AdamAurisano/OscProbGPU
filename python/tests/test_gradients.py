@@ -213,7 +213,7 @@ def _model(cls, devices):
         p.set_cT(1, 2, 4, 1e-22, 2.3)
     elif cls is opg.SiderealLIV:
         p.set_a(0, 1, 1, 2e-22)
-        p.set_c(1, 2, 0, 2, 3e-14)
+        p.set_c(1, 2, 0, 2, 3e-23)
         p.set_azimuth(30.0)
         p.set_time_hours(3.0)
     elif cls is opg.Deco:
