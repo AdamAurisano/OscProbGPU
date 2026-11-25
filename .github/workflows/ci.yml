@@ -1,0 +1,94 @@
+# CPU continuous integration. The CUDA backend is tested on GPU machines by hand (README, "Tests").
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu:
+    name: CPU tests (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # default build: eigh3 eigensolver, CPU and Python tests
+          - mode: default
+            cmake: -DOPG_ENABLE_PYTHON=ON
+          # OscProb's exact eigensolver call, checked bit for bit against OscProb's own Kopp sources
+          - mode: bitwise
+            cmake: -DOPG_OSCPROB_BITWISE=ON
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python test dependencies
+        run: python -m pip install numpy pytest
+      - name: OscProb sources (Kopp eigensolvers for the bitwise checks)
+        if: matrix.mode == 'bitwise'
+        uses: actions/checkout@v4
+        with:
+          repository: joaoabcoelho/OscProb
+          ref: 5f2d719f252ed0f4d2efc6567c6eee742e813baf  # v2.4.0-5, the version of the reference data
+          path: OscProb
+      - name: Cache the reference data
+        id: data
+        uses: actions/cache@v4
+        with:
+          path: tests/data/*.npy
+          key: testdata-v2-${{ hashFiles('tests/data/SHA256SUMS') }}
+      - name: Fetch the reference data
+        if: steps.data.outputs.cache-hit != 'true'
+        run: scripts/fetch_test_data.sh testdata-v2
+      - name: Configure
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DOPG_ENABLE_CUDA=OFF
+          -DOPG_OSCPROB_DIR=${{ github.workspace }}/OscProb
+          -DPython_EXECUTABLE=$(which python) ${{ matrix.cmake }}
+      - name: Build
+        run: cmake --build build -j4
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  wheel:
+    name: Wheel (install + pytest outside the tree)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache the reference data
+        id: data
+        uses: actions/cache@v4
+        with:
+          path: tests/data/*.npy
+          key: testdata-v2-${{ hashFiles('tests/data/SHA256SUMS') }}
+      - name: Fetch the reference data
+        if: steps.data.outputs.cache-hit != 'true'
+        run: scripts/fetch_test_data.sh testdata-v2
+      - name: Build and install the wheel
+        run: |
+          python -m pip install pytest
+          python -m pip wheel --no-deps -w dist .
+          python -m pip install dist/*.whl
+      - name: Default Earth model from the wheel's data
+        working-directory: /
+        run: python -c "import oscprobgpu as o; print(o.__version__); o.PremModel()"
+      - name: pytest against the installed wheel
+        working-directory: ${{ runner.temp }}
+        env:
+          OPG_TEST_DATA_DIR: ${{ github.workspace }}/tests/data
+        run: |
+          python -c "import oscprobgpu, sys; f = oscprobgpu.__file__; print(f); sys.exit('site-packages' not in f)"
+          python -m pytest -q ${{ github.workspace }}/python/tests -p no:cacheprovider

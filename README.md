@@ -1,5 +1,7 @@
 # OscProbGPU
 
+[![CI](https://github.com/AdamAurisano/OscProbGPU/actions/workflows/ci.yml/badge.svg)](https://github.com/AdamAurisano/OscProbGPU/actions/workflows/ci.yml)
+
 A CUDA port of selected [OscProb](https://github.com/joaoabcoelho/OscProb)
 neutrino oscillation calculators, with a batched C++ API and Python bindings.
 
@@ -103,6 +105,10 @@ cmake --build build -j8
 scripts/fetch_test_data.sh                           # reference data for the tests
 ctest --test-dir build                               # labels: cpu, gpu, python
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the CPU and Python tests, the
+OscProb-bitwise build against OscProb's own eigensolver sources, and an
+installed wheel on every push; the CUDA tests run on GPU machines by hand.
 
 Requirements: CMake ≥ 3.18, C++17, optionally CUDA ≥ 11 (tested with 11.8 on
 V100) and Python ≥ 3.8 with numpy. nanobind (BSD) and doctest (MIT) are
