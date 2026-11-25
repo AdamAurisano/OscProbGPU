@@ -20,6 +20,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1534,7 +1535,8 @@ namespace opg {
 
       /// Points are processed in sub-batches whose node scratch stays below
       /// kBnScratch; each point runs the single-point kernels' code on its own
-      /// inputs, so results do not depend on the batch.
+      /// inputs, so results do not depend on the batch. OPG_BN_MAX_POINTS (env)
+      /// caps the points per sub-batch further (tests use it to force splits).
       void binned_batch(size_t npts, const Prepared* P, const GradChunk<Model>* G, int nchunk,
                         int npar, const R* dens, const R* zoa, Flavor which, R* out, R* dout,
                         void* stream) override
@@ -1579,6 +1581,8 @@ namespace opg {
         const size_t per_pt = 2 * (nch + nq) * nrow * nEn * sizeof(R);
         size_t       mp = std::max<size_t>(1, std::min(npts, kBnScratch / per_pt));
         mp = std::max<size_t>(1, std::min<size_t>(mp, 65535 / size_t(std::max(nzP, nzG))));
+        if (const char* cap = std::getenv("OPG_BN_MAX_POINTS"))
+          if (const long c = std::atol(cap); c > 0) mp = std::min(mp, size_t(c));
         ensure(B.P, id, mp);
         ensure(B.node, id, mp * 2 * nch * nrow * nEn);
         if (want) {

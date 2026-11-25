@@ -23,7 +23,8 @@ namespace {
   /// calculate_binned_batch against binned_batch (one point at a time
   /// through calculate_binned on the same GPU): per-point Earths and
   /// gradients (model and Earth parameters, several passes), values only,
-  /// no Earths, and the batch split in two. All bit for bit.
+  /// no Earths, the batch split in two by the caller and into sub-batches of
+  /// 1, 2 and 3 points by the engine (OPG_BN_MAX_POINTS). All bit for bit.
   template <class Model> void check_batch(const std::vector<int>& dev)
   {
     using Params = typename Model::Params;
@@ -103,6 +104,17 @@ namespace {
       const auto split = run(&earths, true, {3, 4});
       CHECK(ndiff(split.first, refP) == 0);
       CHECK(ndiff(split.second, refG) == 0);
+      // sub-batches inside the engine (the node scratch limit is not reached here)
+      for (const char* cap : {"1", "2", "3"}) {
+        CAPTURE(cap);
+        setenv("OPG_BN_MAX_POINTS", cap, 1);
+        const auto sub = run(&earths, true, {size_t(np)});
+        const auto subv = run(&earths, false, {size_t(np)});
+        unsetenv("OPG_BN_MAX_POINTS");
+        CHECK(ndiff(sub.first, refP) == 0);
+        CHECK(ndiff(sub.second, refG) == 0);
+        CHECK(ndiff(subv.first, refP) == 0);
+      }
       const auto vals = run(&earths, false, {size_t(np)});
       CHECK(ndiff(vals.first, refP) == 0);
       // no Earths: every point with earth()
