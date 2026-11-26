@@ -697,9 +697,9 @@ namespace opg {
 
       //.......................................................................
       // Analytic bin averages for fixed paths (avg/analytic.h; Fast, NSI,
-      // Sterile): first-order expansion of the evolution operator in 1/E on
-      // sub-bins, after OscProb's PMNS_Maltoni; fast oscillations are
-      // averaged exactly. Sub-bins are computed on the GPUs with the CUDA
+      // NUNM, Sterile, SNSI, LIV aT3, SiderealLIV aT): first-order
+      // expansion of the evolution operator in 1/E on sub-bins, after
+      // OscProb's PMNS_Maltoni; fast oscillations are averaged exactly. Sub-bins are computed on the GPUs with the CUDA
       // backend (double precision; opt.host = true: on the host), else on
       // the host with OpenMP.
 
@@ -1157,6 +1157,8 @@ namespace opg {
           for (int c = 0; c < nchunk; c++) G[size_t(p) * nchunk + c] = ch[c];
           for (int q = 0; q < npar; q++) dA[size_t(p) * npar + q] = da[q];
         }
+        for (size_t p = 0; p < np; p++)  // e.g. LIV terms growing with E
+          analytic::check_supported<Model>(P[p], G.data() + p * size_t(nchunk), size_t(nchunk));
       }
 
       static void check_points(const std::vector<R>& E, const std::vector<R>& C,

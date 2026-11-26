@@ -6,13 +6,17 @@
 ///        derivatives.
 ///
 /// For H(u) = A u + B(rho), u = 1/E (models whose vacuum Hamiltonian is
-/// proportional to 1/E and whose matter terms do not depend on E), the
-/// evolution operator near u0 is, to first order in d = u - u0,
+/// proportional to 1/E and whose other terms do not depend on E: matter,
+/// NSI, LIV aT^(3)), the evolution operator near u0 is, to first order in
+/// d = u - u0,
 ///
 ///   S(u0 + d) = S0 exp(-i K d),   K = sum_seg T^dag K_seg T,
-///   K_seg = int_0^L exp(iHs) A exp(-iHs) ds,
+///   K_seg = int_0^L exp(iHs) A_seg exp(-iHs) ds,
 ///
-/// with T the evolution before the segment. With K = W diag(mu) W^dag, the
+/// with T the evolution before the segment and A_seg = dH/du on the
+/// segment: one A for most models, per segment for SNSI, whose scalar term
+/// enters the mass matrix (has_segment_vacuum). Terms that are not affine in
+/// 1/E (LIV d >= 4, SiderealLIV cT) are refused (has_analytic_restriction). With K = W diag(mu) W^dag, the
 /// average of P(a -> b) over d in [-h, h] with weight 1 + beta d / h is
 ///
 ///   Pbar_ab = sum_nm B_bn conj(B_bm) conj(W_an) W_am F(mu_n - mu_m),
@@ -41,6 +45,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -87,7 +92,84 @@ namespace opg {
   struct has_avg_sandwich<Model, std::void_t<decltype(Model::analytic_sandwich)>>
       : std::bool_constant<Model::analytic_sandwich> {};
 
+  /// Whether a model gives the 1/E coefficient A of its Hamiltonian itself
+  /// (Model::analytic_vacuum_term = true; then
+  /// Model::analytic_vacuum(P, nubar, seg, A) fills the upper triangle of A
+  /// = dH/du, u = 1/E in GeV^-1, for any scalar type of the prepared state
+  /// and segment type), e.g. because hamiltonian() has E-independent terms
+  /// in vacuum (LIV's aT). Otherwise A is hamiltonian() at E = 1 GeV in
+  /// vacuum.
+  template <class Model, class = void> struct has_analytic_vacuum : std::false_type {};
+  template <class Model>
+  struct has_analytic_vacuum<Model, std::void_t<decltype(Model::analytic_vacuum_term)>>
+      : std::bool_constant<Model::analytic_vacuum_term> {};
+
+  /// Whether A depends on the segment (Model::analytic_segment_vacuum, with
+  /// analytic_vacuum_term; SNSI, whose scalar term enters the mass matrix):
+  /// A and its derivatives (model and Earth parameters) are then evaluated
+  /// per segment from Model::analytic_vacuum.
+  template <class Model, class = void> struct has_segment_vacuum : std::false_type {};
+  template <class Model>
+  struct has_segment_vacuum<Model, std::void_t<decltype(Model::analytic_segment_vacuum)>>
+      : std::bool_constant<Model::analytic_segment_vacuum> {};
+
+  /// Whether the Hamiltonian of the analytic averages is
+  /// Model::analytic_hamiltonian(P, E, nubar, seg, H) instead of
+  /// Model::hamiltonian (Model::analytic_own_hamiltonian; SiderealLIV, whose
+  /// hamiltonian() also takes the direction and sidereal time: a fixed
+  /// path's, from the prepared state).
+  template <class Model, class = void> struct has_analytic_hamiltonian : std::false_type {};
+  template <class Model>
+  struct has_analytic_hamiltonian<Model,
+                                  std::void_t<decltype(Model::analytic_own_hamiltonian)>>
+      : std::bool_constant<Model::analytic_own_hamiltonian> {};
+
+  /// Whether a model can refuse a parameter point
+  /// (Model::analytic_restricted; then Model::analytic_unsupported(P)
+  /// returns nullptr or the reason, for the prepared state P in any scalar
+  /// type: with dual numbers, a nonzero derivative direction of a term that
+  /// is not affine in 1/E is refused too, e.g. LIV's d >= 4 coefficients).
+  template <class Model, class = void> struct has_analytic_restriction : std::false_type {};
+  template <class Model>
+  struct has_analytic_restriction<Model, std::void_t<decltype(Model::analytic_restricted)>>
+      : std::bool_constant<Model::analytic_restricted> {};
+
   namespace analytic {
+
+    /// The model's Hamiltonian at energy E for the analytic averages
+    /// (upper triangle; see has_analytic_hamiltonian).
+    template <class Model, class P, class Seg, class M>
+    OPG_HD OPG_INLINE void ham(const P& prep, typename Model::Real E, bool nubar, const Seg& s,
+                               M& H)
+    {
+      if constexpr (has_analytic_hamiltonian<Model>::value)
+        Model::analytic_hamiltonian(prep, E, nubar, s, H);
+      else Model::hamiltonian(prep, E, nubar, s, H);
+    }
+
+    /// A = dH/du of a segment (full hermitian matrix) for models with
+    /// has_segment_vacuum.
+    template <class Model, class P, class Seg>
+    OPG_HD OPG_INLINE Mat<Model::N, typename Model::Real> seg_vacuum(const P& prep, bool nubar,
+                                                                    const Seg& s)
+    {
+      Mat<Model::N, typename Model::Real> A;
+      Model::analytic_vacuum(prep, nubar, s, A);
+      hermitize_from_upper(A);
+      return A;
+    }
+
+    /// Reason why a prepared state (any scalar type) cannot be averaged
+    /// analytically, or nullptr.
+    template <class Model, class P> inline const char* unsupported(const P& prep)
+    {
+      if constexpr (has_analytic_restriction<Model>::value)
+        return Model::analytic_unsupported(prep);
+      else {
+        (void)prep;
+        return nullptr;
+      }
+    }
 
     /// 1 / (k! (n + k + 1)): coefficient of (iz)^k in the series of J_n.
     template <class R> constexpr R jn_coef(int n, int k)
@@ -426,10 +508,12 @@ namespace opg {
       for (int s = 0; s < nseg; s++) {
         SegData<N, R>& d = seg[s];
         Mat<N, R>      H;
-        Model::hamiltonian(P, E0, nubar, path[s], H);
+        ham<Model>(P, E0, nubar, path[s], H);
         jacobi_hermitian<N, R>(H, d.V, d.lam);
-        d.L  = length_in_eV(path[s].length);
-        d.At = sandwich(d.V, A);
+        d.L = length_in_eV(path[s].length);
+        if constexpr (has_segment_vacuum<Model>::value)
+          d.At = sandwich(d.V, seg_vacuum<Model>(P, nubar, path[s]));
+        else d.At = sandwich(d.V, A);
         const SegFn<R> g{d.L};
         Mat<N, R>      Kt;
         for (int i = 0; i < N; i++)
@@ -524,13 +608,19 @@ namespace opg {
       for (int s = 0; s < nseg; s++) {
         const SegData<N, R>& d = seg[s];
         Mat<N, D>            HD;
-        Model::hamiltonian(G.P, E0, nubar, seed_segment(G, path[s]), HD);
+        [[maybe_unused]] Mat<N, D> AD;
+        ham<Model>(G.P, E0, nubar, seed_segment(G, path[s]), HD);
+        if constexpr (has_segment_vacuum<Model>::value)
+          Model::analytic_vacuum(G.P, nubar, seed_segment(G, path[s]), AD);
         for (int k = 0; k < count; k++) {
           // In the eigenbasis of H: dS_seg = Gamma o dH, and
           // dK_seg = dA o g + sum_l (dH_il A_lj g[l_i - l_j, l_l - l_j] -
           //                        A_il dH_lj g[l_i - l_l, l_i - l_j]).
           const Mat<N, R> dHt = sandwich(d.V, dual_dir<N, R, KD>(HD, k));
-          const Mat<N, R> dAt = sandwich(d.V, dA[offset + k]);
+          Mat<N, R> dAt;
+          if constexpr (has_segment_vacuum<Model>::value)
+            dAt = sandwich(d.V, dual_dir<N, R, KD>(AD, k));
+          else dAt = sandwich(d.V, dA[offset + k]);
           Mat<N, R>       dSt, dKt;
           for (int i = 0; i < N; i++)
             for (int j = 0; j < N; j++) {
@@ -645,9 +735,11 @@ namespace opg {
       const SegFn<R> g{s.L};
 
       Mat<N, R> H;
-      Model::hamiltonian(P, R(1) / u0, nubar, seg, H);
+      ham<Model>(P, R(1) / u0, nubar, seg, H);
       jacobi_hermitian<N, R>(H, s.V, s.lam);
-      s.At = sandwich(s.V, A);
+      if constexpr (has_segment_vacuum<Model>::value)
+        s.At = sandwich(s.V, seg_vacuum<Model>(P, nubar, seg));
+      else s.At = sandwich(s.V, A);
 
       Mat<N, R> Kt;
       OPG_UNROLL
@@ -922,6 +1014,29 @@ namespace opg {
       else dHt = sandwich(s.V, dual_dir<N, R, KD>(HD, k));
     }
 
+    /// dA/dp of the parameters of chunk G (offset off): dA + off for models
+    /// with one A, else (has_segment_vacuum) from the dual vacuum term of
+    /// the segment, in buf.
+    template <class Model, int KD>
+    OPG_HD inline const Mat<Model::N, typename Model::Real>*
+    chunk_dA(const GradPrepared<Model, KD>& G, const Mat<Model::N, typename Model::Real>* dA,
+             int off, int count, const Segment<typename Model::Real>& seg, bool nubar,
+             Mat<Model::N, typename Model::Real> (&buf)[KD])
+    {
+      if constexpr (has_segment_vacuum<Model>::value) {
+        using R = typename Model::Real;
+        Mat<Model::N, Dual<R, KD>> AD;
+        Model::analytic_vacuum(G.P, nubar, seed_segment(G, seg), AD);
+        for (int k = 0; k < count; k++) buf[k] = dual_dir<Model::N, R, KD>(AD, k);
+        (void)dA, (void)off;
+        return buf;
+      }
+      else {
+        (void)G, (void)count, (void)seg, (void)nubar, (void)buf;
+        return dA + off;
+      }
+    }
+
     /// Whether chunk c only has model parameters of a model with static
     /// matter terms (dH = u dA).
     template <class Model, int KD>
@@ -1008,12 +1123,14 @@ namespace opg {
           const bool st = fused_static(G[c], cnt[c]);
           Mat<N, D>  HD, IniD, FinD;
           if (!st)
-            Model::hamiltonian(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
+            ham<Model>(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
           if constexpr (SW) Model::avg_sandwich(G[c].P, IniD, FinD);
+          Mat<N, R>        dAbuf[KD];
+          const Mat<N, R>* dAc = chunk_dA<Model, KD>(G[c], dA, off[c], cnt[c], seg, nubar, dAbuf);
           for (int k = 0; k < cnt[c]; k++, q++) {
             pid[q] = off[c] + k;
             Mat<N, R> dAt, dHt;
-            fused_dH<Model, KD>(s, dA + off[c], k, st, HD, dAt, dHt);
+            fused_dH<Model, KD>(s, dAc, k, st, HD, dAt, dHt);
             fused_dparam<N, R, NB>(s, t, dAt, dHt, dk[q], db[q]);
             if constexpr (SW)
               fused_dsandwich(s, dual_full_dir<N, R, KD>(FinD, k), dual_full_dir<N, R, KD>(IniD, k),
@@ -1153,11 +1270,13 @@ namespace opg {
       for (int c = 0; c < nchunk; c++) {
         const bool st = fused_static(G[c], cnt[c]);
         Mat<N, D>  HD, IniD, FinD;
-        if (!st) Model::hamiltonian(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
+        if (!st) ham<Model>(G[c].P, R(1) / cell.uc, nubar, seed_segment(G[c], seg), HD);
         if constexpr (SW) Model::avg_sandwich(G[c].P, IniD, FinD);
+        Mat<N, R>        dAbuf[KD];
+        const Mat<N, R>* dAc = chunk_dA<Model, KD>(G[c], dA, off[c], cnt[c], seg, nubar, dAbuf);
         for (int k = 0; k < cnt[c]; k++) {
           Mat<N, R> dAt, dHt;
-          fused_dH<Model, KD>(s, dA + off[c], k, st, HD, dAt, dHt);
+          fused_dH<Model, KD>(s, dAc, k, st, HD, dAt, dHt);
           R          dk[NK];
           Complex<R> db[NB][N], dw[NWR][N];
           fused_dparam<N, R, NB>(s, t, dAt, dHt, dk, db);
@@ -1261,8 +1380,11 @@ namespace opg {
       return sb;
     }
 
-    /// The vacuum term A = dH/du (the vacuum Hamiltonian at E = 1 GeV) and,
-    /// with chunks, its derivatives dA[p] for the npar parameters.
+    /// The vacuum term A = dH/du (the vacuum Hamiltonian at E = 1 GeV, or
+    /// Model::analytic_vacuum, see has_analytic_vacuum) and, with chunks,
+    /// its derivatives dA[p] for the npar parameters. Models with
+    /// has_segment_vacuum evaluate A per segment instead (this A, in
+    /// vacuum, is then unused).
     template <class Model>
     void vacuum_term(const typename Model::Prepared& P, const std::vector<GradChunk<Model>>* chunks,
                      int npar, bool nubar, Mat<Model::N, typename Model::Real>& A,
@@ -1271,7 +1393,8 @@ namespace opg {
       using R         = typename Model::Real;
       constexpr int N = Model::N;
       const Segment<R> vac{R(0), R(0), R(0.5), -1};
-      Model::hamiltonian(P, R(1), nubar, vac, A);
+      if constexpr (has_analytic_vacuum<Model>::value) Model::analytic_vacuum(P, nubar, vac, A);
+      else Model::hamiltonian(P, R(1), nubar, vac, A);
       A = full(A);
       dA.assign(size_t(std::max(npar, 0)), Mat<N, R>::zero());
       if constexpr (grad_traits<Model>::enabled) {
@@ -1281,7 +1404,9 @@ namespace opg {
           for (const auto& c : *chunks) {
             Mat<N, D>            AD;
             const SegmentZ<R, D> vz{R(0), D(R(0)), D(R(0.5)), -1};
-            Model::hamiltonian(c.P.P, R(1), nubar, vz, AD);
+            if constexpr (has_analytic_vacuum<Model>::value)
+              Model::analytic_vacuum(c.P.P, nubar, vz, AD);
+            else Model::hamiltonian(c.P.P, R(1), nubar, vz, AD);
             for (int k = 0; k < c.count; k++) dA[c.offset + k] = dual_dir<N, R, KD>(AD, k);
           }
       }
@@ -1360,6 +1485,23 @@ namespace opg {
       }
     }
 
+    /// Throws std::invalid_argument if the prepared state P or (with
+    /// chunks) a derivative direction cannot be averaged analytically
+    /// (has_analytic_restriction, e.g. LIV terms that grow with E).
+    template <class Model>
+    void check_supported(const typename Model::Prepared& P, const GradChunk<Model>* chunks,
+                         size_t nchunk)
+    {
+      const char* why = unsupported<Model>(P);
+      if constexpr (grad_traits<Model>::enabled) {
+        for (size_t c = 0; c < nchunk && !why; c++) why = unsupported<Model>(chunks[c].P.P);
+      }
+      else (void)chunks, (void)nchunk;
+      if (why)
+        throw std::invalid_argument(std::string("avg_path_analytic (") + Model::name + "): " +
+                                    why);
+    }
+
     /// Averages over explicit sub-bins: out[a][b][bin] (and
     /// dout[p][a][b][bin] with chunks), normalised by the sum of the
     /// sub-bin weights of each bin. With an engine that has a device
@@ -1378,6 +1520,7 @@ namespace opg {
                     "analytic averages need a hermitian model affine in 1/E "
                     "(Model::analytic_avg)");
       if (path.empty()) throw std::invalid_argument("avg_path_analytic: empty path");
+      check_supported<Model>(P, chunks ? chunks->data() : nullptr, chunks ? chunks->size() : 0);
       for (const auto& s : sub_in)
         if (s.bin < 0 || size_t(s.bin) >= nbins || !(s.u0 > 0) || !(s.h >= 0))
           throw std::invalid_argument("avg_path_analytic: bad sub-bin");
@@ -1442,7 +1585,8 @@ namespace opg {
     }
 
     /// Relative sub-bin width for a path: sqrt(tol / (0.005 sum V L)) with
-    /// V = sqrt(2) G_F N_A rho (Z/A = 1), capped at opt.max_width.
+    /// V = sqrt(2) G_F N_A rho (Z/A = 1) + opt.extra_potential, capped at
+    /// opt.max_width.
     template <class R>
     inline double subbin_width(const std::vector<Segment<R>>& path, const AnalyticAvgOptions& opt)
     {
@@ -1450,6 +1594,9 @@ namespace opg {
       for (const auto& s : path)
         phi += constants::matter_prefactor() * std::fabs(double(s.density)) *
                length_in_eV(double(s.length));
+      if (opt.extra_potential != 0)
+        for (const auto& s : path)
+          phi += std::fabs(opt.extra_potential) * length_in_eV(double(s.length));
       if (!(opt.max_width > 0)) throw std::invalid_argument("avg_path_analytic: max_width <= 0");
       if (phi <= 0 || !(opt.tol > 0)) return opt.max_width;
       return std::min(opt.max_width, std::sqrt(opt.tol / (0.005 * phi)));

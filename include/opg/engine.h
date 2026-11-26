@@ -72,6 +72,13 @@ namespace opg {
       /// at Z/A = 1); observed errors are about 0.5-1 tol. The cost grows
       /// as 1/sqrt(tol).
       double tol = 1e-6;
+      /// Size (eV) of terms of the Hamiltonian that do not commute with the
+      /// vacuum term and that the rule above does not see, added to the
+      /// matter potential V of every segment (also in vacuum) in the width
+      /// rule: E-independent LIV terms (LIV aT^(3), SiderealLIV aT, in GeV
+      /// times 1e9), or SNSI's density-dependent mass term between segments.
+      /// Fixed by the caller (the sub-bins never depend on the parameters).
+      double extra_potential = 0;
       /// Largest relative sub-bin width r = u_hi / u_lo - 1.
       double max_width = 0.1;
       /// > 0: this many sub-bins per bin, uniform in 1/E (tol, max_width
