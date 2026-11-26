@@ -46,6 +46,17 @@ Analytic bin averages for fixed paths (Fast, NSI, NUNM, Sterile)::
     A, dA = p.avg_path_analytic_batch(h, ["th24", "dm41"], values, gradient=True)
     g = p.avg_path_analytic_batch_weighted(h, ["th24", "dm41"], values, w)
 
+A 3D Earth of depth x latitude x longitude bins (OscProb EarthModelBinned)
+instead of PREM; paths depend on the azimuth too::
+
+    e = opg.EarthModelBinned()             # data/earth_binned_default.txt
+    e.set_det_pos(6368, 42.4, 13.5)        # radius km, latitude, longitude (deg)
+    p = opg.Fast(earth=e)
+    p.set_earth_azimuth(250)               # grids and bin averages (degrees)
+    P = p.prob_points(E, cz, nubar, azimuth=az)   # per-event azimuths
+
+Region indices play the role of PREM layer types for zoa_<i> and rho_<i>.
+
 Long calls release the GIL, so other Python threads run meanwhile (one
 propagator must not be used from two threads at once; separate propagators
 may).
@@ -70,6 +81,7 @@ from ._oscprobgpu import (  # noqa: E402,F401
     AnalyticAvgOptions,
     SiderealLIV,
     Decay,
+    EarthModelBinned,
     __version__,
     Fast,
     PremModel,
@@ -84,7 +96,7 @@ from ._oscprobgpu import (  # noqa: E402,F401
 )
 
 __all__ = ["__version__", "Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "Deco",
-           "SiderealLIV", "OQS", "PremModel", "AnalyticAvgOptions", "DeviceArray", "cuda_empty",
+           "SiderealLIV", "OQS", "PremModel", "EarthModelBinned", "AnalyticAvgOptions", "DeviceArray", "cuda_empty",
            "cuda_device_count", "has_cuda", "default_devices", "path_column_depth",
            "path_transmission"]
 

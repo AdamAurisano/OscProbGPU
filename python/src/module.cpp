@@ -8,6 +8,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/variant.h>
 #include <nanobind/stl/vector.h>
 
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "opg/propagator.h"
@@ -36,6 +38,43 @@ namespace {
   std::vector<double> to_vec(const Arr1& a)
   {
     return std::vector<double>(a.data(), a.data() + a.shape(0));
+  }
+
+  /// An Earth model argument: PremModel or EarthModelBinned.
+  using PyEarth = std::variant<opg::PremModel, opg::EarthModelBinned>;
+
+  opg::EarthModel to_earth(const PyEarth& e)
+  {
+    if (auto* b = std::get_if<opg::EarthModelBinned>(&e)) return opg::EarthModel(*b);
+    return opg::EarthModel(std::get<opg::PremModel>(e));
+  }
+
+  /// Per-event azimuths (one per event) or empty for None.
+  std::vector<double> to_azimuth(const std::optional<Arr1>& a, size_t n)
+  {
+    if (!a) return {};
+    if (a->shape(0) != n) throw std::invalid_argument("azimuth must have one value per event");
+    return to_vec(*a);
+  }
+
+  /// Per-point Earths of a batch: all PremModel or all EarthModelBinned.
+  struct BatchEarths {
+      std::vector<opg::PremModel>        prem;
+      std::vector<opg::EarthModelBinned> binned;
+      bool                               is_binned = false;
+  };
+  std::optional<BatchEarths> to_batch_earths(const std::optional<std::vector<PyEarth>>& e)
+  {
+    if (!e) return std::nullopt;
+    BatchEarths b;
+    b.is_binned = !e->empty() && std::holds_alternative<opg::EarthModelBinned>((*e)[0]);
+    for (const auto& x : *e) {
+      if (std::holds_alternative<opg::EarthModelBinned>(x) != b.is_binned)
+        throw std::invalid_argument("earths: all PremModel or all EarthModelBinned");
+      if (b.is_binned) b.binned.push_back(std::get<opg::EarthModelBinned>(x));
+      else b.prem.push_back(std::get<opg::PremModel>(x));
+    }
+    return b;
   }
 
   /// Per-event extra inputs extra[x, i] (x < nx, i < n) as a flat vector,
@@ -204,7 +243,7 @@ namespace {
         return pts;
       }
 
-      PyModel(const opg::PremModel& earth, const std::vector<int>& devices,
+      PyModel(const opg::EarthModel& earth, const std::vector<int>& devices,
               int threads)
           : prop(earth, devices, threads)
       {
@@ -307,12 +346,29 @@ namespace {
              "Reset mixing parameters to OscProb's PDG defaults.")
         // earth
         .def("set_earth",
-             [](W& w, const opg::PremModel& e) {
+             [](W& w, const PyEarth& e) {
+               const opg::EarthModel em = to_earth(e);
                w.gen_probs++;
                w.gen_binned++;
                nb::gil_scoped_release r;
-               w.prop.set_earth(e);
-             })
+               w.prop.set_earth(em);
+             },
+             "earth"_a, "Earth model: PremModel or EarthModelBinned.")
+        .def("set_earth_azimuth",
+             [](W& w, double phi) {
+               w.gen_probs++;
+               w.gen_binned++;
+               nb::gil_scoped_release r;
+               w.prop.set_earth_azimuth(phi);
+             },
+             "phi"_a,
+             "Azimuth (degrees, EarthModelBinned convention) of the paths through a "
+             "binned Earth for grids, bin averages and event lists without per-event "
+             "azimuths (sets it on the propagator's copy of the Earth model). "
+             "Raises for a PREM Earth.")
+        .def_prop_ro("earth_azimuth", [](W& w) { return w.prop.earth_azimuth(); },
+                     "Azimuth of the binned Earth's paths (degrees).")
+        .def_prop_ro("earth_is_binned", [](W& w) { return w.prop.earth_is_binned(); })
         // grid mode
         .def("set_grid",
              [](W& w, Arr1 E, Arr1 C) {
@@ -376,22 +432,28 @@ namespace {
                             "Number of per-event extra inputs in event lists (e.g. "
                             "SiderealLIV: azimuth [deg], local sidereal time [h]).")
         .def("prob_points",
-             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, std::optional<Arr2> ex) {
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, std::optional<Arr2> ex,
+                std::optional<Arr1> az) {
                if (E.shape(0) != C.shape(0) || E.shape(0) != nb_.shape(0))
                  throw std::invalid_argument("size mismatch");
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                auto ev = to_vec(E), cv = to_vec(C), xv = to_extra(ex, W::NX, E.shape(0));
+               auto av = to_azimuth(az, E.shape(0));
                std::vector<double> out;
                {
                  nb::gil_scoped_release r;
                  w.sync();
-                 out = w.prop.prob_points(ev, cv, nbv, xv);
+                 out = w.prop.prob_points(ev, cv, nbv, xv, av);
                }
                return make_array(std::move(out), {N, N, E.shape(0)});
              },
              "energies"_a, "cosines"_a, "nubar"_a, "extra"_a = nb::none(),
+             "azimuth"_a = nb::none(),
              "Event list: returns P[a, b, i]. extra: optional per-event inputs "
-             "extra[x, i], x < n_event_extra (None: the values set on the model).")
+             "extra[x, i], x < n_event_extra (None: the values set on the model). "
+             "azimuth: optional per-event azimuths (degrees) of the paths through a "
+             "binned Earth (None: SiderealLIV's azimuth extra if extra is given, else "
+             "earth_azimuth); ignored for PREM.")
         .def("prob_path",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                auto ev = to_vec(E);
@@ -518,63 +580,70 @@ namespace {
              "what"_a, "(pointer, shape, device, generation) of device-resident results "
              "(see device_probs()/device_binned()).")
         .def("prob_points_grad",
-             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, std::optional<Arr2> ex) {
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, std::optional<Arr2> ex,
+                std::optional<Arr1> az) {
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                auto ev = to_vec(E), cv = to_vec(C), xv = to_extra(ex, W::NX, E.shape(0));
+               auto av = to_azimuth(az, E.shape(0));
                std::vector<double>  P, dP;
                {
                  nb::gil_scoped_release r;
                  w.sync();
-                 w.prop.prob_points_grad(ev, cv, nbv, P, dP, xv);
+                 w.prop.prob_points_grad(ev, cv, nbv, P, dP, xv, av);
                }
                size_t np = w.prop.n_gradient_params();
                return nb::make_tuple(make_array(std::move(P), {N, N, E.shape(0)}),
                                      make_array(std::move(dP), {np, N, N, E.shape(0)}));
              },
              "energies"_a, "cosines"_a, "nubar"_a, "extra"_a = nb::none(),
-             "Event list: returns (P[a, b, i], dP[p, a, b, i]); extra as in "
-             "prob_points.")
+             "azimuth"_a = nb::none(),
+             "Event list: returns (P[a, b, i], dP[p, a, b, i]); extra and azimuth "
+             "as in prob_points.")
         .def("weighted_gradient_points",
              [](W& w, Arr1 E, Arr1 C, Arr1u nb_,
                 nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
-                std::optional<Arr2> ex) {
+                std::optional<Arr2> ex, std::optional<Arr1> az) {
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                std::vector<double>  v(wt.data(), wt.data() + wt.size());
                auto ev = to_vec(E), cv = to_vec(C), xv = to_extra(ex, W::NX, E.shape(0));
+               auto av = to_azimuth(az, E.shape(0));
                std::vector<double> g;
                {
                  nb::gil_scoped_release r;
                  w.sync();
-                 g = w.prop.weighted_gradient_points(ev, cv, nbv, v, xv);
+                 g = w.prop.weighted_gradient_points(ev, cv, nbv, v, xv, av);
                }
                return make_array(std::move(g), {g.size()});
              },
              "energies"_a, "cosines"_a, "nubar"_a, "weights"_a, "extra"_a = nb::none(),
+             "azimuth"_a = nb::none(),
              "sum of weights[a, b, i] * dP_ab(i)/dp over an event list; extra "
-             "as in prob_points.")
+             "and azimuth as in prob_points.")
         .def("weighted_gradient_points_binned",
              [](W& w, Arr1 E, Arr1 C, Arr1u nb_,
                 nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
                 nb::ndarray<const int, nb::ndim<1>, nb::c_contig, nb::device::cpu> bins,
-                int nbins, std::optional<Arr2> ex) {
+                int nbins, std::optional<Arr2> ex, std::optional<Arr1> az) {
                std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
                std::vector<double>  v(wt.data(), wt.data() + wt.size());
                std::vector<int>     bv(bins.data(), bins.data() + bins.shape(0));
                auto ev = to_vec(E), cv = to_vec(C), xv = to_extra(ex, W::NX, E.shape(0));
+               auto av = to_azimuth(az, E.shape(0));
                std::vector<double> G;
                {
                  nb::gil_scoped_release r;
                  w.sync();
-                 G = w.prop.weighted_gradient_points_binned(ev, cv, nbv, v, bv, nbins, xv);
+                 G = w.prop.weighted_gradient_points_binned(ev, cv, nbv, v, bv, nbins, xv,
+                                                            av);
                }
                return make_array(std::move(G),
                                  {size_t(nbins), w.prop.n_gradient_params()});
              },
              "energies"_a, "cosines"_a, "nubar"_a, "weights"_a, "bins"_a, "nbins"_a,
-             "extra"_a = nb::none(),
+             "extra"_a = nb::none(), "azimuth"_a = nb::none(),
              "Per-analysis-bin weighted gradient: G[b, p] = sum over events i "
              "with bins[i] == b of weights[a, b, i] * dP_ab(i)/dp (bins outside "
-             "[0, nbins) are ignored); extra as in prob_points.")
+             "[0, nbins) are ignored); extra and azimuth as in prob_points.")
         .def("prob_path_grad",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                auto ev = to_vec(E);
@@ -692,14 +761,18 @@ namespace {
         // batched bin averages
         .def("binned_batch",
              [](W& w, const std::vector<std::string>& names, Arr2 values,
-                std::optional<std::vector<opg::PremModel>> earths, bool gradient) {
+                std::optional<std::vector<PyEarth>> earths, bool gradient) {
                auto                pts = w.points(names, values);
+               const auto          be  = to_batch_earths(earths);
                std::vector<double> out, dout;
                {
                  nb::gil_scoped_release r;
                  w.sync();
-                 w.prop.binned_batch(pts, earths ? &*earths : nullptr, out,
-                                     gradient ? &dout : nullptr);
+                 if (be && be->is_binned)
+                   w.prop.binned_batch(pts, &be->binned, out, gradient ? &dout : nullptr);
+                 else
+                   w.prop.binned_batch(pts, be ? &be->prem : nullptr, out,
+                                       gradient ? &dout : nullptr);
                }
                const size_t np = pts.size(), nc = w.prop.n_cosine_bins(),
                             ne = w.prop.n_energy_bins(), nq = w.prop.n_gradient_params();
@@ -712,15 +785,16 @@ namespace {
              "Bin averages (set_bins) at many parameter points, on any backend, "
              "one point at a time: point p is this model's parameters with "
              "names[k] (model parameters, see parameter_names) set to "
-             "values[p, k], and earths[p] as Earth if given (same layers as the "
-             "propagator's Earth; only densities and Z/A may differ). Returns "
+             "values[p, k], and earths[p] as Earth if given (same layers, or bins, "
+             "detector and azimuth, as the propagator's Earth; only densities and Z/A "
+             "may differ). Returns "
              "A[p, nubar, a, b, iCbin, iEbin], with gradient=True also "
              "dA[p, nubar, q, a, b, iCbin, iEbin] for the gradient_params. Each "
              "point equals setting it and calling calculate_binned(_gradient) "
              "bit for bit; the parameters and Earth are restored.")
         .def("calculate_binned_batch",
              [](W& w, const std::vector<std::string>& names, Arr2 values, DevOut out,
-                std::optional<DevOut> dout, std::optional<std::vector<opg::PremModel>> earths,
+                std::optional<DevOut> dout, std::optional<std::vector<PyEarth>> earths,
                 uintptr_t stream, const std::string& fl) {
                const int    dev = single_device(w.prop, "calculate_binned_batch");
                auto         pts = w.points(names, values);
@@ -733,10 +807,14 @@ namespace {
                const auto f  = parse_flavor(fl);
                double*    o  = out.data();
                double*    d  = dout ? dout->data() : nullptr;
+               const auto be = to_batch_earths(earths);
                nb::gil_scoped_release r;
                w.sync();
-               w.prop.calculate_binned_batch(pts, earths ? &*earths : nullptr, o, d,
-                                             to_stream(stream), f);
+               if (be && be->is_binned)
+                 w.prop.calculate_binned_batch(pts, &be->binned, o, d, to_stream(stream), f);
+               else
+                 w.prop.calculate_binned_batch(pts, be ? &be->prem : nullptr, o, d,
+                                               to_stream(stream), f);
              },
              "names"_a, "values"_a, "out"_a, "dout"_a = nb::none(), "earths"_a = nb::none(),
              "stream"_a = 0, "flavor"_a = "both",
@@ -987,11 +1065,15 @@ namespace {
   template <class Model>
   void bind_ctor(nb::class_<PyModel<Model>>& c)
   {
-    c.def(nb::init<const opg::PremModel&, const std::vector<int>&, int>(),
-          "earth"_a = opg::PremModel(), "devices"_a = std::vector<int>{},
+    c.def("__init__",
+          [](PyModel<Model>* self, const PyEarth& e, const std::vector<int>& d, int t) {
+            new (self) PyModel<Model>(to_earth(e), d, t);
+          },
+          "earth"_a = PyEarth(opg::PremModel()), "devices"_a = std::vector<int>{},
           "threads"_a = 0,
-          "devices: CUDA device ids (empty list = CPU backend); threads: "
-          "OpenMP threads for the CPU backend (0 = default).");
+          "earth: PremModel or EarthModelBinned; devices: CUDA device ids (empty "
+          "list = CPU backend); threads: OpenMP threads for the CPU backend (0 = "
+          "default).");
   }
 
 } // namespace
@@ -1126,6 +1208,62 @@ NB_MODULE(_oscprobgpu, m)
            },
            "cosT"_a, "Path segments (length, density, zoa, layer).");
 
+  nb::class_<opg::EarthModelBinned>(m, "EarthModelBinned",
+                                    "3D Earth of depth x latitude x longitude bins with "
+                                    "region indices (OscProb EarthModelBinned).")
+      .def(nb::init<const std::string&>(), "filename"_a = "",
+           "Bin table (default: data/earth_binned_default.txt); detector at radius "
+           "6368 km, latitude 0, longitude 0.")
+      .def("set_det_pos", &opg::EarthModelBinned::SetDetPos, "radius_km"_a, "lat_deg"_a = 0.0,
+           "lon_deg"_a = 0.0, "Detector radius (km), latitude (deg N), longitude (deg E).")
+      .def("set_azimuth", &opg::EarthModelBinned::SetAzimuth, "phi"_a,
+           "Azimuth (degrees from North) of paths given by cos(zenith) alone (grids, "
+           "bin averages, event lists without per-event azimuths).")
+      .def_prop_ro("azimuth", &opg::EarthModelBinned::GetAzimuth)
+      .def("fill_path",
+           [](const opg::EarthModelBinned& e, double c, std::optional<double> phi) {
+             auto p = phi ? e.FillPath(c, *phi) : e.FillPath(c);
+             std::vector<double> v;
+             for (auto& s : p) v.insert(v.end(), {s.length, s.density, s.zoa, double(s.layer)});
+             return make_array(std::move(v), {p.size(), 4});
+           },
+           "cosT"_a, "phi"_a = nb::none(),
+           "Path segments (length, density, zoa, region) for cos(zenith) and azimuth "
+           "phi in degrees (None: the model's azimuth).")
+      .def("column_depth",
+           [](const opg::EarthModelBinned& e, Arr1 c) {
+             std::vector<double> x(c.shape(0));
+             for (size_t i = 0; i < x.size(); i++)
+               x[i] = opg::column_depth(e.FillPath(c.data()[i]));
+             return make_array(std::move(x), {x.size()});
+           },
+           "cosT"_a, "Column depth (g/cm^2) for each cos(zenith), at the model's azimuth.")
+      .def("set_region_zoa", &opg::EarthModelBinned::SetRegionZoA, "index"_a, "zoa"_a)
+      .def("get_region_zoa", &opg::EarthModelBinned::GetRegionZoA, "index"_a)
+      .def("scale_region_density", &opg::EarthModelBinned::ScaleRegionDensity, "index"_a,
+           "factor"_a)
+      .def_prop_ro("regions", &opg::EarthModelBinned::GetRegions)
+      .def("get_total_L", &opg::EarthModelBinned::GetTotalL, "cosT"_a)
+      .def("get_cosT", &opg::EarthModelBinned::GetCosT, "L"_a)
+      .def_prop_ro("det_radius", &opg::EarthModelBinned::GetDetRadius)
+      .def_prop_ro("det_lat", &opg::EarthModelBinned::GetDetLat, "Detector latitude (rad).")
+      .def_prop_ro("det_lon", &opg::EarthModelBinned::GetDetLon, "Detector longitude (rad).")
+      .def_prop_ro("n_depth_bins", &opg::EarthModelBinned::GetNDepthBins)
+      .def_prop_ro("n_lat_bins", &opg::EarthModelBinned::GetNLatBins)
+      .def_prop_ro("n_lon_bins", &opg::EarthModelBinned::GetNLonBins)
+      .def("grazing_cosines", &opg::EarthModelBinned::GetGrazingCosines)
+      .def("earth_bins",
+           [](const opg::EarthModelBinned& e) {
+             const auto&         b = e.GetEarthBins();
+             std::vector<double> v;
+             for (auto& x : b)
+               v.insert(v.end(), {x.radius_out, x.radius_in, x.latitude, x.longitude,
+                                  x.density, x.zoa, double(x.index)});
+             return make_array(std::move(v), {b.size(), 7});
+           },
+           "Bins as rows (radius_out, radius_in, lat [rad], lon [rad], density, zoa, "
+           "region).");
+
   nb::class_<opg::AnalyticAvgOptions>(m, "AnalyticAvgOptions",
                                       "Options of the analytic bin averages (see README).")
       .def(nb::init<>())
@@ -1175,12 +1313,12 @@ NB_MODULE(_oscprobgpu, m)
 
   auto cu = bind_model<NUNM>(m, "NUNM", "3 flavours with non-unitary mixing (PMNS_NUNM).");
   cu.def("__init__",
-         [](PyModel<NUNM>* self, const opg::PremModel& e, const std::vector<int>& d,
+         [](PyModel<NUNM>* self, const PyEarth& e, const std::vector<int>& d,
             int t, int scale) {
-           new (self) PyModel<NUNM>(e, d, t);
+           new (self) PyModel<NUNM>(to_earth(e), d, t);
            self->params.scale = scale;
          },
-         "earth"_a = opg::PremModel(), "devices"_a = std::vector<int>{},
+         "earth"_a = PyEarth(opg::PremModel()), "devices"_a = std::vector<int>{},
          "threads"_a = 0, "scale"_a = 0,
          "scale: 0 = low-scale, 1 = high-scale scenario.")
       .def("set_alpha",
