@@ -193,11 +193,11 @@ namespace opg {
           throw std::runtime_error("EarthModelBinned::FillPath: starting bin outside the "
                                    "table");
         }
-        double len;
-        int    b;
-        while (binned_walk_next(g, w, len, b))
-          out.push_back(Segment<double>{len, fBins[size_t(b)].density, fBins[size_t(b)].zoa,
-                                        fBins[size_t(b)].index});
+        while (binned_walk_next(g, w)) {
+          const int b = w.seg_bin;
+          out.push_back(Segment<double>{w.seg_len, fBins[size_t(b)].density,
+                                        fBins[size_t(b)].zoa, fBins[size_t(b)].index});
+        }
         if (w.phase != 3)
           throw std::runtime_error("EarthModelBinned::FillPath: path left the table or "
                                    "exceeded the segment bound");

@@ -85,6 +85,13 @@ namespace opg {
       bool   have_target;
       double target;  ///< detector distance of the next depth crossing
       double prev;    ///< current detector distance (prev_DetDistance)
+      // output of binned_walk_next: the segment's length (km) and bin. Kept in
+      // the walk state rather than in out-parameters of the caller: nvcc 11.8
+      // (-O3, sm_70) gave the caller's out-parameter variable the local-memory
+      // slot of another object that was still live (the reverse-mode
+      // checkpoints of prod_height_adjoint), so the walk overwrote it.
+      double seg_len;
+      int    seg_bin;
   };
 
   namespace detail {
@@ -333,10 +340,12 @@ namespace opg {
   /// at the end of the path. Follows the loops of FillPath: depth bins down
   /// to the deepest point, back up to the detector's depth bin, then the
   /// last segment to the detector, each split at latitude and longitude
-  /// bin crossings (RecordLatLonBinCrossings).
-  OPG_HD OPG_NOINLINE inline bool binned_walk_next(const BinnedGeom& g, BinnedWalk& w,
-                                                   double& len, int& bin)
+  /// bin crossings (RecordLatLonBinCrossings). The segment is returned in
+  /// w.seg_len (km) and w.seg_bin.
+  OPG_HD OPG_NOINLINE inline bool binned_walk_next(const BinnedGeom& g, BinnedWalk& w)
   {
+    double& len = w.seg_len;
+    int&    bin = w.seg_bin;
     const int binsPerDepth = g.nbins / g.nDepth;
     // guard against bin indices out of range or runaway crossings (not in
     // OscProb, whose FillPath would read outside the table)

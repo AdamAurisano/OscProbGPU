@@ -98,7 +98,7 @@ namespace {
           for (double x : b) sc = std::max(sc, std::fabs(x));
           eGw = std::max(eGw, phtest::max_abs_diff(a, b) / std::max(sc, 1.0));
         }
-        MESSAGE(std::string(Model::name) << " N=" << N << (ie ? " binned" : " PREM") << " on "
+        MESSAGE(std::string(Model::name) << " N=" << N << std::string(ie ? " binned" : " PREM") << " on "
                 << d.size() << " GPU(s) vs CPU: points P " << ep << ", dP " << eg
                 << ", weighted " << ew << "; grid P " << eG << ", dP " << eGg << ", weighted "
                 << eGw);

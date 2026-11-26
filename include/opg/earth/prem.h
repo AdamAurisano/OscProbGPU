@@ -128,10 +128,9 @@ namespace opg {
       Segment<Real> s;
       bool          ismin = false;
       if (binned) {
-        double len;
-        int    b;
-        if (!binned_walk_next(*e.binned, w, len, b)) return count;
-        s = Segment<Real>{Real(len), e.density[b], e.zoa[b], e.type[b]};
+        if (!binned_walk_next(*e.binned, w)) return count;
+        const int b = w.seg_bin;
+        s = Segment<Real>{Real(w.seg_len), e.density[b], e.zoa[b], e.type[b]};
       }
       else {
         // Square of the path length between this layer's outer radius and
