@@ -63,6 +63,14 @@
 /// differentiated with the models' existing forward (step_grad) or reverse
 /// (adj_step) machinery.
 ///
+/// GPU code generation: nvcc 13.0 (-O3, sm_75) produced wrong results for
+/// some inlining choices of this code (right with -G, -Xcicc -O0 and on the
+/// host; compute-sanitizer, ASan and UBSan clean). The configuration that
+/// passes the GPU tests: phi_table, phi_grad_tables, prod_height_adjoint and
+/// its backward pass (adjoint_rest_backward) are not inlined on the device,
+/// prod_height_grad is (not inlining it broke the grid gradient kernel of
+/// Sterile). Changes to the inlining need the GPU tests.
+///
 /// Models: those whose state is the amplitude matrix and which provide the
 /// segment eigensystem hooks (seg_eigen, seg_hamiltonian_dual): Fast, NSI,
 /// NUNM (non-unitary initial state and final rotation included), LIV, SNSI
@@ -624,7 +632,7 @@ namespace opg {
   /// stride] for k < count (if outG is not null), and, if w is not null,
   /// acc[k] = sum_ab w[(a*N + b) * stride] dP_ab/dp_k (else acc is zeroed).
   template <class Model, class R, int K>
-  OPG_HD OPG_NOINLINE void prod_height_grad(const typename Model::Prepared& P,
+  OPG_HD inline void prod_height_grad(const typename Model::Prepared& P,
                                       const GradPrepared<Model, K>& G,
                                       const EarthView<R>& earth, const ProdHeightView<R>& hv,
                                       int dist, R E, R cosZ, bool nubar, R* out, R* outG,
