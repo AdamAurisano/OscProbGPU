@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "Absorption.h"
+#include "EarthModelBinned.h"
 #include "PMNS_Decay.h"
 #include "PMNS_Deco.h"
 #include "PMNS_Fast.h"
@@ -50,6 +51,7 @@
 #include "PMNS_SiderealLIV.h"
 #include "PMNS_Sterile.h"
 #include "PremModel.h"
+#include "prem_default.hpp"
 
 using namespace std;
 using namespace OscProb;
@@ -579,6 +581,124 @@ void dump_avgprob_1d(const string& dir)
 }
 
 //.............................................................................
+// EarthModelBinned (tag "binned"):
+//   binned_table.npy        : [nrow][6] test table with lateral structure
+//                             (lon, lat, depth, density, Z/A, region; 44
+//                             depths x 8 lon x 6 lat), written to text with
+//                             %.17g and loaded as such
+//   binned_path_cases.npy   : [ncase][6] (table: 0 = default, 1 = test;
+//                             detector radius, lat, lon; cosT; phi)
+//   binned_path_offsets.npy : [ncase+1] int32, segments of case k are rows
+//                             offsets[k] .. offsets[k+1] of
+//   binned_paths.npy        : [nseg][4] FillPath segments (L, rho, zoa, index)
+//   grid_E_binned.npy [60], grid_cosZ_binned.npy [41]
+//   <tag>_binned.npy        : [2 cfg][2 nubar][41][60][N][N] probabilities for
+//                             cfg 0: default table and detector, phi = 30;
+//                             cfg 1: test table, detector (6368, 42.4, 13.5),
+//                             phi = 250, SetRegionZoA(7, 0.47),
+//                             ScaleRegionDensity(2, 1.03)
+//   for tags fast, nsi_phases, sidereal (direction (acos cosT, phi)).
+//.............................................................................
+string binned_test_table(const string& dir)
+{
+  // the default table, read as double (each depth's first row)
+  ifstream                 fin(PREM3D_DEFAULT);
+  double                   lon, lat, depth, dens, zoa, idx;
+  vector<array<double, 4>> depths;  // depth, density, zoa, index
+  while (fin >> lon >> lat >> depth >> dens >> zoa >> idx)
+    if (depths.empty() || depths.back()[0] != depth) depths.push_back({depth, dens, zoa, idx});
+  vector<double> rows;
+  for (size_t d = 0; d < depths.size(); d++)
+    for (int ilon = 0; ilon < 8; ilon++)
+      for (int ilat = 0; ilat < 6; ilat++) {
+        double r   = depths[d][3];
+        double z   = depths[d][2];
+        double rho = depths[d][1] * (1 + 0.05 * sin(0.9 * ilon + 1.0) * cos(0.7 * ilat - 1.2));
+        if ((r == 3 || r == 4) && ilon >= 4 && ilat >= 2) {
+          r = 7;
+          z = 0.497;
+        }
+        rows.insert(rows.end(), {22.5 + 45.0 * ilon, -75.0 + 30.0 * ilat, depths[d][0], rho, z, r});
+      }
+  write_npy(dir + "/binned_table.npy", rows, {rows.size() / 6, 6});
+  string   fname = dir + "/binned_table.tmp.txt";
+  ofstream f(fname);
+  char     buf[256];
+  for (size_t i = 0; i < rows.size(); i += 6) {
+    snprintf(buf, sizeof buf, "%.17g %.17g %.17g %.17g %.17g %.17g\n", rows[i], rows[i + 1],
+             rows[i + 2], rows[i + 3], rows[i + 4], rows[i + 5]);
+    f << buf;
+  }
+  return fname;
+}
+
+void dump_binned(const string& dir, const vector<Variant>& variants)
+{
+  const string     tfile = binned_test_table(dir);
+  EarthModelBinned tables[2] = {EarthModelBinned(), EarthModelBinned(tfile)};
+
+  // paths
+  const double dets[4][3] = {{6368, 0, 0}, {6368, 42.4, 13.5}, {6369, -90, 0}, {6000, 30, 200}};
+  vector<double> cosT = linspace(-1, 1, 21);
+  for (double c : {-0.83, -0.31, 0.07, 0.55}) cosT.push_back(c);
+  const vector<double> phis = {0, 45, 137.5, 180, 270, 333.3};
+  vector<double>       cases, segs;
+  vector<int>          offsets = {0};
+  for (int t = 0; t < 2; t++)
+    for (auto& d : dets) {
+      tables[t].SetDetPos(d[0], d[1], d[2]);
+      for (double c : cosT)
+        for (double phi : phis) {
+          tables[t].FillPath(c, phi);
+          for (auto& s : tables[t].GetNuPath())
+            segs.insert(segs.end(), {s.length, s.density, s.zoa, double(s.layer)});
+          cases.insert(cases.end(), {double(t), d[0], d[1], d[2], c, phi});
+          offsets.push_back(int(segs.size() / 4));
+        }
+    }
+  write_npy(dir + "/binned_path_cases.npy", cases, {cases.size() / 6, 6});
+  write_npy(dir + "/binned_path_offsets.npy", offsets, {offsets.size()});
+  write_npy(dir + "/binned_paths.npy", segs, {segs.size() / 4, 4});
+
+  // probabilities
+  vector<double> E = logspace(0.5, 100, 60), C = linspace(-1, 1, 41);
+  write_npy(dir + "/grid_E_binned.npy", E, {E.size()});
+  write_npy(dir + "/grid_cosZ_binned.npy", C, {C.size()});
+  EarthModelBinned cfg0, cfg1(tfile);
+  cfg0.SetDetPos(6368, 0, 0);
+  cfg1.SetDetPos(6368, 42.4, 13.5);
+  cfg1.SetRegionZoA(7, 0.47);
+  cfg1.ScaleRegionDensity(2, 1.03);
+  EarthModelBinned* cfg[2] = {&cfg0, &cfg1};
+  const double      phi[2] = {30, 250};
+  for (const string tag : {"fast", "nsi_phases", "sidereal"}) {
+    const Variant* v = nullptr;
+    for (auto& x : variants)
+      if (x.tag == tag) v = &x;
+    cout << "Dumping " << tag << "_binned" << endl;
+    PMNS_Base* p = v->make();
+    p->SetUseCache(false);
+    vector<double> out;
+    for (int k = 0; k < 2; k++)
+      for (int nb = 0; nb < 2; nb++) {
+        p->SetIsNuBar(nb);
+        for (double c : C) {
+          if (tag == "sidereal")
+            static_cast<PMNS_SiderealLIV*>(p)->SetNeutrinoDirection(acos(c) * 180.0 / M_PI,
+                                                                    phi[k]);
+          cfg[k]->FillPath(c, phi[k]);
+          p->SetPath(cfg[k]->GetNuPath());
+          for (double e : E) append_matrix(out, p->ProbMatrix(v->N, v->N, e), v->N);
+        }
+      }
+    write_npy(dir + "/" + tag + "_binned.npy", out,
+              {2, 2, C.size(), E.size(), (size_t)v->N, (size_t)v->N});
+    delete p;
+  }
+  remove(tfile.c_str());
+}
+
+//.............................................................................
 // OscProb Absorption::Trans on the PREM paths and the test path:
 //   absorption_xsec.npy : [nx] cross sections (cm^2)
 //   absorption_prem.npy : [nC][nx] (grid_cosZ), absorption_testpath.npy : [nx]
@@ -665,6 +785,8 @@ int main(int argc, char** argv)
 
   if (only.empty() || only.find(",absorption,") != string::npos)
     dump_absorption(dir, prem, C, testpath);
+
+  if (only.empty() || only.find(",binned,") != string::npos) dump_binned(dir, GetVariants());
 
   if (!only.empty()) return 0;
 
