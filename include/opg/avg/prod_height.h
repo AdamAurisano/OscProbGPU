@@ -624,7 +624,7 @@ namespace opg {
   /// stride] for k < count (if outG is not null), and, if w is not null,
   /// acc[k] = sum_ab w[(a*N + b) * stride] dP_ab/dp_k (else acc is zeroed).
   template <class Model, class R, int K>
-  OPG_HD inline void prod_height_grad(const typename Model::Prepared& P,
+  OPG_HD OPG_NOINLINE void prod_height_grad(const typename Model::Prepared& P,
                                       const GradPrepared<Model, K>& G,
                                       const EarthView<R>& earth, const ProdHeightView<R>& hv,
                                       int dist, R E, R cosZ, bool nubar, R* out, R* outG,
@@ -717,12 +717,111 @@ namespace opg {
     }
   }
 
+  namespace prodh {
+    /// The backward pass of prod_height_adjoint through the rest of the path
+    /// (as in adjoint_prem), from the checkpoints of the forward pass and
+    /// the cotangent lamS of the state after it. A function of its own on
+    /// the device: inlined into prod_height_adjoint, nvcc 13.0 (-O3, sm_75)
+    /// produced wrong cotangent sums for LIV (right with -G and on the host).
+    template <class Model, class R, int K, class Chunk>
+    OPG_HD OPG_NOINLINE void adjoint_rest_backward(
+        const typename Model::Prepared& P, const Chunk& chunk, int npar,
+        const EarthView<R>& earth, R cosZ, int atm_type, R E, bool nubar,
+        const Mat<Model::N, R>* ckpt, int nseg, Mat<Model::N, R>& lamS, R* acc)
+    {
+      constexpr int N      = Model::N;
+      using State          = Mat<N, R>;
+      const int     nchunk = (npar + K - 1) / K;
+      constexpr bool kAffine = detail::adj_affine<Model>::value;
+      State          A0 = State::zero(), A1 = A0, A2 = A0, H1 = A0, H2 = A0;
+      if constexpr (kAffine) {
+        State H00, H10, H11;
+        Model::template adj_hamiltonian<R>(P, ckpt[0], E, nubar, R(0), R(0), H00);
+        Model::template adj_hamiltonian<R>(P, ckpt[0], E, nubar, R(1), R(0), H10);
+        Model::template adj_hamiltonian<R>(P, ckpt[0], E, nubar, R(1), R(1), H11);
+        for (int i = 0; i < N; i++)
+          for (int j = i; j < N; j++) {
+            H1(i, j) = H10(i, j) - H00(i, j);
+            H2(i, j) = H11(i, j) - H10(i, j);
+          }
+      }
+      const int nblk = (nseg + kAdjBlock - 1) / kAdjBlock;
+      for (int bk = nblk - 1; bk >= 0; bk--) {
+        const int  first = bk * kAdjBlock;
+        const int  len   = nseg - first < kAdjBlock ? nseg - first : kAdjBlock;
+        State      buf[kAdjBlock];
+        Segment<R> seg[kAdjBlock];
+        int        i = 0;
+        State      T = ckpt[bk];
+        prodh::for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
+          const int j = i++ - first;
+          if (j < 0 || j >= len) return;
+          buf[j] = T;
+          seg[j] = s;
+          if (j + 1 < len) Model::step(P, E, nubar, s, T);
+        });
+        for (int j = len - 1; j >= 0; j--) {
+          typename Model::AdjSeg Gs;
+          Model::adj_step(P, E, nubar, seg[j], buf[j], lamS, Gs);
+          if constexpr (kAffine) {
+            R rho;
+            if (Model::adj_affine_segment(seg[j], rho)) {
+              const State& Hb = Model::adj_hbar(Gs);
+              const R      z  = seg[j].zoa;
+              for (int p = 0; p < N; p++)
+                for (int l = 0; l < N; l++) {
+                  A0(p, l) += Hb(p, l);
+                  A1(p, l) += rho * Hb(p, l);
+                  A2(p, l) += (rho * z) * Hb(p, l);
+                }
+              const R h1 = hbar_dot<N, R>(Hb, H1), h2 = hbar_dot<N, R>(Hb, H2);
+              const R sz = rho * h2, sr = rho * (h1 + z * h2);
+              for (int c = 0; c < nchunk; c++)
+                for (int k = 0; k < K && c * K + k < npar; k++) {
+                  if (chunk(c).zoa_type[k] == seg[j].layer) acc[c * K + k] += sz;
+                  if (chunk(c).rho_type[k] == seg[j].layer) acc[c * K + k] += sr;
+                }
+              continue;
+            }
+          }
+          for (int c = 0; c < nchunk; c++) {
+            R a[K] = {};
+            Model::template adj_contract_step<K>(chunk(c).P, E, nubar,
+                                                 seed_segment(chunk(c), seg[j]), Gs, a);
+            for (int k = 0; k < K && c * K + k < npar; k++) acc[c * K + k] += a[k];
+          }
+        }
+      }
+      if constexpr (kAffine) {
+        using D = Dual<R, K>;
+        for (int c = 0; c < nchunk; c++) {
+          Mat<N, D> D00, D10, D11;
+          Model::template adj_hamiltonian<D>(chunk(c).P, ckpt[0], E, nubar, D(0), D(0), D00);
+          Model::template adj_hamiltonian<D>(chunk(c).P, ckpt[0], E, nubar, D(1), D(0), D10);
+          Model::template adj_hamiltonian<D>(chunk(c).P, ckpt[0], E, nubar, D(1), D(1), D11);
+          for (int p = 0; p < N; p++)
+            for (int l = p; l < N; l++) {
+              const Complex<D> d1 = D10(p, l) - D00(p, l), d2 = D11(p, l) - D10(p, l);
+              D10(p, l)           = d1;
+              D11(p, l)           = d2;
+            }
+          R a[K] = {};
+          contract_hbar<N, R, K>(A0, D00, a);
+          contract_hbar<N, R, K>(A1, D10, a);
+          contract_hbar<N, R, K>(A2, D11, a);
+          for (int k = 0; k < K && c * K + k < npar; k++) acc[c * K + k] += a[k];
+        }
+      }
+
+    }
+  } // namespace prodh
+
   /// Reverse-mode weighted gradient of the averaged probabilities:
   /// acc[p] += sum_ab w[(a*N + b)*stride] d<P_ab>/dp for p < npar (chunk(c)
   /// as for adjoint_prem). Returns false (acc untouched) if the path has
   /// more than kAdjMaxSeg segments.
   template <class Model, class R, int K, class Chunk>
-  OPG_HD inline bool prod_height_adjoint(const typename Model::Prepared& P, const Chunk& chunk,
+  OPG_HD OPG_NOINLINE bool prod_height_adjoint(const typename Model::Prepared& P, const Chunk& chunk,
                                          int npar, const EarthView<R>& earth,
                                          const ProdHeightView<R>& hv, int dist, R E, R cosZ,
                                          bool nubar, const R* w, size_t stride, R* acc,
@@ -829,86 +928,8 @@ namespace opg {
     }
 
     // backward pass through the rest of the path (as adjoint_prem)
-    constexpr bool kAffine = detail::adj_affine<Model>::value;
-    State          A0 = State::zero(), A1 = A0, A2 = A0, H1 = A0, H2 = A0;
-    if constexpr (kAffine) {
-      State H00, H10, H11;
-      Model::template adj_hamiltonian<R>(P, ckpt[0], E, nubar, R(0), R(0), H00);
-      Model::template adj_hamiltonian<R>(P, ckpt[0], E, nubar, R(1), R(0), H10);
-      Model::template adj_hamiltonian<R>(P, ckpt[0], E, nubar, R(1), R(1), H11);
-      for (int i = 0; i < N; i++)
-        for (int j = i; j < N; j++) {
-          H1(i, j) = H10(i, j) - H00(i, j);
-          H2(i, j) = H11(i, j) - H10(i, j);
-        }
-    }
-    const int nblk = (nseg + kAdjBlock - 1) / kAdjBlock;
-    for (int bk = nblk - 1; bk >= 0; bk--) {
-      const int  first = bk * kAdjBlock;
-      const int  len   = nseg - first < kAdjBlock ? nseg - first : kAdjBlock;
-      State      buf[kAdjBlock];
-      Segment<R> seg[kAdjBlock];
-      int        i = 0;
-      State      T = ckpt[bk];
-      prodh::for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
-        const int j = i++ - first;
-        if (j < 0 || j >= len) return;
-        buf[j] = T;
-        seg[j] = s;
-        if (j + 1 < len) Model::step(P, E, nubar, s, T);
-      });
-      for (int j = len - 1; j >= 0; j--) {
-        typename Model::AdjSeg Gs;
-        Model::adj_step(P, E, nubar, seg[j], buf[j], lamS, Gs);
-        if constexpr (kAffine) {
-          R rho;
-          if (Model::adj_affine_segment(seg[j], rho)) {
-            const State& Hb = Model::adj_hbar(Gs);
-            const R      z  = seg[j].zoa;
-            for (int p = 0; p < N; p++)
-              for (int l = 0; l < N; l++) {
-                A0(p, l) += Hb(p, l);
-                A1(p, l) += rho * Hb(p, l);
-                A2(p, l) += (rho * z) * Hb(p, l);
-              }
-            const R h1 = hbar_dot<N, R>(Hb, H1), h2 = hbar_dot<N, R>(Hb, H2);
-            const R sz = rho * h2, sr = rho * (h1 + z * h2);
-            for (int c = 0; c < nchunk; c++)
-              for (int k = 0; k < K && c * K + k < npar; k++) {
-                if (chunk(c).zoa_type[k] == seg[j].layer) acc[c * K + k] += sz;
-                if (chunk(c).rho_type[k] == seg[j].layer) acc[c * K + k] += sr;
-              }
-            continue;
-          }
-        }
-        for (int c = 0; c < nchunk; c++) {
-          R a[K] = {};
-          Model::template adj_contract_step<K>(chunk(c).P, E, nubar,
-                                               seed_segment(chunk(c), seg[j]), Gs, a);
-          for (int k = 0; k < K && c * K + k < npar; k++) acc[c * K + k] += a[k];
-        }
-      }
-    }
-    if constexpr (kAffine) {
-      using D = Dual<R, K>;
-      for (int c = 0; c < nchunk; c++) {
-        Mat<N, D> D00, D10, D11;
-        Model::template adj_hamiltonian<D>(chunk(c).P, ckpt[0], E, nubar, D(0), D(0), D00);
-        Model::template adj_hamiltonian<D>(chunk(c).P, ckpt[0], E, nubar, D(1), D(0), D10);
-        Model::template adj_hamiltonian<D>(chunk(c).P, ckpt[0], E, nubar, D(1), D(1), D11);
-        for (int p = 0; p < N; p++)
-          for (int l = p; l < N; l++) {
-            const Complex<D> d1 = D10(p, l) - D00(p, l), d2 = D11(p, l) - D10(p, l);
-            D10(p, l)           = d1;
-            D11(p, l)           = d2;
-          }
-        R a[K] = {};
-        contract_hbar<N, R, K>(A0, D00, a);
-        contract_hbar<N, R, K>(A1, D10, a);
-        contract_hbar<N, R, K>(A2, D11, a);
-        for (int k = 0; k < K && c * K + k < npar; k++) acc[c * K + k] += a[k];
-      }
-    }
+    prodh::adjoint_rest_backward<Model, R, K>(P, chunk, npar, earth, cosZ, atm_type, E, nubar,
+                                              ckpt, nseg, lamS, acc);
 
     // atmosphere: Hb = V conj(Cm) V^dag; initial state: Ib = 2 V conj(u)
     State Hb, Ib;

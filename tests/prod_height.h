@@ -370,12 +370,15 @@ namespace phtest {
       std::vector<double>                    w(NN * n), wg(2 * NN * ng);
       for (auto& x : w) x = u(rng);
       for (auto& x : wg) x = u(rng);
+      std::string worst_name;
       auto cmp = [&](const std::vector<double>& a, const std::vector<double>& b) {
         double sc = 0, worst = 0;
         for (double x : a) sc = std::max(sc, std::fabs(x));
-        for (size_t i = 0; i < a.size(); i++)
-          worst = std::max(worst, std::fabs(a[i] - b[i]) / std::max(std::fabs(a[i]),
-                                                                    1e-6 * sc + 1e-300));
+        for (size_t i = 0; i < a.size(); i++) {
+          const double r =
+              std::fabs(a[i] - b[i]) / std::max(std::fabs(a[i]), 1e-6 * sc + 1e-300);
+          if (r > worst) worst = r, worst_name = all[i];
+        }
         return worst;
       };
       prop.set_adjoint_gradients(false);
@@ -384,7 +387,10 @@ namespace phtest {
       prop.set_adjoint_gradients(true);
       auto         ga  = prop.weighted_gradient_points_prod_height(ev.E, ev.C, ev.nb, ev.dist, w);
       auto         gga = prop.weighted_gradient_prod_height(wg);
-      const double ea = std::max(cmp(gf, ga), cmp(ggf, gga));
+      const double eap = cmp(gf, ga);
+      const std::string wp = worst_name;
+      const double eag = cmp(ggf, gga);
+      const double ea  = std::max(eap, eag);
       // forward weighted grid against the stored grid gradients
       std::vector<double> gs(npar, 0.0);
       for (int nb = 0; nb < 2; nb++)
@@ -395,7 +401,8 @@ namespace phtest {
                        Gg[((nb * npar + p) * NN + ab) * ng + k];
       const double es = cmp(gs, ggf);
       MESSAGE(std::string(Model::name) << " N=" << N << " production heights: adjoint vs "
-              "forward " << ea << ", weighted grid vs stored " << es);
+              "forward: events " << eap << " (" << wp << "), grid " << eag << " ("
+              << worst_name << "); weighted grid vs stored " << es);
       CHECK(ea < tol_adj);
       CHECK(es < 1e-12);
     }

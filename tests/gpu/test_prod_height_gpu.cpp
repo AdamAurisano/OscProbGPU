@@ -69,7 +69,7 @@ namespace {
         for (int i = 0; i < 9; i++) C.push_back(-1 + 2.0 * i / 8);
         std::vector<int> dg;
         for (size_t ic = 0; ic < C.size(); ic++)
-          for (size_t k = 0; k < E.size(); k++) dg.push_back(int((ic + 2 * k) % 7) - 1);
+          for (size_t k = 0; k < E.size(); k++) dg.push_back(int((ic + 2 * k) % 6) - 1);
         double eG = 0, eGg = 0, eGw = 0;
         std::vector<double> wg(2 * NN * E.size() * C.size());
         for (size_t i = 0; i < wg.size(); i++) wg[i] = std::cos(0.11 * double(i));
