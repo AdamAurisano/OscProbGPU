@@ -1,13 +1,17 @@
 ///////////////////////////////////////////////////////////////////////////////
 /// \file sterile.h
 ///
-/// \brief 3+1 oscillations with one sterile neutrino (OscProb::PMNS_Sterile
-///        restricted to N = 4).
+/// \brief 3+N oscillations with sterile neutrinos (OscProb::PMNS_Sterile).
 ///
-/// Flavour indices: 0 = e, 1 = mu, 2 = tau, 3 = s. The 4x4 hermitian
-/// Hamiltonian is diagonalised with a complex Jacobi solver instead of
-/// Eigen's SelfAdjointEigenSolver, so CPU results agree with OscProb to
-/// round-off rather than bit-for-bit.
+/// Sterile<R, NF> has NF flavours (OscProb's PMNS_Sterile(NF)); the default
+/// NF = 4 is 3+1. The library instantiates NF = 4, 5 and 6 (aliases
+/// Sterile5, Sterile6) in the CUDA engine and Python; any NF >= 2 works on
+/// the CPU backend.
+///
+/// Flavour indices: 0 = e, 1 = mu, 2 = tau, 3.. = sterile. The NF x NF
+/// hermitian Hamiltonian is diagonalised with a complex Jacobi solver
+/// instead of Eigen's SelfAdjointEigenSolver, so CPU results agree with
+/// OscProb to round-off rather than bit-for-bit.
 ///////////////////////////////////////////////////////////////////////////////
 
 #ifndef OPG_MODELS_STERILE_H
@@ -26,20 +30,22 @@
 namespace opg {
 
   /// Sterile parameters with scalar type S.
-  template <class S> struct SterileParams {
-      MixingParamsT<4, S> mix;
+  template <class S, int N = 4> struct SterileParams {
+      MixingParamsT<N, S> mix;
   };
 
   /// Sterile prepared state with scalar type S.
-  template <class S> struct SterilePrepared {
-      Mat<4, S> Hms;   ///< U diag(dm) U^dagger (upper triangle), eV^2
+  template <class S, int N = 4> struct SterilePrepared {
+      Mat<N, S> Hms;   ///< U diag(dm) U^dagger (upper triangle), eV^2
       S         vfac;  ///< kK2*sqrt(2)*G_F
   };
 
-  template <class R = double> struct Sterile {
+  template <class R = double, int NF = 4> struct Sterile {
+      static_assert(NF >= 2, "Sterile: at least 2 flavours");
       using Real                        = R;
-      static constexpr int         N    = 4;
-      static constexpr const char* name = "Sterile";
+      static constexpr int         N    = NF;
+      static constexpr const char* name = NF == 4 ? "Sterile" : NF == 5 ? "Sterile5"
+                                        : NF == 6 ? "Sterile6" : "SterileN";
       /// Hermitian and affine in 1/E: analytic bin averages (avg/analytic.h).
       static constexpr bool analytic_avg = true;
       /// The matter terms of hamiltonian() do not depend on the model
@@ -53,20 +59,23 @@ namespace opg {
       static constexpr int grad_chunk = 1;  // tuned on V100 (K = 2 spills ~5 KB, 1.35x slower)
 #endif
 
-      template <class S> using ParamsT   = SterileParams<S>;
-      using Params                       = SterileParams<double>;
-      template <class S> using PreparedT = SterilePrepared<S>;
-      using Prepared                     = SterilePrepared<R>;
+      template <class S> using ParamsT   = SterileParams<S, N>;
+      using Params                       = SterileParams<double, N>;
+      template <class S> using PreparedT = SterilePrepared<S, N>;
+      using Prepared                     = SterilePrepared<R, N>;
 
-      /// Names of the differentiable parameters (MixingRegistry<4>):
-      /// th12, th13, th23, th14, th24, th34, d13, d14, d24, dm21, dm31, dm41.
+      /// Names of the differentiable parameters (MixingRegistry<N>): the
+      /// angles th_ij (i < j, ordered by j then i), the phases d_ij
+      /// (i + 1 < j, same order), then dm_j1. For N = 4: th12, th13, th23,
+      /// th14, th24, th34, d13, d14, d24, dm21, dm31, dm41; N = 5 adds
+      /// th15, th25, th35, th45, d15, d25, d35 and dm51 (each in its group).
       static std::vector<std::string> param_names()
       {
-        return MixingRegistry<4>::names();
+        return MixingRegistry<N>::names();
       }
       template <class S> static S& param_ref(ParamsT<S>& p, int idx)
       {
-        return MixingRegistry<4>::ref(p.mix, idx);
+        return MixingRegistry<N>::ref(p.mix, idx);
       }
       template <class S> static ParamsT<S> cast(const Params& p)
       {
@@ -76,7 +85,7 @@ namespace opg {
       template <class S> static PreparedT<S> prepare_generic(const ParamsT<S>& p)
       {
         PreparedT<S> out;
-        out.Hms  = build_hms_generic<4, S>(p.mix);
+        out.Hms  = build_hms_generic<N, S>(p.mix);
         out.vfac = S(constants::matter_prefactor());
         return out;
       }
@@ -85,7 +94,7 @@ namespace opg {
       static Prepared prepare(const Params& p)
       {
         Prepared out;
-        out.Hms  = build_hms<4, R>(p.mix);
+        out.Hms  = build_hms<N, R>(p.mix);
         out.vfac = R(constants::matter_prefactor());
         return out;
       }
@@ -96,7 +105,7 @@ namespace opg {
       template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
                                                 bool nubar, const Seg& s,
-                                                Mat<4, S>& H)
+                                                Mat<N, S>& H)
       {
         const auto rho = s.density;
         const auto zoa = s.zoa;
@@ -113,10 +122,10 @@ namespace opg {
         kr2GNn /= R(2);
 
         OPG_UNROLL
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < N; i++) {
           H(i, i) = P.Hms(i, i) / lv;
           OPG_UNROLL
-          for (int j = i + 1; j < 4; j++) {
+          for (int j = i + 1; j < N; j++) {
             if (!nubar)
               H(i, j) = P.Hms(i, j) / lv;
             else
@@ -137,30 +146,30 @@ namespace opg {
           H(0, 0).re -= kr2GNe;
       }
 
-      OPG_HD OPG_INLINE static Mat<4, R> initial(const Prepared&, bool)
+      OPG_HD OPG_INLINE static Mat<N, R> initial(const Prepared&, bool)
       {
-        return Mat<4, R>::identity();
+        return Mat<N, R>::identity();
       }
 
       OPG_HD OPG_INLINE static void step(const Prepared& P, R E, bool nubar,
-                                         const Segment<R>& s, Mat<4, R>& S)
+                                         const Segment<R>& s, Mat<N, R>& S)
       {
-        Mat<4, R> H, V;
-        R         lam[4];
+        Mat<N, R> H, V;
+        R         lam[N];
         hamiltonian(P, E, nubar, s, H);
-        jacobi_hermitian<4, R>(H, V, lam);
-        apply_eigen_step<4, R>(V, lam, length_in_eV(s.length), S);
+        jacobi_hermitian<N, R>(H, V, lam);
+        apply_eigen_step<N, R>(V, lam, length_in_eV(s.length), S);
       }
 
-      OPG_HD OPG_INLINE static void finalize(const Prepared&, bool, Mat<4, R>&) {}
+      OPG_HD OPG_INLINE static void finalize(const Prepared&, bool, Mat<N, R>&) {}
 
       // --- gradients ---------------------------------------------------------
       template <int K>
       OPG_HD OPG_INLINE static void initial_grad(const PreparedT<Dual<R, K>>&,
-                                                 bool, Mat<4, R> (&dS)[K])
+                                                 bool, Mat<N, R> (&dS)[K])
       {
         OPG_UNROLL
-        for (int k = 0; k < K; k++) dS[k] = Mat<4, R>::zero();
+        for (int k = 0; k < K; k++) dS[k] = Mat<N, R>::zero();
       }
 
       /// Value eigensystem from Jacobi (as step()), derivative of H from
@@ -170,25 +179,25 @@ namespace opg {
                                               const PreparedT<Dual<R, K>>& PD,
                                               R E, bool nubar,
                                               const SegmentZ<R, Dual<R, K>>& sz,
-                                              Mat<4, R>& S, Mat<4, R> (&dS)[K])
+                                              Mat<N, R>& S, Mat<N, R> (&dS)[K])
       {
         const Segment<R> s{sz.length, sz.density.v, sz.zoa.v, sz.layer};
-        Mat<4, R>        H, V;
-        R                lam[4];
+        Mat<N, R>        H, V;
+        R                lam[N];
         hamiltonian(P, E, nubar, s, H);
-        jacobi_hermitian<4, R>(H, V, lam);
+        jacobi_hermitian<N, R>(H, V, lam);
 
-        Mat<4, Dual<R, K>> HD;
+        Mat<N, Dual<R, K>> HD;
         hamiltonian(PD, E, nubar, sz, HD);
 
-        eigen_step_grad<4, R, K>(V, lam, length_in_eV(s.length), HD, S, dS);
+        eigen_step_grad<N, R, K>(V, lam, length_in_eV(s.length), HD, S, dS);
       }
 
       template <int K>
       OPG_HD OPG_INLINE static void finalize_grad(const Prepared&,
                                                   const PreparedT<Dual<R, K>>&,
-                                                  bool, Mat<4, R>&,
-                                                  Mat<4, R> (&)[K])
+                                                  bool, Mat<N, R>&,
+                                                  Mat<N, R> (&)[K])
       {
       }
 
@@ -196,44 +205,48 @@ namespace opg {
       static constexpr bool has_adjoint = true;
       // Not adj_affine: the summed cotangents lose about a digit at
       // dm41 ~ 1 eV^2 for only ~12% speed.
-      using AdjSeg                      = Mat<4, R>;
-      OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const Mat<4, R>& S,
-                                              const R* w, size_t stride, Mat<4, R>& Sb)
+      using AdjSeg                      = Mat<N, R>;
+      OPG_HD OPG_INLINE static void adj_final(const Prepared&, bool, const Mat<N, R>& S,
+                                              const R* w, size_t stride, Mat<N, R>& Sb)
       {
-        amplitude_adj_final<4, R>(S, w, stride, Sb);
+        amplitude_adj_final<N, R>(S, w, stride, Sb);
       }
       OPG_HD OPG_INLINE static void adj_step(const Prepared& P, R E, bool nubar,
-                                             const Segment<R>& s, const Mat<4, R>& S,
-                                             Mat<4, R>& Sb, Mat<4, R>& Hb)
+                                             const Segment<R>& s, const Mat<N, R>& S,
+                                             Mat<N, R>& Sb, Mat<N, R>& Hb)
       {
-        Mat<4, R> H, V;
-        R         lam[4];
+        Mat<N, R> H, V;
+        R         lam[N];
         hamiltonian(P, E, nubar, s, H);
-        jacobi_hermitian<4, R>(H, V, lam);
-        eigen_step_adj<4, R>(V, lam, length_in_eV(s.length), S, Sb, Hb);
+        jacobi_hermitian<N, R>(H, V, lam);
+        eigen_step_adj<N, R>(V, lam, length_in_eV(s.length), S, Sb, Hb);
       }
       template <int K>
       OPG_HD OPG_INLINE static void adj_contract_step(const PreparedT<Dual<R, K>>& PD, R E,
                                                       bool nubar,
                                                       const SegmentZ<R, Dual<R, K>>& sz,
-                                                      const Mat<4, R>& Hb, R (&acc)[K])
+                                                      const Mat<N, R>& Hb, R (&acc)[K])
       {
-        Mat<4, Dual<R, K>> HD;
+        Mat<N, Dual<R, K>> HD;
         hamiltonian(PD, E, nubar, sz, HD);
-        contract_hbar<4, R, K>(Hb, HD, acc);
+        contract_hbar<N, R, K>(Hb, HD, acc);
       }
       template <int K>
       OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>&, bool,
-                                                         const Mat<4, R>&, R (&)[K])
+                                                         const Mat<N, R>&, R (&)[K])
       {
       }
       template <int K>
       OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>&, bool,
-                                                       const Mat<4, R>&, const R*, size_t,
+                                                       const Mat<N, R>&, const R*, size_t,
                                                        R (&)[K])
       {
       }
   };
+
+  /// 3+2 and 3+3 (OscProb PMNS_Sterile(5), PMNS_Sterile(6)).
+  template <class R = double> using Sterile5 = Sterile<R, 5>;
+  template <class R = double> using Sterile6 = Sterile<R, 6>;
 
 } // namespace opg
 
