@@ -290,13 +290,34 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   thread all measured 0.85-1.0 ms vs 0.72 ms, V100, 16 grads, ~500 sub-bins).
   The same holds for Sterile single calls (fused ~1.4 ms vs general ~1.07 ms
   with 12 grads), kept fused for bit identity with batches (PISCES).
-* Later (not urgent): analytic averages for more models. Needs H hermitian
-  and H = A/E + V per segment with one A (read from the vacuum hamiltonian).
-  SNSI: easy-moderate (A depends on density: per-segment A, dA in SegData).
-  LIV: easy for aT^(3) only (constant in E, reject d >= 4); d >= 4 terms grow
-  as E^(d-3), not affine in 1/E (would need A(u0) per sub-bin, new error
-  control). SiderealLIV: as LIV, plus per-event time/azimuth. Decay (non-
-  hermitian), Deco/OQS (density matrices, Gamma E^n): hard, a new method.
+* Done (2026-11-26): analytic averages for SNSI, LIV (aT^(3) only) and
+  SiderealLIV (aT only). Model hooks in `avg/analytic.h`: own 1/E
+  coefficient A (`analytic_vacuum_term`: LIV/SiderealLIV, A = Hms/2
+  without the constant aT terms), A per segment (`analytic_segment_vacuum`:
+  SNSI, A = (M + n_f eps)^2/2 evaluated per segment from the dual prepared
+  state and seeded segment, so dA covers model and Earth parameters; no new
+  per-segment storage), own Hamiltonian (`analytic_own_hamiltonian`:
+  SiderealLIV with the fixed-path direction and sidereal time of the
+  prepared state, per point in C++ batches) and refusals
+  (`analytic_restricted`: a point with LIV d >= 4 / SiderealLIV cT nonzero,
+  or a gradient direction that moves one, throws std::invalid_argument
+  pointing to the GL averages; checked for single calls and every batch
+  point). Existing models' code paths unchanged (if constexpr). New option
+  `extra_potential` (eV) adds non-matter terms to the width rule, which
+  otherwise sees only matter: LIV with aT^(3) ~ 20 V errs 1e-5 (one
+  segment), 4e-4 (vacuum) at the default rule, <= 2.5e-6 with
+  extra_potential = 2 max |aT|; SNSI on three segments of different density
+  1.2e-4 (the mass term changes between segments), <= 1e-6 with 3e-11 eV;
+  one segment <= 2e-6 at the default rule. Gradients vs long-double FD
+  <= 5e-8 relative (Earth parameters ~1e-13). gpubox CUDA build (nvcc 13,
+  sm_75, other builds running): engine library 2536 -> 2746 s (+8%); one-
+  model engines 42-53 -> 138-148 s each for SNSI, LIV, SiderealLIV.
+  Not done: d >= 4 / cT terms (would need A(u0) per sub-bin and new error
+  control; their derivatives at zero could be had by treating E^(d-3) as a
+  weight linearised per sub-bin, as the measures are), per-point direction
+  and time in Python batches, an automatic width rule for the new terms.
+  Decay (non-hermitian), Deco/OQS (density matrices, Gamma E^n): hard, a new
+  method.
 * Possible: host preparation of batches (~5-10 us per point: dual-number
   prepared states and dA per parameter) on the device.
 * Done (2026-10-28, for PISCES): batched fixed-node GL,

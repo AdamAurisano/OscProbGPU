@@ -259,8 +259,8 @@ p.wait(); A = out.get()
 
 ### Analytic averages (fixed paths)
 
-`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, NUNM, Sterile of any N;
-`include/opg/avg/analytic.h`) average P(a → b) over bins of E or L/E for a
+`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, NUNM, Sterile of any N,
+SNSI, LIV with aT⁽³⁾ only, SiderealLIV with aT only; `include/opg/avg/analytic.h`) average P(a → b) over bins of E or L/E for a
 fixed path without resolving the oscillations, after OscProb's
 `PMNS_Maltoni` (arXiv:2308.00037). To first order in u = 1/E around a
 sub-bin centre, S(u₀ + δ) = S(u₀) exp(−iKδ) with K = Σ_seg T† ∫₀^L e^{iHs} (dH/du)
@@ -291,13 +291,45 @@ prop.avg_path_analytic_grad(E_edges, fd, /*nubar=*/false, P, dP,
   sub-bins: 0.72 vs 0.9 ms per call), so they agree with batches to
   round-off (~1e-12) rather than bit for bit. V100 batches, 1024 points,
   16 gradients: FD 93 ms, ND 82 ms per handle (weighted: ~70 ms).
+* SNSI, LIV, SiderealLIV: the method needs H = A/E + V on each segment
+  (hermitian). SNSI's scalar term enters the mass matrix, so its
+  A = (M + n_f ε)²/2 depends on the segment's density and Z/A; it is
+  evaluated per segment, with its derivatives (model parameters and the
+  Earth `zoa_<t>`/`rho_<t>`). LIV's aT⁽³⁾ and SiderealLIV's aT terms are
+  E-independent and go into V. The other LIV terms grow as E^(d−3) (cT⁽⁴⁾,
+  aT⁽⁵⁾, …, cT⁽⁸⁾; SiderealLIV's cT as E) and are not affine in 1/E: a point
+  with any of them nonzero, or a gradient selection that differentiates one
+  of them (LIV's default selection includes cT⁽⁴⁾), is refused with
+  `std::invalid_argument` (Python: `ValueError`) asking for the
+  Gauss–Legendre averages (`avg_path`); batches refuse the call if any point
+  does. (A phase of a zero coefficient may be selected: its derivative is
+  exactly zero.) SiderealLIV uses the direction and sidereal time of the
+  prepared parameters (`SetNeutrinoDirection`, `SetTimeHours`), as its fixed
+  paths do; in C++ batches each point carries its own (they are part of
+  `Params`); Python batch points set coefficients by name and take the
+  direction and time from the propagator.
+* The width rule below counts only the matter potential. E-independent LIV
+  terms act like a potential in vacuum too, and SNSI's mass term changes
+  between segments of different density; set `extra_potential` (eV, added to
+  V in the rule) to their size, or lower `tol`, else the error grows by the
+  ratio of that size to V. Test cases (61 log bins 0.5–120 GeV, 1300 km at
+  2.848 g/cm³, 3 × 1000 km at 2/4.5/2 g/cm³, and 1300 km of vacuum;
+  converged GL reference): LIV with aT⁽³⁾ up to 2·10⁻²¹ GeV (~20 V) at the
+  default rule 1e-5 (one segment), 3e-5 (three), 4e-4 (vacuum, where the
+  rule takes `max_width`), with `extra_potential` = 2 max |aT| (4·10⁻¹² eV)
+  ≤ 2.5e-6; SiderealLIV (aT ≤ 3·10⁻²² GeV, `extra_potential` 4 max |aT|)
+  ≤ 1.9e-6; SNSI (OscProb's test points, |n_f ε| ~ 0.2 m₁): one segment at
+  the default rule ≤ 2e-6, three segments 1.2e-4, ≤ 1e-6 with
+  `extra_potential` = 3·10⁻¹¹ eV. Gradients agree with long-double finite
+  differences to ≤ 5e-8 relative (Earth parameters ≤ 1e-12).
 * Measures: uniform in E (`Linear`, the default as for `avg_path`), log E or
   1/E (`InvE`, uniform in L/E); the measure's weight enters each sub-bin
   exactly to first order.
 * `AnalyticAvgOptions`: `tol` (default 1e-6; sub-bin width
-  r = √(tol / (0.005 Σ V L)), V the matter potential at Z/A = 1, capped at
-  `max_width` = 0.1; the observed error is ≈ 0.5–1 × tol and the cost grows as
-  1/√tol), `nsub` (fixed sub-bins uniform in 1/E instead), `threads` (OpenMP).
+  r = √(tol / (0.005 Σ V L)), V the matter potential at Z/A = 1 plus
+  `extra_potential` (default 0), capped at `max_width` = 0.1; the observed
+  error is ≈ 0.5–1 × tol and the cost grows as 1/√tol), `nsub` (fixed
+  sub-bins uniform in 1/E instead), `threads` (OpenMP).
   `avg_path_analytic_subbins()` takes explicit sub-bins (e.g. OscProb's).
 * Pairs whose phase sweeps more than 10⁶ rad across a sub-bin fade out
   smoothly (C² in log of the sweep) and are dropped beyond 10⁷ rad (their
@@ -405,7 +437,8 @@ values 4x and 6 gradients 1.6x faster; on the GPU only the values gain (ND
 4.9 → 2.9 ms per 1024 points): the per-sub-bin tables dominate the
 gradients there. Off by default.
 
-**Python** (`Fast`, `NSI`, `NUNM`, `Sterile`, `Sterile5`, `Sterile6`): the same calls, with points
+**Python** (`Fast`, `NSI`, `NUNM`, `Sterile`, `Sterile5`, `Sterile6`, `SNSI`, `LIV`,
+`SiderealLIV`): the same calls, with points
 given as for `binned_batch` (names and one row of values per point) and the
 options as an `AnalyticAvgOptions` object:
 
