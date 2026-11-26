@@ -118,9 +118,10 @@ def test_batch_point_arguments(devices):
 # analytic averages
 
 def test_analytic_models():
-    for cls in (opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Sterile5, opg.Sterile6):
+    for cls in (opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Sterile5, opg.Sterile6,
+                opg.SNSI, opg.LIV, opg.SiderealLIV):
         assert hasattr(cls, "avg_path_analytic") and hasattr(cls, "analytic_batch")
-    for cls in (opg.Decay, opg.LIV, opg.SNSI, opg.Deco, opg.SiderealLIV, opg.OQS):
+    for cls in (opg.Decay, opg.Deco, opg.OQS):
         assert not hasattr(cls, "avg_path_analytic")
 
 
@@ -350,3 +351,119 @@ def test_gil_released_during_computation():
     inside = sum(t0 < t < t1 for t in stamps)
     # with the GIL held for the whole call, no stamp could be taken inside it
     assert inside > 100
+
+
+# ---------------------------------------------------------------------------
+# analytic averages of SNSI (mass term per segment), LIV (aT3 only) and
+# SiderealLIV (aT only; direction and sidereal time of the propagator)
+
+def _snsi(devices):
+    p = set_nominal(opg.SNSI(devices=devices))
+    p.set_lowest_mass(0.05)
+    p.set_eps(0, 0, 0.5)
+    p.set_eps(0, 1, 0.3, 0.4)
+    p.set_eps(1, 2, 0.4)
+    return p, ["th23", "dm31", "eps_emu", "mlight"], 0.0
+
+
+def _liv(devices):
+    p = set_nominal(opg.LIV(devices=devices))
+    p.set_aT(0, 1, 3, 1.5e-22, 0.7)
+    p.set_aT(1, 1, 3, -1e-22)
+    p.set_aT(1, 2, 3, 2e-22)
+    return p, ["th23", "dm31", "aT3_emu", "ph_aT3_emu", "aT3_mutau"], 4e-13
+
+
+def _sidereal(devices):
+    p = set_nominal(opg.SiderealLIV(devices=devices))
+    p.set_colatitude(43.5)
+    p.set_neutrino_direction(120.0, 250.0)
+    p.set_time_hours(17.3)
+    p.set_a(0, 1, 0, 3e-22)
+    p.set_a(1, 2, 2, -2e-22)
+    p.set_a(2, 2, 1, 1e-22)
+    return p, ["th23", "dm31", "aX_emu", "aZ_mutau"], 1.2e-12
+
+
+def _set_any(p, name, v):
+    """Set a parameter of _snsi/_liv/_sidereal by gradient name."""
+    if name == "mlight":
+        p.set_lowest_mass(v)
+    elif name == "eps_emu":
+        p.set_eps(0, 1, v, 0.4)
+    elif name == "aT3_emu":
+        p.set_aT(0, 1, 3, v, 0.7)
+    elif name == "aX_emu":
+        p.set_a(0, 1, 0, v)
+    else:
+        _set(p, name, v)
+
+
+@pytest.mark.parametrize("make", [_snsi, _liv, _sidereal], ids=["SNSI", "LIV", "SiderealLIV"])
+@pytest.mark.parametrize("path", [FD, TWO], ids=["one_segment", "two_segments"])
+def test_analytic_snsi_liv(devices, path, make):
+    _need_gradients()
+    p, names, extra = make(devices)
+    o = opg.AnalyticAvgOptions()
+    o.extra_potential = extra
+    names = names + (["zoa_0", "rho_1"] if path is TWO else [])
+    p.set_gradient_params(names)
+    E = np.geomspace(0.5, 10, 21)
+    A = p.avg_path_analytic(E, path, measure="invE", options=o)
+    A2, dA = p.avg_path_analytic_grad(E, path, measure="invE", options=o)
+    assert A.shape == (3, 3, 20) and dA.shape == (len(names), 3, 3, 20)
+    assert np.array_equal(A, A2)
+    assert np.allclose(A.sum(axis=1), 1, atol=1e-12)
+    G = p.avg_path(E, 400, path, False, "invE")
+    assert np.abs(A - G).max() < 3e-6
+    # derivative of the first model parameter with a coefficient: central differences
+    q = 2
+    v = {"eps_emu": 0.3, "aT3_emu": 1.5e-22, "aX_emu": 3e-22}[names[q]]
+    h = v * 1e-5
+    _set_any(p, names[q], v + h)
+    up = p.avg_path_analytic(E, path, measure="invE", options=o)
+    _set_any(p, names[q], v - h)
+    dn = p.avg_path_analytic(E, path, measure="invE", options=o)
+    _set_any(p, names[q], v)
+    fd = (up - dn) / (2 * h)
+    assert np.abs(fd - dA[q]).max() < 1e-6 * np.abs(dA[q]).max()
+    # batches: bit-identical per point (host), round-off of the reduction (GPU)
+    vals = np.array([[0.70, 2.4e-3], [0.80, 2.5e-3], [0.75, 2.6e-3]])
+    hb = p.analytic_batch(E, path, measure="invE", options=o)
+    B, dB = p.avg_path_analytic_batch(hb, ["th23", "dm31"], vals, gradient=True)
+    tol = 1e-12 if devices else 0
+    for k, row in enumerate(vals):
+        _set(p, "th23", row[0])
+        _set(p, "dm31", row[1])
+        S, dS = p.avg_path_analytic_grad(E, path, measure="invE", options=o)
+        assert np.abs(S - B[k]).max() <= tol
+        assert np.abs(dS - dB[k]).max() <= tol * max(1, np.abs(dS).max())
+    w = np.random.default_rng(5).normal(size=B.shape)
+    g = p.avg_path_analytic_batch_weighted(hb, ["th23", "dm31"], vals, w)
+    ref = np.einsum("pabk,pqabk->pq", w, dB)
+    sc = np.einsum("pabk,pqabk->pq", np.abs(w), np.abs(dB))
+    assert np.all(np.abs(g - ref) <= 1e-12 * sc)
+
+
+def test_analytic_liv_refusals(devices):
+    """Terms growing with E (LIV d >= 4, SiderealLIV cT) are refused, also as
+    gradient parameters; the GL averages still work."""
+    E = np.geomspace(0.5, 10, 6)
+    p, _, _ = _liv(devices)
+    p.set_cT(1, 1, 4, 1e-30)
+    with pytest.raises(ValueError, match="Gauss-Legendre"):
+        p.avg_path_analytic(E, FD)
+    assert p.avg_path(E, 4, FD, False).shape == (3, 3, 5)
+    p.set_cT(1, 1, 4, 0.0)
+    p.avg_path_analytic(E, FD)
+    if opg.LIV.has_gradients:
+        p.set_gradient_params(["th23", "cT4_mumu"])
+        with pytest.raises(ValueError):
+            p.avg_path_analytic_grad(E, FD)
+        h = p.analytic_batch(E, FD)
+        with pytest.raises(ValueError):
+            p.avg_path_analytic_batch(h, ["aT5_emu"], np.array([[1e-35]]))
+    s, _, _ = _sidereal(devices)
+    s.set_c(0, 1, 0, 2, 1e-30)
+    with pytest.raises(ValueError):
+        s.avg_path_analytic(E, FD)

@@ -829,7 +829,7 @@ namespace {
   }
 
   /// Analytic bin averages and their batch handles (models with
-  /// Model::analytic_avg: Fast, NSI, NUNM, Sterile).
+  /// Model::analytic_avg: Fast, NSI, NUNM, Sterile, SNSI, LIV, SiderealLIV).
   template <class Model>
   void bind_analytic(nb::module_& m, nb::class_<PyModel<Model>>& c, const char* name)
   {
@@ -1269,6 +1269,9 @@ NB_MODULE(_oscprobgpu, m)
       .def(nb::init<>())
       .def_rw("tol", &opg::AnalyticAvgOptions::tol,
               "Target first-order error (sets the sub-bin width; default 1e-6).")
+      .def_rw("extra_potential", &opg::AnalyticAvgOptions::extra_potential,
+              "Size (eV) of non-matter terms the width rule should count with the matter "
+              "potential (E-independent LIV terms, SNSI's mass term between segments; 0).")
       .def_rw("max_width", &opg::AnalyticAvgOptions::max_width,
               "Largest relative sub-bin width u_hi/u_lo - 1 (0.1).")
       .def_rw("nsub", &opg::AnalyticAvgOptions::nsub,
@@ -1442,6 +1445,10 @@ NB_MODULE(_oscprobgpu, m)
              w.params.SetTimeHours(h);
            },
            "hours"_a, "Local sidereal time.");
+
+  bind_analytic<LIV>(m, cl, "LIV");
+  bind_analytic<SNSI>(m, cs2, "SNSI");
+  bind_analytic<SLIV>(m, csl, "SiderealLIV");
 
   using Deco = opg::Deco<double>;
   auto ce = bind_model<Deco>(m, "Deco", "3 flavours with decoherence (PMNS_Deco).");
