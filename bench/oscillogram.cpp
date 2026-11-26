@@ -1,6 +1,7 @@
 // Throughput benchmark on a PREM (E, cosZ) grid.
 //
 // Usage: opg_bench [nE] [nC] [devices|cpu] [reps] [model]
+//   (OPG_BENCH_EARTH=binned: through the default EarthModelBinned)
 //   devices: comma-separated CUDA ids (e.g. "0" or "0,1"), or "cpu"
 //   model  : fast (default), nsi, nunm, sterile, decay, liv, snsi, deco,
 //            sidereal, oqs, binned, grad,
@@ -33,6 +34,19 @@ namespace {
     return d;
   }
 
+  /// The Earth of the benchmarks: PREM, or with OPG_BENCH_EARTH=binned the
+  /// default EarthModelBinned (paths at azimuth 30 degrees).
+  opg::EarthModel bench_earth()
+  {
+    const char* e = std::getenv("OPG_BENCH_EARTH");
+    if (e && std::string(e) == "binned") {
+      opg::EarthModelBinned b;
+      b.SetAzimuth(30);
+      return b;
+    }
+    return opg::PremModel();
+  }
+
   opg::MixingParams<3> nominal3()
   {
     opg::MixingParams<3> p;
@@ -54,7 +68,7 @@ namespace {
 
     using clk = std::chrono::steady_clock;
     auto t0   = clk::now();
-    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    opg::Propagator<Model> prop(bench_earth(), dev);
     prop.set_grid(E, C);
     auto t1 = clk::now();
 
@@ -93,7 +107,7 @@ namespace {
     std::vector<double> Ee(nEb + 1), Ce(nCb + 1);
     for (int i = 0; i <= nEb; i++) Ee[i] = std::pow(10.0, -0.5 + 2.5 * i / nEb);
     for (int i = 0; i <= nCb; i++) Ce[i] = -1 + 1.0 * i / nCb;
-    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    opg::Propagator<Model> prop(bench_earth(), dev);
     prop.set_params(p);
     prop.set_bins(Ee, Ce, ngl, ngl, opg::EMeasure::Log);
     prop.calculate_binned();
@@ -122,7 +136,7 @@ namespace {
     std::vector<double> Ee(nEb + 1), Ce(nCb + 1);
     for (int i = 0; i <= nEb; i++) Ee[i] = std::pow(10.0, -0.5 + 2.5 * i / nEb);
     for (int i = 0; i <= nCb; i++) Ce[i] = -1 + 1.0 * i / nCb;
-    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    opg::Propagator<Model> prop(bench_earth(), dev);
     prop.set_params(p);
     prop.set_bins(Ee, Ce, ngl, ngl, opg::EMeasure::Log);
     prop.set_gradient_params();
@@ -173,7 +187,7 @@ namespace {
       bin[i] = int(u(rng) * nbins);
     }
     for (auto& x : w) x = u(rng);
-    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    opg::Propagator<Model> prop(bench_earth(), dev);
     prop.set_params(p);
     prop.set_gradient_params();
     prop.weighted_gradient_points_binned(E, C, nb, w, bin, nbins);
@@ -206,7 +220,7 @@ namespace {
     std::vector<R> E(nE), C(nC);
     for (int i = 0; i < nE; i++) E[i] = R(std::pow(10.0, -0.5 + 2.5 * i / (nE - 1.0)));
     for (int i = 0; i < nC; i++) C[i] = R(-1 + 1.0 * i / (nC - 1.0));
-    opg::Propagator<Model> prop(opg::PremModel(), dev);
+    opg::Propagator<Model> prop(bench_earth(), dev);
     prop.set_grid(E, C);
     prop.set_params(p);
     auto names = Model::param_names();

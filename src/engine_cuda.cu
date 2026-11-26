@@ -134,15 +134,16 @@ namespace opg {
                                   const R* __restrict__ E,
                                   const R* __restrict__ C,
                                   const uint8_t* __restrict__ nubar,
-                                  const R* __restrict__ extra, const R* __restrict__ az, size_t n,
+                                  const R* __restrict__ extra,
+                                  const R* __restrict__ az, size_t n,
                                   size_t stride, R* __restrict__ out)
     {
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
         R    ex[kMaxExtra];
-        auto S = evolve_prem<Model, R>(P, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0,
-                                       gather_extra<Model, R>(extra, i, n, ex));
+        auto S = evolve_prem<Model, R>(P, event_earth(earth, az, i), E[i], C[i],
+                                       nubar[i] != 0, gather_extra<Model, R>(extra, i, n, ex));
         store_model_probs<Model, R>(S, out + i, stride);
       }
     }
@@ -424,7 +425,8 @@ namespace opg {
                                        const EarthView<R> earth, const R* __restrict__ E,
                                        const R* __restrict__ C,
                                        const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra, const R* __restrict__ az, size_t n,
+                                       const R* __restrict__ extra,
+                                  const R* __restrict__ az, size_t n,
                                        int offset, int count, bool write_probs,
                                        R* __restrict__ probs, R* __restrict__ grad)
     {
@@ -434,7 +436,8 @@ namespace opg {
            i += size_t(gridDim.x) * blockDim.x) {
         StateOf<Model> S, dS[K];
         R ex[kMaxExtra];
-        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, S, dS,
+        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i],
+                                      nubar[i] != 0, S, dS,
                                       gather_extra<Model, R>(extra, i, n, ex));
         if (write_probs) store_model_probs<Model, R>(S, probs + i, n);
         store_model_grads<Model, R, K>(S, dS, count, grad + size_t(offset) * N * N * n + i, n);
@@ -447,7 +450,8 @@ namespace opg {
                                         const EarthView<R> earth, const R* __restrict__ E,
                                         const R* __restrict__ C,
                                         const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra, const R* __restrict__ az, size_t n,
+                                       const R* __restrict__ extra,
+                                  const R* __restrict__ az, size_t n,
                                         const R* __restrict__ w, R* __restrict__ partial)
     {
       const auto&   PD = GradArg<Model>::get(PDa);
@@ -457,7 +461,8 @@ namespace opg {
            i += size_t(gridDim.x) * blockDim.x) {
         StateOf<Model> S, dS[K];
         R ex[kMaxExtra];
-        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, S, dS,
+        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i],
+                                      nubar[i] != 0, S, dS,
                                       gather_extra<Model, R>(extra, i, n, ex));
         R a[K];
         contract_model_grads<Model, R, K>(S, dS, w + i, n, a);
@@ -485,7 +490,8 @@ namespace opg {
         if (bin[i] < 0) continue;
         StateOf<Model> S, dS[K];
         R ex[kMaxExtra];
-        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, S, dS,
+        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i],
+                                      nubar[i] != 0, S, dS,
                                       gather_extra<Model, R>(extra, i, n, ex));
         R a[K];
         contract_model_grads<Model, R, K>(S, dS, w + i, n, a);
@@ -583,7 +589,8 @@ namespace opg {
                                        int npar, const EarthView<R> earth,
                                        const R* __restrict__ E, const R* __restrict__ C,
                                        const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra, const R* __restrict__ az, size_t n,
+                                       const R* __restrict__ extra,
+                                  const R* __restrict__ az, size_t n,
                                        const R* __restrict__ w, R* __restrict__ partial,
                                        int* err)
     {
@@ -592,8 +599,9 @@ namespace opg {
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
         R ex[kMaxExtra];
-        if (!adjoint_prem<Model, R, K>(P, ch, npar, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, w + i, n,
-                                       acc, gather_extra<Model, R>(extra, i, n, ex)))
+        if (!adjoint_prem<Model, R, K>(P, ch, npar, event_earth(earth, az, i), E[i], C[i],
+                                       nubar[i] != 0, w + i, n, acc,
+                                       gather_extra<Model, R>(extra, i, n, ex)))
           *err = 1;
       }
       block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc, partial + size_t(blockIdx.x) * kAdjMaxPar);
@@ -617,8 +625,9 @@ namespace opg {
         if (bin[i] < 0) continue;
         R acc[kAdjMaxPar] = {};
         R ex[kMaxExtra];
-        if (!adjoint_prem<Model, R, K>(P, ch, npar, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, w + i, n,
-                                       acc, gather_extra<Model, R>(extra, i, n, ex)))
+        if (!adjoint_prem<Model, R, K>(P, ch, npar, event_earth(earth, az, i), E[i], C[i],
+                                       nubar[i] != 0, w + i, n, acc,
+                                       gather_extra<Model, R>(extra, i, n, ex)))
           *err = 1;
         for (int p = 0; p < npar; p++) contrib[i * npar + p] = acc[p];
       }
@@ -2684,7 +2693,7 @@ namespace opg {
       BinSpec<R>                           fBins;
       size_t                               fNE = 0, fNC = 0;
       bool                                 fHaveEarth   = false;
-      int                                  fMaxSeg      = 0;  ///< segment bound of the Earth's paths
+      int                                  fMaxSeg      = 0;  ///< bound on path segments
       bool                                 fHostValid   = false;
       bool                                 fBinnedValid = false;
 
