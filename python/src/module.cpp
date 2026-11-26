@@ -124,6 +124,28 @@ namespace {
     throw std::invalid_argument("cosz_rule must be 'layer' or 'plain'");
   }
 
+  /// Integer index array (int32 or int64, any shape, C order) as a vector.
+  using IdxArr = nb::ndarray<nb::c_contig, nb::device::cpu>;
+  std::vector<int> to_index(const IdxArr& a, const char* what)
+  {
+    std::vector<int> v(a.size());
+    if (a.dtype() == nb::dtype<int32_t>()) {
+      auto* p = static_cast<const int32_t*>(a.data());
+      for (size_t i = 0; i < v.size(); i++) v[i] = p[i];
+    }
+    else if (a.dtype() == nb::dtype<int64_t>()) {
+      auto* p = static_cast<const int64_t*>(a.data());
+      for (size_t i = 0; i < v.size(); i++) {
+        if (p[i] < -1 || p[i] > INT32_MAX)
+          throw std::out_of_range(std::string(what) + ": index out of range");
+        v[i] = int(p[i]);
+      }
+    }
+    else
+      throw std::invalid_argument(std::string(what) + ": must be an int32 or int64 array");
+    return v;
+  }
+
   std::vector<opg::Segment<double>> to_path(const Arr2& seg)
   {
     if (seg.shape(1) < 2 || seg.shape(1) > 4)
@@ -644,6 +666,119 @@ namespace {
              "Per-analysis-bin weighted gradient: G[b, p] = sum over events i "
              "with bins[i] == b of weights[a, b, i] * dP_ab(i)/dp (bins outside "
              "[0, nbins) are ignored); extra and azimuth as in prob_points.")
+        // production-height averaging
+        .def_prop_ro_static("has_prod_height",
+                            [](nb::handle) { return opg::Propagator<Model>::has_prod_height(); },
+                            "Whether production-height averaging is available.")
+        .def("set_prod_heights",
+             [](W& w, const std::vector<Arr1>& edges, const std::vector<Arr1>& probs) {
+               std::vector<std::vector<double>> e, p;
+               for (auto& a : edges) e.push_back(to_vec(a));
+               for (auto& a : probs) p.push_back(to_vec(a));
+               nb::gil_scoped_release r;
+               w.prop.set_prod_heights(e, p);
+             },
+             "edges"_a, "probs"_a,
+             "Production-height distributions: distribution d is a histogram with "
+             "bin edges edges[d] (km above the base of the Earth model's top, "
+             "atmosphere layer; non-decreasing, >= 0; equal consecutive edges give "
+             "a fixed height) and probabilities probs[d] (normalised), uniform in "
+             "height within each bin. Averages are exact (one propagation per point).")
+        .def_prop_ro("n_prod_heights", [](W& w) { return w.prop.n_prod_heights(); })
+        .def("prod_height_path_length",
+             [](W& w, double c, double h) { return w.prop.prod_height_path_length(c, h); },
+             "cosz"_a, "height"_a,
+             "Path length (km) through the atmosphere for a production height (km).")
+        .def("set_grid_prod_heights",
+             [](W& w, IdxArr d) {
+               auto v = to_index(d, "set_grid_prod_heights");
+               nb::gil_scoped_release r;
+               w.prop.set_grid_prod_heights(v);
+             },
+             "dist"_a,
+             "Distribution index of each grid point for calculate_prod_height: "
+             "shape (n_cosines,) or (n_cosines, n_energies); -1: the Earth model's "
+             "own atmosphere.")
+        .def("calculate_prod_height",
+             [](W& w, const std::string& fl, bool gradient) {
+               const auto f = parse_flavor(fl);
+               nb::gil_scoped_release r;
+               w.sync();
+               w.prop.calculate_prod_height(f, gradient);
+             },
+             "flavor"_a = "both", "gradient"_a = false,
+             "Grid probabilities averaged over production heights (into probs(); "
+             "with gradient=True also grad()).")
+        .def("weighted_gradient_prod_height",
+             [](W& w, nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
+                const std::string& fl) {
+               const auto          f = parse_flavor(fl);
+               std::vector<double> v(wt.data(), wt.data() + wt.size()), g;
+               {
+                 nb::gil_scoped_release r;
+                 w.sync();
+                 g = w.prop.weighted_gradient_prod_height(v, f);
+               }
+               return make_array(std::move(g), {g.size()});
+             },
+             "weights"_a, "flavor"_a = "both",
+             "weighted_gradient for the production-height averaged grid.")
+        .def("prob_points_prod_height",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, IdxArr d, std::optional<Arr1> az) {
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               auto ev = to_vec(E), cv = to_vec(C);
+               auto dv = to_index(d, "prob_points_prod_height");
+               auto av = to_azimuth(az, E.shape(0));
+               std::vector<double> out;
+               {
+                 nb::gil_scoped_release r;
+                 w.sync();
+                 out = w.prop.prob_points_prod_height(ev, cv, nbv, dv, av);
+               }
+               return make_array(std::move(out), {N, N, E.shape(0)});
+             },
+             "energies"_a, "cosines"_a, "nubar"_a, "dist"_a, "azimuth"_a = nb::none(),
+             "Event list averaged over production heights: event i uses distribution "
+             "dist[i] (-1: the Earth model's atmosphere). Returns P[a, b, i].")
+        .def("prob_points_grad_prod_height",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, IdxArr d, std::optional<Arr1> az) {
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               auto ev = to_vec(E), cv = to_vec(C);
+               auto dv = to_index(d, "prob_points_grad_prod_height");
+               auto av = to_azimuth(az, E.shape(0));
+               std::vector<double> P, dP;
+               {
+                 nb::gil_scoped_release r;
+                 w.sync();
+                 w.prop.prob_points_grad_prod_height(ev, cv, nbv, dv, P, dP, av);
+               }
+               size_t np = w.prop.n_gradient_params();
+               return nb::make_tuple(make_array(std::move(P), {N, N, E.shape(0)}),
+                                     make_array(std::move(dP), {np, N, N, E.shape(0)}));
+             },
+             "energies"_a, "cosines"_a, "nubar"_a, "dist"_a, "azimuth"_a = nb::none(),
+             "prob_points_prod_height with gradients: (P[a, b, i], dP[p, a, b, i]).")
+        .def("weighted_gradient_points_prod_height",
+             [](W& w, Arr1 E, Arr1 C, Arr1u nb_, IdxArr d,
+                nb::ndarray<const double, nb::c_contig, nb::device::cpu> wt,
+                std::optional<Arr1> az) {
+               std::vector<uint8_t> nbv(nb_.data(), nb_.data() + nb_.shape(0));
+               std::vector<double>  v(wt.data(), wt.data() + wt.size());
+               auto ev = to_vec(E), cv = to_vec(C);
+               auto dv = to_index(d, "weighted_gradient_points_prod_height");
+               auto av = to_azimuth(az, E.shape(0));
+               std::vector<double> g;
+               {
+                 nb::gil_scoped_release r;
+                 w.sync();
+                 g = w.prop.weighted_gradient_points_prod_height(ev, cv, nbv, dv, v, av);
+               }
+               return make_array(std::move(g), {g.size()});
+             },
+             "energies"_a, "cosines"_a, "nubar"_a, "dist"_a, "weights"_a,
+             "azimuth"_a = nb::none(),
+             "sum of weights[a, b, i] * dP_ab(i)/dp over an event list of "
+             "production-height averages.")
         .def("prob_path_grad",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                auto ev = to_vec(E);

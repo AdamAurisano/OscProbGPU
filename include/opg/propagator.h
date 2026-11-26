@@ -114,7 +114,13 @@ namespace opg {
         // Layer-adapted cosZ nodes sit at the old Earth's grazing cosines.
         const bool rebin = fHaveBins && fBinArgs.rule == CosZRule::LayerAdapted &&
                            earth.GetGrazingCosines() != fEarth.GetGrazingCosines();
+        ProdHeightTable ph = fPH;
+        if (fHavePH) ph.set_earth(earth);  // throws before anything changes
         fEngine->set_earth(earth);
+        if (fHavePH) {
+          fEngine->set_prod_heights(ph);
+          fPH = ph;
+        }
         fEarth    = earth;
         fZoaTypes = types;
         // the meaning of zoa_<type> parameters may have changed
@@ -152,6 +158,11 @@ namespace opg {
         fEngine->set_grid(E, cosZ);
         fNE = E.size();
         fNC = cosZ.size();
+        if (fGridDistSet) {
+          fGridDistSet = false;
+          if (fGridDist.size() == fNC || fGridDist.size() == fNC * fNE)
+            set_grid_prod_heights(std::vector<int>(fGridDist));
+        }
       }
 
       /// Set the model parameters (runs Model::prepare on the host).
@@ -1064,6 +1075,152 @@ namespace opg {
         return G;
       }
 
+      //.......................................................................
+      // Production-height averaging (avg/prod_height.h)
+      //.......................................................................
+
+      /// Whether production-height averaging is available for this model.
+      static constexpr bool has_prod_height() { return supports_prod_height_v<Model>; }
+
+      /// Production-height distributions: distribution d is a histogram with
+      /// bin edges edges[d] (km above the base of the Earth model's top,
+      /// atmosphere layer; non-decreasing, >= 0; equal consecutive edges give
+      /// a fixed height) and bin probabilities probs[d] (normalised here),
+      /// uniform in height within each bin. The averages are exact (see
+      /// avg/prod_height.h). Indices d are used by set_grid_prod_heights()
+      /// and the event-list modes. The atmosphere (density, Z/A, type) is the
+      /// Earth model's top layer, or top depth shell of a binned Earth, which
+      /// must be one medium with the detector below it.
+      void set_prod_heights(const std::vector<std::vector<double>>& edges,
+                            const std::vector<std::vector<double>>& probs)
+      {
+        if constexpr (!supports_prod_height_v<Model>) EngineBase<Model>::no_prod_height();
+        if (edges.size() != probs.size())
+          throw std::invalid_argument("set_prod_heights: need as many edge lists as "
+                                      "probability lists");
+        ProdHeightTable t;
+        t.set_earth(fEarth);
+        for (size_t d = 0; d < edges.size(); d++) t.add(edges[d], probs[d]);
+        fEngine->set_prod_heights(t);
+        fPH     = t;
+        fHavePH = true;
+        if (fGridDistSet)
+          for (int d : fGridDist)
+            if (d >= fPH.ndist()) fGridDistSet = false;  // stale: set it again
+      }
+
+      /// Number of production-height distributions.
+      int n_prod_heights() const { return fHavePH ? fPH.ndist() : 0; }
+
+      /// Path length (km) through the atmosphere for production height h (km
+      /// above its base) and direction cosZ, as used by the averages.
+      double prod_height_path_length(double cosZ, double h) const
+      {
+        ProdHeightTable t;
+        t.set_earth(fEarth);
+        return t.path_length(cosZ, h);
+      }
+
+      /// Distribution of each grid point for calculate_prod_height():
+      /// dist[iC] (one per cosine) or dist[iC * nE + iE] (one per point);
+      /// -1 selects the Earth model's own atmosphere (as calculate()). Kept
+      /// across set_grid() calls while its size still fits.
+      void set_grid_prod_heights(const std::vector<int>& dist)
+      {
+        require_prod_heights();
+        if (dist.size() != fNC && dist.size() != fNC * fNE)
+          throw std::invalid_argument("set_grid_prod_heights: need one index per cosine "
+                                      "or per grid point ([iC][iE])");
+        check_dist(dist.data(), dist.size());
+        const bool per_point = dist.size() != fNC;
+        fEngine->set_grid_prod_heights(dist, per_point);
+        fGridDist = dist;
+        fGridDistSet = true;
+      }
+
+      /// Grid probabilities averaged over production heights, into probs()
+      /// (and, with gradient = true, grad() for the selected parameters).
+      void calculate_prod_height(Flavor which = Flavor::Both, bool gradient = false)
+      {
+        require_params();
+        require_grid_dist();
+        fProbsValid = fGradValid = false;
+        fEngine->calculate_prod_height(fPrepared, gradient ? &chunks() : nullptr,
+                                       int(fGradIdx.size()), which);
+        fProbsValid = true;
+        fGradValid  = gradient;
+      }
+
+      /// weighted_gradient() for the production-height averages.
+      std::vector<R> weighted_gradient_prod_height(const std::vector<R>& w,
+                                                   Flavor which = Flavor::Both)
+      {
+        require_params();
+        require_grid_dist();
+        if (w.size() != 2 * size_t(N) * N * fNC * fNE)
+          throw std::invalid_argument("weighted_gradient_prod_height: weights must have "
+                                      "the layout of probs()");
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad_prod_height(fPrepared, chunks(), int(fGradIdx.size()), which,
+                                           w.data(), g.data());
+        return g;
+      }
+
+      /// Event list averaged over production heights: event i uses
+      /// distribution dist[i] (-1: the Earth model's atmosphere). Returns
+      /// out[a][b][i]. azimuth as for prob_points().
+      std::vector<R> prob_points_prod_height(const std::vector<R>& E, const std::vector<R>& cosZ,
+                                             const std::vector<uint8_t>& nubar,
+                                             const std::vector<int>& dist,
+                                             const std::vector<R>& azimuth = {})
+      {
+        require_params();
+        check_prodh_points(E, cosZ, nubar, dist, azimuth);
+        std::vector<R> out(size_t(N) * N * E.size());
+        fEngine->prob_points_prod_height(fPrepared, nullptr, 0, E.data(), cosZ.data(),
+                                         nubar.data(), dist.data(), E.size(), out.data(),
+                                         nullptr, event_azimuths({}, azimuth, E.size()));
+        return out;
+      }
+
+      /// ... with gradients: P[a][b][i] and dP[p][a][b][i].
+      void prob_points_grad_prod_height(const std::vector<R>& E, const std::vector<R>& cosZ,
+                                        const std::vector<uint8_t>& nubar,
+                                        const std::vector<int>& dist, std::vector<R>& P,
+                                        std::vector<R>& dP, const std::vector<R>& azimuth = {})
+      {
+        require_params();
+        check_prodh_points(E, cosZ, nubar, dist, azimuth);
+        P.assign(size_t(N) * N * E.size(), R(0));
+        dP.assign(fGradIdx.size() * N * N * E.size(), R(0));
+        fEngine->prob_points_prod_height(fPrepared, &chunks(), int(fGradIdx.size()), E.data(),
+                                         cosZ.data(), nubar.data(), dist.data(), E.size(),
+                                         P.data(), dP.data(),
+                                         event_azimuths({}, azimuth, E.size()));
+      }
+
+      /// Weighted gradient over an event list of production-height averages:
+      /// g[p] = sum_i,ab w[a][b][i] dP_ab(i)/dp.
+      std::vector<R> weighted_gradient_points_prod_height(const std::vector<R>& E,
+                                                          const std::vector<R>& cosZ,
+                                                          const std::vector<uint8_t>& nubar,
+                                                          const std::vector<int>& dist,
+                                                          const std::vector<R>& w,
+                                                          const std::vector<R>& azimuth = {})
+      {
+        require_params();
+        check_prodh_points(E, cosZ, nubar, dist, azimuth);
+        if (w.size() != size_t(N) * N * E.size())
+          throw std::invalid_argument("weighted_gradient_points_prod_height: weights must "
+                                      "be [a][b][i]");
+        std::vector<R> g(fGradIdx.size(), R(0));
+        fEngine->weighted_grad_points_prod_height(fPrepared, chunks(), int(fGradIdx.size()),
+                                                  E.data(), cosZ.data(), nubar.data(),
+                                                  dist.data(), E.size(), w.data(), g.data(),
+                                                  event_azimuths({}, azimuth, E.size()));
+        return g;
+      }
+
       /// Fixed path with gradients: P[a][b][iE] and dP[p][a][b][iE].
       void prob_path_grad(const std::vector<R>& E, const std::vector<Segment<R>>& path,
                           bool nubar, std::vector<R>& P, std::vector<R>& dP)
@@ -1159,6 +1316,40 @@ namespace opg {
         }
         for (size_t p = 0; p < np; p++)  // e.g. LIV terms growing with E
           analytic::check_supported<Model>(P[p], G.data() + p * size_t(nchunk), size_t(nchunk));
+      }
+
+      void require_prod_heights() const
+      {
+        if constexpr (!supports_prod_height_v<Model>) EngineBase<Model>::no_prod_height();
+        if (!fHavePH)
+          throw std::logic_error("opg::Propagator: call set_prod_heights() first");
+      }
+
+      void require_grid_dist() const
+      {
+        require_prod_heights();
+        if (!fGridDistSet)
+          throw std::logic_error("opg::Propagator: call set_grid_prod_heights() for the "
+                                 "current grid first");
+      }
+
+      void check_dist(const int* d, size_t n) const
+      {
+        for (size_t i = 0; i < n; i++)
+          if (d[i] < -1 || d[i] >= fPH.ndist())
+            throw std::out_of_range("production heights: distribution index out of range");
+      }
+
+      void check_prodh_points(const std::vector<R>& E, const std::vector<R>& C,
+                              const std::vector<uint8_t>& nb, const std::vector<int>& dist,
+                              const std::vector<R>& azimuth) const
+      {
+        require_prod_heights();
+        check_points(E, C, nb, {}, azimuth);
+        if (dist.size() != E.size())
+          throw std::invalid_argument("prob_points_prod_height: need one distribution index "
+                                      "per event");
+        check_dist(dist.data(), dist.size());
       }
 
       static void check_points(const std::vector<R>& E, const std::vector<R>& C,
@@ -1352,6 +1543,11 @@ namespace opg {
       /// Which host results match the current grid, bins and gradient
       /// selection (the getters throw otherwise rather than read past them).
       bool fProbsValid = false, fGradValid = false;
+      /// production heights
+      ProdHeightTable  fPH;
+      bool             fHavePH = false;
+      std::vector<int> fGridDist;
+      bool             fGridDistSet = false;
       bool fBinnedValid = false, fBinnedGradValid = false;
   };
 

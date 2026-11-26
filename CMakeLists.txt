@@ -98,6 +98,8 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(opg_bench bench/oscillogram.cpp)
 target_link_libraries(opg_bench PRIVATE oscprobgpu)
+add_executable(opg_bench_prod_height bench/prod_height.cpp)
+target_link_libraries(opg_bench_prod_height PRIVATE oscprobgpu)
 
 # ---------------------------------------------------------------------------
 # Tests

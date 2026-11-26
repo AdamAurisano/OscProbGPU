@@ -474,6 +474,225 @@ namespace opg {
 
       const R* host_probs() override { return fProbs.data(); }
 
+      // --- production-height averaging ---------------------------------------
+      void set_prod_heights(const ProdHeightTable& t) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) this->no_prod_height();
+        fPH = t;
+      }
+
+      void set_grid_prod_heights(const std::vector<int>& dist, bool per_point) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) this->no_prod_height();
+        fPHDist     = dist;
+        fPHPerPoint = per_point;
+      }
+
+      void calculate_prod_height(const Prepared& P, const Chunks* chunks, int npar,
+                                 Flavor which) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          require_earth();
+          const EarthView<R>       earth = view();
+          const ProdHeightView<R>  hv    = fPH.view<R>();
+          const size_t             nE = fE.size(), nC = fC.size(), npt = nE * nC;
+          if (chunks) {
+            if constexpr (!GT::enabled) this->no_grad();
+            fGrad.resize(2 * size_t(npar) * N * N * npt);
+          }
+          for (int nb = 0; nb < 2; nb++) {
+            if (!(int(which) & (1 << nb))) continue;
+            R*              base = fProbs.data() + nb * N * N * npt;
+            const long long n    = (long long)npt;
+            if (!chunks && !fPHPerPoint) {
+              // one distribution per row: bin series once per row
+              const long long nrow = (long long)nC;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+              for (long long ic = 0; ic < nrow; ic++) {
+                const auto pre = row_series(hv, size_t(ic));
+                for (size_t ie = 0; ie < nE; ie++)
+                  prod_height_probs<Model, R>(P, earth, hv, fPHDist[size_t(ic)], fE[ie], fC[ic],
+                                              nb == 1, base + size_t(ic) * nE + ie, npt,
+                                              pre.empty() ? nullptr : pre.data());
+              }
+              continue;
+            }
+            if (!chunks) {
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+              for (long long k = 0; k < n; k++) {
+                const size_t ic = size_t(k) / nE, ie = size_t(k) % nE;
+                prod_height_probs<Model, R>(P, earth, hv, grid_dist(ic, ie), fE[ie], fC[ic],
+                                            nb == 1, base + k, npt);
+              }
+              continue;
+            }
+            if constexpr (GT::enabled) {
+              for (size_t c = 0; c < chunks->size(); c++) {
+                const auto& ch    = (*chunks)[c];
+                R*          gbase = fGrad.data() + (size_t(nb) * npar + ch.offset) * N * N * npt;
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+                for (long long k = 0; k < n; k++) {
+                  const size_t ic = size_t(k) / nE, ie = size_t(k) % nE;
+                  R            acc[GK];
+                  prod_height_grad<Model, R, GK>(P, ch.P, earth, hv, grid_dist(ic, ie), fE[ie],
+                                                 fC[ic], nb == 1, c == 0 ? base + k : nullptr,
+                                                 gbase + k, ch.count, nullptr, npt, acc);
+                }
+              }
+            }
+          }
+        }
+      }
+
+      void weighted_grad_prod_height(const Prepared& P, const Chunks& chunks, int npar,
+                                     Flavor which, const R* w, R* g) override
+      {
+        if constexpr (!supports_prod_height_grad_v<Model>) { this->no_prod_height(); }
+        else {
+          require_earth();
+          const EarthView<R>      earth = view();
+          const ProdHeightView<R> hv    = fPH.view<R>();
+          const size_t            nE = fE.size(), nC = fC.size(), npt = nE * nC;
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          if constexpr (supports_prod_height_adjoint_v<Model>)
+            if (this->use_adjoint(npar, fTable->max_seg)) {
+              auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
+              std::vector<R>  part(2 * nC * size_t(npar), R(0));
+              const long long nrow = (long long)nC;
+              for (int nb = 0; nb < 2; nb++) {
+                if (!(int(which) & (1 << nb))) continue;
+                const R* wbase = w + size_t(nb) * N * N * npt;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+                for (long long ic = 0; ic < nrow; ic++) {
+                  R*         acc = &part[(size_t(nb) * nC + size_t(ic)) * size_t(npar)];
+                  const auto pre = row_series(hv, size_t(ic));
+                  for (size_t ie = 0; ie < nE; ie++)
+                    prod_height_adjoint<Model, R, GK>(P, chunk, npar, earth, hv,
+                                                      grid_dist(size_t(ic), ie), fE[ie],
+                                                      fC[ic], nb == 1,
+                                                      wbase + ic * nE + ie, npt, acc,
+                                                      pre.empty() ? nullptr : pre.data());
+                }
+              }
+              for (size_t r = 0; r < 2 * nC; r++)  // fixed summation order
+                for (int p = 0; p < npar; p++) g[p] += part[r * size_t(npar) + size_t(p)];
+              return;
+            }
+          std::vector<R> part(nC * GK);
+          for (int nb = 0; nb < 2; nb++) {
+            if (!(int(which) & (1 << nb))) continue;
+            const R* wbase = w + size_t(nb) * N * N * npt;
+            for (const auto& ch : chunks) {
+              const long long nrow = (long long)nC;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+              for (long long ic = 0; ic < nrow; ic++) {
+                R          rowacc[GK] = {};
+                const auto pre        = row_series(hv, size_t(ic));
+                for (size_t ie = 0; ie < nE; ie++) {
+                  R acc[GK];
+                  prod_height_grad<Model, R, GK>(P, ch.P, earth, hv, grid_dist(size_t(ic), ie),
+                                                 fE[ie], fC[ic], nb == 1, nullptr, nullptr, 0,
+                                                 wbase + ic * nE + ie, npt, acc,
+                                                 pre.empty() ? nullptr : pre.data());
+                  for (int k = 0; k < GK; k++) rowacc[k] += acc[k];
+                }
+                for (int k = 0; k < GK; k++) part[ic * GK + k] = rowacc[k];
+              }
+              for (size_t ic = 0; ic < nC; ic++)  // fixed summation order
+                for (int k = 0; k < ch.count; k++) g[ch.offset + k] += part[ic * GK + k];
+            }
+          }
+        }
+      }
+
+      void prob_points_prod_height(const Prepared& P, const Chunks* chunks, int npar,
+                                   const R* E, const R* cosZ, const uint8_t* nubar,
+                                   const int* dist, size_t n, R* out, R* G,
+                                   const R* az = nullptr) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          require_earth();
+          (void)npar;
+          const EarthView<R>      earth = view();
+          const ProdHeightView<R> hv    = fPH.view<R>();
+          const long long         nn    = (long long)n;
+          if (!chunks) {
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+            for (long long i = 0; i < nn; i++)
+              prod_height_probs<Model, R>(P, event_earth(earth, az, size_t(i)), hv, dist[i],
+                                          E[i], cosZ[i], nubar[i] != 0, out + i, n);
+            return;
+          }
+          if constexpr (!GT::enabled) { this->no_grad(); }
+          else {
+            for (size_t c = 0; c < chunks->size(); c++) {
+              const auto& ch = (*chunks)[c];
+#pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
+              for (long long i = 0; i < nn; i++) {
+                R acc[GK];
+                prod_height_grad<Model, R, GK>(P, ch.P, event_earth(earth, az, size_t(i)), hv,
+                                               dist[i], E[i], cosZ[i], nubar[i] != 0,
+                                               c == 0 ? out + i : nullptr,
+                                               G + size_t(ch.offset) * N * N * n + i, ch.count,
+                                               nullptr, n, acc);
+              }
+            }
+          }
+        }
+      }
+
+      void weighted_grad_points_prod_height(const Prepared& P, const Chunks& chunks, int npar,
+                                            const R* E, const R* cosZ, const uint8_t* nubar,
+                                            const int* dist, size_t n, const R* w, R* g,
+                                            const R* az = nullptr) override
+      {
+        if constexpr (!supports_prod_height_grad_v<Model>) { this->no_prod_height(); }
+        else {
+          require_earth();
+          const EarthView<R>      earth = view();
+          const ProdHeightView<R> hv    = fPH.view<R>();
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          const size_t bs = 256, nblk = (n + bs - 1) / bs;
+          if constexpr (supports_prod_height_adjoint_v<Model>)
+            if (this->use_adjoint(npar, fTable->max_seg)) {
+              auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
+              std::vector<R>  part(nblk * size_t(npar), R(0));
+              const long long nb_ = (long long)nblk;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+              for (long long b = 0; b < nb_; b++) {
+                R* acc = &part[size_t(b) * size_t(npar)];
+                for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++)
+                  prod_height_adjoint<Model, R, GK>(P, chunk, npar, event_earth(earth, az, i),
+                                                    hv, dist[i], E[i], cosZ[i], nubar[i] != 0,
+                                                    w + i, n, acc);
+              }
+              for (size_t b = 0; b < nblk; b++)
+                for (int p = 0; p < npar; p++) g[p] += part[b * size_t(npar) + size_t(p)];
+              return;
+            }
+          std::vector<R> part(nblk * GK);
+          for (const auto& ch : chunks) {
+            const long long nb_ = (long long)nblk;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(threads())
+            for (long long b = 0; b < nb_; b++) {
+              R blk[GK] = {};
+              for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++) {
+                R acc[GK];
+                prod_height_grad<Model, R, GK>(P, ch.P, event_earth(earth, az, i), hv, dist[i],
+                                               E[i], cosZ[i], nubar[i] != 0, nullptr, nullptr, 0,
+                                               w + i, n, acc);
+                for (int k = 0; k < GK; k++) blk[k] += acc[k];
+              }
+              for (int k = 0; k < GK; k++) part[b * GK + k] = blk[k];
+            }
+            for (size_t b = 0; b < nblk; b++)
+              for (int k = 0; k < ch.count; k++) g[ch.offset + k] += part[b * GK + k];
+          }
+        }
+      }
+
       void prob_points(const Prepared& P, const R* E, const R* cosZ,
                        const uint8_t* nubar, size_t n, R* out,
                        const R* extra = nullptr, const R* az = nullptr) override
@@ -530,6 +749,24 @@ namespace opg {
         }
       }
 
+      /// Bin series of row ic's distribution (one distribution per row), or
+      /// empty (per-point distributions, or none).
+      std::vector<prodh::BinSeries> row_series(const ProdHeightView<R>& hv, size_t ic) const
+      {
+        std::vector<prodh::BinSeries> s;
+        if (fPHPerPoint || fPHDist[ic] < 0 || !(std::fabs(fC[ic]) <= 1)) return s;
+        const int d = fPHDist[ic];
+        s.resize(size_t(fPH.off[size_t(d) + 1] - fPH.off[size_t(d)]));
+        prodh::series_table(hv, d, double(fC[ic]), s.data());
+        return s;
+      }
+
+      /// Height distribution of grid point (ic, ie).
+      int grid_dist(size_t ic, size_t ie) const
+      {
+        return fPHPerPoint ? fPHDist[ic * fE.size() + ie] : fPHDist[ic];
+      }
+
       int threads() const
       {
 #ifdef _OPENMP
@@ -554,6 +791,9 @@ namespace opg {
       BinSpec<R>                                   fBins;
       std::vector<R>                               fNodeProbs, fBinned, fBinnedGrad;
       std::vector<R>                               fGrad;
+      ProdHeightTable                              fPH;
+      std::vector<int>                             fPHDist;
+      bool                                         fPHPerPoint = false;
   };
 
 } // namespace opg
