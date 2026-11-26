@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "avg/prod_height.h"
 #include "earth/earth.h"
 #include "physics/adjoint.h"
 #include "physics/grad.h"
@@ -358,6 +359,52 @@ namespace opg {
                                         const R* /*w*/, R* /*g*/)
       {
         no_grad();
+      }
+
+      // --- production-height averaging (avg/prod_height.h) -----------------
+      // Results of the grid modes go to the buffers of calculate() and
+      // calculate_grad() (host_probs(), host_grad(), device_*()); event modes
+      // as prob_points() / prob_points_grad(). dist: index of the height
+      // distribution of each point (< 0: the Earth model's own atmosphere,
+      // bit-identical to the plain modes).
+      [[noreturn]] static void no_prod_height()
+      {
+        throw std::logic_error("OscProbGPU: production-height averaging is not available for "
+                               "this model (needs a hermitian model with an amplitude state: "
+                               "Fast, NSI, NUNM, LIV, SNSI, Sterile)");
+      }
+      /// Height distributions and the atmosphere of the current Earth model.
+      virtual void set_prod_heights(const ProdHeightTable&) { no_prod_height(); }
+      /// Distribution of each grid point: dist[iC] (per_point false) or
+      /// dist[iC * nE + iE] (per_point true), for the current grid.
+      virtual void set_grid_prod_heights(const std::vector<int>&, bool) { no_prod_height(); }
+      /// Grid probabilities and, with chunks (not null), gradients.
+      virtual void calculate_prod_height(const Prepared&, const Chunks*, int, Flavor)
+      {
+        no_prod_height();
+      }
+      /// g[p] = sum w dP/dp over the grid (w in the layout of host_probs()).
+      virtual void weighted_grad_prod_height(const Prepared&, const Chunks&, int, Flavor,
+                                             const R* /*w*/, R* /*g*/)
+      {
+        no_prod_height();
+      }
+      /// Event list: out[a][b][i] and, with chunks, G[p][a][b][i].
+      virtual void prob_points_prod_height(const Prepared&, const Chunks*, int, const R*,
+                                           const R*, const uint8_t*, const int* /*dist*/,
+                                           size_t, R* /*out*/, R* /*G*/,
+                                           const R* /*az*/ = nullptr)
+      {
+        no_prod_height();
+      }
+      /// Event list: g[p] = sum_i,ab w[ab][i] dP_ab(i)/dp.
+      virtual void weighted_grad_points_prod_height(const Prepared&, const Chunks&, int,
+                                                    const R*, const R*, const uint8_t*,
+                                                    const int* /*dist*/, size_t,
+                                                    const R* /*w*/, R* /*g*/,
+                                                    const R* /*az*/ = nullptr)
+      {
+        no_prod_height();
       }
 
       // --- one-shot modes ---------------------------------------------------

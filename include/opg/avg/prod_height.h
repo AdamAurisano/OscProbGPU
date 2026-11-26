@@ -336,6 +336,18 @@ namespace opg {
       s.r = r * kmeV;
     }
 
+    /// The series of every bin of distribution d for direction cosZ
+    /// (out[b - off[d]]), to share between points with the same direction
+    /// and distribution; bins first .. first+count-1 of them only.
+    template <class R>
+    OPG_HD inline void series_table(const ProdHeightView<R>& hv, int d, double cosZ,
+                                    BinSeries* out, int first = 0, int stride = 1)
+    {
+      const AtmGeom g = atm_geom(hv, cosZ);
+      for (int b = hv.off[d] + first; b < hv.off[d + 1]; b += stride)
+        bin_series(hv, g, b, out[b - hv.off[d]]);
+    }
+
     /// exp(-i mu m) sum_k c_k int P_k exp(-i mu r t) dt.
     OPG_HD OPG_INLINE Complex<double> bin_ft(double mu, double m, double r, const double* c,
                                              int deg, double* jb)
@@ -364,7 +376,8 @@ namespace opg {
     /// Phi_jk = phi(lam_j - lam_k) (Phi_jj = 1, Phi_kj = conj Phi_jk).
     template <int N, class R>
     OPG_HD inline void phi_table(const ProdHeightView<R>& hv, int d, double cosZ,
-                                 const R lam[N], Complex<double> (&Phi)[N][N])
+                                 const R lam[N], Complex<double> (&Phi)[N][N],
+                                 const BinSeries* pre = nullptr)
     {
       const AtmGeom g = atm_geom(hv, cosZ);
       for (int j = 0; j < N; j++)
@@ -372,8 +385,9 @@ namespace opg {
       double jb[kNodes];
       for (int b = hv.off[d]; b < hv.off[d + 1]; b++) {
         if (hv.prob[b] == 0) continue;
-        BinSeries s;
-        bin_series(hv, g, b, s);
+        BinSeries s_;
+        if (!pre) bin_series(hv, g, b, s_);
+        const BinSeries& s = pre ? pre[b - hv.off[d]] : s_;
         for (int j = 0; j < N; j++)
           for (int k = j + 1; k < N; k++) {
             const double mu = double(lam[j]) - double(lam[k]);
@@ -389,7 +403,8 @@ namespace opg {
     template <int N, class R>
     OPG_HD inline void phi_grad_tables(const ProdHeightView<R>& hv, int d, double cosZ,
                                        const R lam[N], Complex<double> (&Phi)[N][N],
-                                       Complex<double> (&G)[N][N][N])
+                                       Complex<double> (&G)[N][N][N],
+                                       const BinSeries* pre = nullptr)
     {
       const AtmGeom g  = atm_geom(hv, cosZ);
       const double  sL = std::fmax(max_length(hv, g, d), 1e-300);  // scale of L
@@ -420,8 +435,9 @@ namespace opg {
       double jb[kMaxOrder + 1];
       for (int b = hv.off[d]; b < hv.off[d + 1]; b++) {
         if (hv.prob[b] == 0) continue;
-        BinSeries s;
-        bin_series(hv, g, b, s);
+        BinSeries s_;
+        if (!pre) bin_series(hv, g, b, s_);
+        const BinSeries& s = pre ? pre[b - hv.off[d]] : s_;
         for (int j = 0; j < N; j++)
           for (int k = j + 1; k < N; k++)
             Phi[j][k] += bin_ft(l[j] - l[k], s.m, s.r, s.c, s.deg, jb);
@@ -543,11 +559,13 @@ namespace opg {
 
   /// P(a -> b) averaged over the production heights of distribution `dist`
   /// (dist < 0: the Earth model's own atmosphere, as evolve_prem), written
-  /// to out[(a*N + b) * stride].
+  /// to out[(a*N + b) * stride]. pre: optionally the series_table of (dist,
+  /// cosZ), shared by points of one direction (same results).
   template <class Model, class R>
   OPG_HD inline void prod_height_probs(const typename Model::Prepared& P,
                                        const EarthView<R>& earth, const ProdHeightView<R>& hv,
-                                       int dist, R E, R cosZ, bool nubar, R* out, size_t stride)
+                                       int dist, R E, R cosZ, bool nubar, R* out, size_t stride,
+                                       const prodh::BinSeries* pre = nullptr)
   {
     constexpr int N = Model::N;
     if (dist < 0 || !(std::fabs(cosZ) <= 1)) {
@@ -566,7 +584,7 @@ namespace opg {
     const Mat<N, R> A = matmul(S, V), B = matmul(adjoint(V), I0);
 
     Complex<double> Phi[N][N];
-    prodh::phi_table<N, R>(hv, dist, double(cosZ), lam, Phi);
+    prodh::phi_table<N, R>(hv, dist, double(cosZ), lam, Phi, pre);
     prodh::avg_probs<N, R>(A, B, Phi, out, stride);
   }
 
@@ -579,7 +597,8 @@ namespace opg {
                                       const GradPrepared<Model, K>& G,
                                       const EarthView<R>& earth, const ProdHeightView<R>& hv,
                                       int dist, R E, R cosZ, bool nubar, R* out, R* outG,
-                                      int count, const R* w, size_t stride, R (&acc)[K])
+                                      int count, const R* w, size_t stride, R (&acc)[K],
+                                      const prodh::BinSeries* pre = nullptr)
   {
     constexpr int N = Model::N;
     for (int k = 0; k < K; k++) acc[k] = 0;
@@ -612,7 +631,7 @@ namespace opg {
     Model::template initial_grad<K>(G.P, nubar, dI0);
 
     Complex<double> Phi[N][N], Gm[N][N][N];
-    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm);
+    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre);
 
     using C = Complex<double>;
     const Mat<N, R> Vh = adjoint(V);
@@ -675,7 +694,8 @@ namespace opg {
   OPG_HD inline bool prod_height_adjoint(const typename Model::Prepared& P, const Chunk& chunk,
                                          int npar, const EarthView<R>& earth,
                                          const ProdHeightView<R>& hv, int dist, R E, R cosZ,
-                                         bool nubar, const R* w, size_t stride, R* acc)
+                                         bool nubar, const R* w, size_t stride, R* acc,
+                                         const prodh::BinSeries* pre = nullptr)
   {
     if (dist < 0 || !(std::fabs(cosZ) <= 1))
       return adjoint_prem<Model, R, K>(P, chunk, npar, earth, E, cosZ, nubar, w, stride, acc);
@@ -708,7 +728,7 @@ namespace opg {
     R     lam[N];
     Model::seg_eigen(P, E, nubar, atm, V, lam);
     C Phi[N][N], Gm[N][N][N];
-    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm);
+    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre);
     const State I0 = initial_state<Model, R>(P, nubar, cosZ);
     const State A = matmul(Rf, V), B = matmul(adjoint(V), I0);
 

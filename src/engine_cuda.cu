@@ -896,6 +896,228 @@ namespace opg {
       }
     }
 
+    //.........................................................................
+    // Production-height averages (avg/prod_height.h). Grid kernels map
+    // threads as grid_kernel; dist holds one index per local cosine row, or
+    // per (row, energy) with per_point.
+    __device__ OPG_INLINE int ph_grid_dist(const int* dist, bool per_point, int ic, int ie,
+                                           int nE)
+    {
+      return per_point ? dist[size_t(ic) * nE + ie] : dist[ic];
+    }
+
+    /// Bins whose series a block shares in shared memory.
+    constexpr int kPhShared = 48;
+
+    /// With one distribution per row, the block computes the bin series of
+    /// row ic once into sh (all threads must call this; returns nullptr if
+    /// not shared: per-point distributions, none, or too many bins).
+    template <class R>
+    __device__ const prodh::BinSeries* ph_row_series(const ProdHeightView<R>& hv,
+                                                     const int* dist, bool per_point, int ic,
+                                                     const R* C, prodh::BinSeries* sh)
+    {
+      if (per_point) return nullptr;
+      const int d = dist[ic];
+      if (d < 0 || !(std::fabs(C[ic]) <= 1) || hv.off[d + 1] - hv.off[d] > kPhShared)
+        return nullptr;
+      __syncthreads();  // readers of the previous row are done
+      prodh::series_table(hv, d, double(C[ic]), sh, int(threadIdx.x), int(blockDim.x));
+      __syncthreads();
+      return sh;
+    }
+
+    template <class Model, class R>
+    __global__ void ph_grid_kernel(const typename Model::Prepared P, const EarthView<R> earth,
+                                   const ProdHeightView<R> hv, const int* __restrict__ dist,
+                                   bool per_point, const R* __restrict__ E, int nE,
+                                   const R* __restrict__ C, int nC, int nb_first,
+                                   R* __restrict__ out)
+    {
+      constexpr int N  = Model::N;
+      const int     nb = nb_first + blockIdx.z;
+      const int     ie = blockIdx.x * blockDim.x + threadIdx.x;
+      const size_t  stride = size_t(nC) * nE;
+      R*            base   = out + size_t(nb) * N * N * stride;
+      __shared__ prodh::BinSeries sh[kPhShared];
+      for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+        const prodh::BinSeries* pre = ph_row_series(hv, dist, per_point, ic, C, sh);
+        if (ie < nE)
+          prod_height_probs<Model, R>(P, earth, hv, ph_grid_dist(dist, per_point, ic, ie, nE),
+                                      E[ie], C[ic], nb == 1, base + size_t(ic) * nE + ie,
+                                      stride, pre);
+      }
+    }
+
+    template <class Model, class R, int K>
+    __global__ void ph_grid_grad_kernel(const typename Model::Prepared         P,
+                                        const typename GradArg<Model>::type PDa,
+                                        const EarthView<R> earth, const ProdHeightView<R> hv,
+                                        const int* __restrict__ dist, bool per_point,
+                                        const R* __restrict__ E, int nE,
+                                        const R* __restrict__ C, int nC, int nb_first,
+                                        int npar, int offset, int count, bool write_probs,
+                                        R* __restrict__ probs, R* __restrict__ grad)
+    {
+      const auto&   PD = GradArg<Model>::get(PDa);
+      constexpr int N  = Model::N;
+      const int     nb = nb_first + blockIdx.z;
+      const int     ie = blockIdx.x * blockDim.x + threadIdx.x;
+      if (ie >= nE) return;
+      const size_t stride = size_t(nC) * nE;
+      for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+        const size_t pt = size_t(ic) * nE + ie;
+        R            acc[K];
+        prod_height_grad<Model, R, K>(
+            P, PD, earth, hv, ph_grid_dist(dist, per_point, ic, ie, nE), E[ie], C[ic], nb == 1,
+            write_probs ? probs + size_t(nb) * N * N * stride + pt : nullptr,
+            grad + (size_t(nb) * npar + offset) * N * N * stride + pt, count, nullptr, stride,
+            acc);
+      }
+    }
+
+    template <class Model, class R, int K>
+    __global__ void ph_grid_wgrad_kernel(const typename Model::Prepared         P,
+                                         const typename GradArg<Model>::type PDa,
+                                         const EarthView<R> earth, const ProdHeightView<R> hv,
+                                         const int* __restrict__ dist, bool per_point,
+                                         const R* __restrict__ E, int nE,
+                                         const R* __restrict__ C, int nC, int nb_first,
+                                         const R* __restrict__ w, R* __restrict__ partial)
+    {
+      const auto&   PD     = GradArg<Model>::get(PDa);
+      constexpr int N      = Model::N;
+      const int     nb     = nb_first + blockIdx.z;
+      const int     ie     = blockIdx.x * blockDim.x + threadIdx.x;
+      const size_t  stride = size_t(nC) * nE;
+      R             acc[K] = {};
+      __shared__ prodh::BinSeries sh[kPhShared];
+      for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+        const prodh::BinSeries* pre = ph_row_series(hv, dist, per_point, ic, C, sh);
+        if (ie >= nE) continue;
+        R a[K];
+        prod_height_grad<Model, R, K>(
+            P, PD, earth, hv, ph_grid_dist(dist, per_point, ic, ie, nE), E[ie], C[ic],
+            nb == 1, nullptr, nullptr, 0,
+            w + size_t(nb) * N * N * stride + size_t(ic) * nE + ie, stride, a, pre);
+        for (int k = 0; k < K; k++) acc[k] += a[k];
+      }
+      const size_t blk = (size_t(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+      block_reduce_store<R, K, kBlockE>(acc, partial + blk * K);
+    }
+
+    template <class Model, class R, int K>
+    __global__ void ph_grid_wadj_kernel(const typename Model::Prepared P,
+                                        const typename grad_traits<Model>::Prepared* chunks,
+                                        int npar, const EarthView<R> earth,
+                                        const ProdHeightView<R> hv, const int* __restrict__ dist,
+                                        bool per_point, const R* __restrict__ E, int nE,
+                                        const R* __restrict__ C, int nC, int nb_first,
+                                        const R* __restrict__ w, R* __restrict__ partial,
+                                        int* err)
+    {
+      constexpr int          N  = Model::N;
+      const AdjChunks<Model> ch{chunks};
+      const int              nb = nb_first + blockIdx.z;
+      const int              ie = blockIdx.x * blockDim.x + threadIdx.x;
+      const size_t           stride = size_t(nC) * nE;
+      R                      acc[kAdjMaxPar] = {};
+      __shared__ prodh::BinSeries sh[kPhShared];
+      for (int ic = blockIdx.y; ic < nC; ic += gridDim.y) {
+        const prodh::BinSeries* pre = ph_row_series(hv, dist, per_point, ic, C, sh);
+        if (ie >= nE) continue;
+        if (!prod_height_adjoint<Model, R, K>(
+                P, ch, npar, earth, hv, ph_grid_dist(dist, per_point, ic, ie, nE), E[ie], C[ic],
+                nb == 1, w + size_t(nb) * N * N * stride + size_t(ic) * nE + ie, stride, acc,
+                pre))
+          *err = 1;
+      }
+      const size_t blk = (size_t(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+      block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc, partial + blk * kAdjMaxPar);
+    }
+
+    template <class Model, class R>
+    __global__ void ph_points_kernel(const typename Model::Prepared P, const EarthView<R> earth,
+                                     const ProdHeightView<R> hv, const R* __restrict__ E,
+                                     const R* __restrict__ C, const uint8_t* __restrict__ nubar,
+                                     const int* __restrict__ dist, const R* __restrict__ az,
+                                     size_t n, R* __restrict__ out)
+    {
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x)
+        prod_height_probs<Model, R>(P, event_earth(earth, az, i), hv, dist[i], E[i], C[i],
+                                    nubar[i] != 0, out + i, n);
+    }
+
+    template <class Model, class R, int K>
+    __global__ void ph_points_grad_kernel(const typename Model::Prepared         P,
+                                          const typename GradArg<Model>::type PDa,
+                                          const EarthView<R> earth, const ProdHeightView<R> hv,
+                                          const R* __restrict__ E, const R* __restrict__ C,
+                                          const uint8_t* __restrict__ nubar,
+                                          const int* __restrict__ dist,
+                                          const R* __restrict__ az, size_t n, int offset,
+                                          int count, bool write_probs, R* __restrict__ probs,
+                                          R* __restrict__ grad)
+    {
+      const auto&   PD = GradArg<Model>::get(PDa);
+      constexpr int N  = Model::N;
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x) {
+        R acc[K];
+        prod_height_grad<Model, R, K>(P, PD, event_earth(earth, az, i), hv, dist[i], E[i], C[i],
+                                      nubar[i] != 0, write_probs ? probs + i : nullptr,
+                                      grad + size_t(offset) * N * N * n + i, count, nullptr, n,
+                                      acc);
+      }
+    }
+
+    template <class Model, class R, int K>
+    __global__ void ph_points_wgrad_kernel(const typename Model::Prepared         P,
+                                           const typename GradArg<Model>::type PDa,
+                                           const EarthView<R> earth, const ProdHeightView<R> hv,
+                                           const R* __restrict__ E, const R* __restrict__ C,
+                                           const uint8_t* __restrict__ nubar,
+                                           const int* __restrict__ dist,
+                                           const R* __restrict__ az, size_t n,
+                                           const R* __restrict__ w, R* __restrict__ partial)
+    {
+      const auto& PD     = GradArg<Model>::get(PDa);
+      R           acc[K] = {};
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x) {
+        R a[K];
+        prod_height_grad<Model, R, K>(P, PD, event_earth(earth, az, i), hv, dist[i], E[i], C[i],
+                                      nubar[i] != 0, nullptr, nullptr, 0, w + i, n, a);
+        for (int k = 0; k < K; k++) acc[k] += a[k];
+      }
+      block_reduce_store<R, K, 128>(acc, partial + size_t(blockIdx.x) * K);
+    }
+
+    template <class Model, class R, int K>
+    __global__ void ph_points_wadj_kernel(const typename Model::Prepared P,
+                                          const typename grad_traits<Model>::Prepared* chunks,
+                                          int npar, const EarthView<R> earth,
+                                          const ProdHeightView<R> hv, const R* __restrict__ E,
+                                          const R* __restrict__ C,
+                                          const uint8_t* __restrict__ nubar,
+                                          const int* __restrict__ dist,
+                                          const R* __restrict__ az, size_t n,
+                                          const R* __restrict__ w, R* __restrict__ partial,
+                                          int* err)
+    {
+      const AdjChunks<Model> ch{chunks};
+      R                      acc[kAdjMaxPar] = {};
+      for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
+           i += size_t(gridDim.x) * blockDim.x)
+        if (!prod_height_adjoint<Model, R, K>(P, ch, npar, event_earth(earth, az, i), hv,
+                                              dist[i], E[i], C[i], nubar[i] != 0, w + i, n,
+                                              acc))
+          *err = 1;
+      block_reduce_store<R, kAdjMaxPar, kAdjBlockT>(acc,
+                                                    partial + size_t(blockIdx.x) * kAdjMaxPar);
+    }
+
     unsigned blocks_for(size_t n, unsigned bs)
     {
       size_t b = (n + bs - 1) / bs;
@@ -1451,6 +1673,300 @@ namespace opg {
               points_wgrad_kernel<Model, R, GK><<<nblk, 128, 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
                   D.pX.ptr, D.pAz.ptr, cnt[k], D.wts.ptr, D.partial.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
+            sum_partials(chunks[c], g);
+          }
+        }
+      }
+
+      //.......................................................................
+      // Production-height averages
+      //.......................................................................
+      void set_prod_heights(const ProdHeightTable& t) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          wait_binned_batch();
+          for (auto& Dp : fDev) {
+            Device& D = *Dp;
+            OPG_CUDA(cudaSetDevice(D.id));
+            D.phOff.upload(D.id, t.off.data(), t.off.size(), D.stream);
+            D.phLo.upload(D.id, t.lo.data(), t.lo.size(), D.stream);
+            D.phHi.upload(D.id, t.hi.data(), t.hi.size(), D.stream);
+            D.phProb.upload(D.id, t.prob.data(), t.prob.size(), D.stream);
+            D.ph      = t.view<R>();
+            D.ph.off  = D.phOff.ptr;
+            D.ph.lo   = D.phLo.ptr;
+            D.ph.hi   = D.phHi.ptr;
+            D.ph.prob = D.phProb.ptr;
+            OPG_CUDA(cudaStreamSynchronize(D.stream));
+          }
+        }
+      }
+
+      void set_grid_prod_heights(const std::vector<int>& dist, bool per_point) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          for (auto& Dp : fDev) {
+            Device&          D = *Dp;
+            std::vector<int> loc;
+            for (size_t ic : D.grid.rows) {
+              if (per_point)
+                loc.insert(loc.end(), dist.begin() + long(ic * fNE),
+                           dist.begin() + long((ic + 1) * fNE));
+              else
+                loc.push_back(dist[ic]);
+            }
+            OPG_CUDA(cudaSetDevice(D.id));
+            D.phGrid.upload(D.id, loc.data(), loc.size(), D.stream);
+            OPG_CUDA(cudaStreamSynchronize(D.stream));
+          }
+          fPHPerPoint = per_point;
+          fPHGridSet  = true;
+        }
+      }
+
+      void calculate_prod_height(const Prepared& P, const Chunks* chunks, int npar,
+                                 Flavor which) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          const int lo = (int(which) & 1) ? 0 : 1;
+          const int hi = (int(which) & 2) ? 1 : 0;
+          if (hi < lo) return;
+          if (!chunks) {
+            for (auto& Dp : fDev) {
+              Device& D = *Dp;
+              Slab&   G = D.grid;
+              if (G.rows.empty() || fNE == 0) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              dim3 grid(unsigned((fNE + kBlockE - 1) / kBlockE),
+                        unsigned(std::min<size_t>(G.C.n, 65535)), unsigned(hi - lo + 1));
+              ph_grid_kernel<Model, R><<<grid, dim3(kBlockE), 0, D.stream>>>(
+                  P, D.earth, D.ph, D.phGrid.ptr, fPHPerPoint, G.E.ptr, int(fNE), G.C.ptr,
+                  int(G.C.n), lo, G.probs.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
+            fHostValid = false;
+            return;
+          }
+          if constexpr (!GT::enabled) { this->no_grad(); }
+          else {
+            check_param_size();
+            upload_chunks(*chunks);
+            fNpar = npar;
+            for (auto& Dp : fDev) {
+              Device& D = *Dp;
+              Slab&   G = D.grid;
+              D.gslab.rows = G.rows;
+              if (G.rows.empty() || fNE == 0) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              D.gslab.probs.resize(D.id, 2 * size_t(npar) * N * N * G.rows.size() * fNE);
+              if (fDev.size() == 1) D.gslab.host.resize(D.gslab.probs.n);
+              const size_t nrow = G.C.n;
+              dim3 grid(unsigned((fNE + kBlockE - 1) / kBlockE),
+                        unsigned(std::min<size_t>(nrow, 65535)), unsigned(hi - lo + 1));
+              for (size_t c = 0; c < chunks->size(); c++) {
+                ph_grid_grad_kernel<Model, R, GK><<<grid, dim3(kBlockE), 0, D.stream>>>(
+                    P, pd_arg(D, *chunks, c), D.earth, D.ph, D.phGrid.ptr, fPHPerPoint,
+                    G.E.ptr, int(fNE), G.C.ptr, int(nrow), lo, npar, (*chunks)[c].offset,
+                    (*chunks)[c].count, c == 0, G.probs.ptr, D.gslab.probs.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+            }
+            if (fDev.size() > 1) fGradFull.resize(2 * size_t(npar) * N * N * fNC * fNE);
+            fHostValid = false;
+            fGradValid = false;
+          }
+        }
+      }
+
+      void weighted_grad_prod_height(const Prepared& P, const Chunks& chunks, int npar,
+                                     Flavor which, const R* w, R* g) override
+      {
+        if constexpr (!supports_prod_height_grad_v<Model>) { this->no_prod_height(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          check_param_size();
+          upload_chunks(chunks);
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          const int lo = (int(which) & 1) ? 0 : 1;
+          const int hi = (int(which) & 2) ? 1 : 0;
+          if (hi < lo) return;
+          const size_t nd = fDev.size(), npt = fNC * fNE;
+          for (size_t k = 0; k < nd; k++) {
+            Device& D = *fDev[k];
+            Slab&   G = D.grid;
+            if (G.rows.empty()) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            const size_t nr = G.rows.size();
+            D.wtsHost.resize(2 * N * N * nr * fNE);
+            if (nd == 1)
+              std::copy(w, w + 2 * N * N * npt, D.wtsHost.ptr);
+            else
+              for (size_t ch = 0; ch < size_t(2 * N * N); ch++)
+                for (size_t r = 0; r < nr; r++)
+                  std::copy(w + (ch * fNC + G.rows[r]) * fNE,
+                            w + (ch * fNC + G.rows[r] + 1) * fNE,
+                            D.wtsHost.ptr + (ch * nr + r) * fNE);
+            D.wts.upload(D.id, D.wtsHost.ptr, D.wtsHost.n, D.stream);
+          }
+          release_partials();
+          if constexpr (supports_prod_height_adjoint_v<Model>)
+            if (use_adj(npar)) {
+              upload_adj_chunks(chunks);
+              for (size_t k = 0; k < nd; k++) {
+                Device& D = *fDev[k];
+                Slab&   G = D.grid;
+                if (G.rows.empty() || fNE == 0) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                const size_t nrow = G.C.n;
+                dim3 grid(unsigned((fNE + kAdjBlockT - 1) / kAdjBlockT),
+                          unsigned(std::min<size_t>(nrow, 4096)), unsigned(hi - lo + 1));
+                D.partial.resize(D.id, size_t(grid.x) * grid.y * grid.z * kAdjMaxPar);
+                ph_grid_wadj_kernel<Model, R, GK><<<grid, dim3(kAdjBlockT), 0, D.stream>>>(
+                    P, D.pd.ptr, npar, D.earth, D.ph, D.phGrid.ptr, fPHPerPoint, G.E.ptr,
+                    int(fNE), G.C.ptr, int(nrow), lo, D.wts.ptr, D.partial.ptr, D.adjErr.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+              sum_adj_partials(npar, g);
+              return;
+            }
+          for (size_t c = 0; c < chunks.size(); c++) {
+            for (size_t k = 0; k < nd; k++) {
+              Device& D = *fDev[k];
+              Slab&   G = D.grid;
+              if (G.rows.empty() || fNE == 0) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              const size_t nrow = G.C.n;
+              dim3 grid(unsigned((fNE + kBlockE - 1) / kBlockE),
+                        unsigned(std::min<size_t>(nrow, 4096)), unsigned(hi - lo + 1));
+              D.partial.resize(D.id, size_t(grid.x) * grid.y * grid.z * GK);
+              ph_grid_wgrad_kernel<Model, R, GK><<<grid, dim3(kBlockE), 0, D.stream>>>(
+                  P, pd_arg(D, chunks, c), D.earth, D.ph, D.phGrid.ptr, fPHPerPoint, G.E.ptr,
+                  int(fNE), G.C.ptr, int(nrow), lo, D.wts.ptr, D.partial.ptr);
+              OPG_CUDA(cudaGetLastError());
+            }
+            sum_partials(chunks[c], g);
+          }
+        }
+      }
+
+      void prob_points_prod_height(const Prepared& P, const Chunks* chunks, int npar,
+                                   const R* E, const R* cosZ, const uint8_t* nubar,
+                                   const int* dist, size_t n, R* out, R* outG,
+                                   const R* az = nullptr) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          if (chunks) {
+            if constexpr (!GT::enabled) { this->no_grad(); }
+            else {
+              check_param_size();
+              upload_chunks(*chunks);
+            }
+          }
+          const size_t nd = fDev.size(), chunk = (n + nd - 1) / nd;
+          std::vector<size_t> off(nd), cnt(nd);
+          for (size_t k = 0; k < nd; k++) {
+            off[k] = std::min(n, k * chunk);
+            cnt[k] = std::min(n, off[k] + chunk) - off[k];
+            Device& D = *fDev[k];
+            if (!cnt[k]) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            D.pE.upload(D.id, E + off[k], cnt[k], D.stream);
+            D.pC.upload(D.id, cosZ + off[k], cnt[k], D.stream);
+            D.pNb.upload(D.id, nubar + off[k], cnt[k], D.stream);
+            D.pDist.upload(D.id, dist + off[k], cnt[k], D.stream);
+            azptr(D, az, off[k], cnt[k]);
+            D.pOut.resize(D.id, N * N * cnt[k]);
+            if (!chunks) {
+              ph_points_kernel<Model, R><<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
+                  P, D.earth, D.ph, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pDist.ptr, D.pAz.ptr,
+                  cnt[k], D.pOut.ptr);
+              OPG_CUDA(cudaGetLastError());
+              continue;
+            }
+            if constexpr (GT::enabled) {
+              D.pGrad.resize(D.id, size_t(npar) * N * N * cnt[k]);
+              for (size_t c = 0; c < chunks->size(); c++) {
+                ph_points_grad_kernel<Model, R, GK>
+                    <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
+                        P, pd_arg(D, *chunks, c), D.earth, D.ph, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
+                        D.pDist.ptr, D.pAz.ptr, cnt[k], (*chunks)[c].offset,
+                        (*chunks)[c].count, c == 0, D.pOut.ptr, D.pGrad.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+            }
+          }
+          gather_chunks(off, cnt, n, out, &Device::pOut, N * N);
+          if (chunks) gather_chunks(off, cnt, n, outG, &Device::pGrad, size_t(npar) * N * N);
+        }
+      }
+
+      void weighted_grad_points_prod_height(const Prepared& P, const Chunks& chunks, int npar,
+                                            const R* E, const R* cosZ, const uint8_t* nubar,
+                                            const int* dist, size_t n, const R* w, R* g,
+                                            const R* az = nullptr) override
+      {
+        if constexpr (!supports_prod_height_grad_v<Model>) { this->no_prod_height(); }
+        else {
+          if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
+          check_param_size();
+          upload_chunks(chunks);
+          for (int p = 0; p < npar; p++) g[p] = 0;
+          const size_t nd = fDev.size(), chunk = (n + nd - 1) / nd;
+          std::vector<size_t> off(nd), cnt(nd);
+          for (size_t k = 0; k < nd; k++) {
+            off[k] = std::min(n, k * chunk);
+            cnt[k] = std::min(n, off[k] + chunk) - off[k];
+            Device& D = *fDev[k];
+            if (!cnt[k]) continue;
+            OPG_CUDA(cudaSetDevice(D.id));
+            D.pE.upload(D.id, E + off[k], cnt[k], D.stream);
+            D.pC.upload(D.id, cosZ + off[k], cnt[k], D.stream);
+            D.pNb.upload(D.id, nubar + off[k], cnt[k], D.stream);
+            D.pDist.upload(D.id, dist + off[k], cnt[k], D.stream);
+            azptr(D, az, off[k], cnt[k]);
+            std::vector<R> loc(N * N * cnt[k]);
+            for (int ab = 0; ab < N * N; ab++)
+              std::copy(w + ab * n + off[k], w + ab * n + off[k] + cnt[k],
+                        loc.begin() + ab * cnt[k]);
+            D.wts.upload(D.id, loc.data(), loc.size(), D.stream);
+            OPG_CUDA(cudaStreamSynchronize(D.stream));
+          }
+          release_partials();
+          if constexpr (supports_prod_height_adjoint_v<Model>)
+            if (use_adj(npar)) {
+              upload_adj_chunks(chunks);
+              for (size_t k = 0; k < nd; k++) {
+                Device& D = *fDev[k];
+                if (!cnt[k]) continue;
+                OPG_CUDA(cudaSetDevice(D.id));
+                const unsigned nblk = std::min(blocks_for(cnt[k], kAdjBlockT), 4096u);
+                D.partial.resize(D.id, size_t(nblk) * kAdjMaxPar);
+                ph_points_wadj_kernel<Model, R, GK><<<nblk, kAdjBlockT, 0, D.stream>>>(
+                    P, D.pd.ptr, npar, D.earth, D.ph, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
+                    D.pDist.ptr, D.pAz.ptr, cnt[k], D.wts.ptr, D.partial.ptr, D.adjErr.ptr);
+                OPG_CUDA(cudaGetLastError());
+              }
+              sum_adj_partials(npar, g);
+              return;
+            }
+          for (size_t c = 0; c < chunks.size(); c++) {
+            for (size_t k = 0; k < nd; k++) {
+              Device& D = *fDev[k];
+              if (!cnt[k]) continue;
+              OPG_CUDA(cudaSetDevice(D.id));
+              const unsigned nblk = std::min(blocks_for(cnt[k], 128), 4096u);
+              D.partial.resize(D.id, size_t(nblk) * GK);
+              ph_points_wgrad_kernel<Model, R, GK><<<nblk, 128, 0, D.stream>>>(
+                  P, pd_arg(D, chunks, c), D.earth, D.ph, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
+                  D.pDist.ptr, D.pAz.ptr, cnt[k], D.wts.ptr, D.partial.ptr);
               OPG_CUDA(cudaGetLastError());
             }
             sum_partials(chunks[c], g);
@@ -2448,6 +2964,10 @@ namespace opg {
           DevBuf<typename grad_traits<Model>::Prepared> anG;
           DevBuf<int>                                   anOff, anCnt, anCs;
           DevBuf<R>                                     anUc;  ///< cells (one segment)
+          // production heights
+          DevBuf<int>        phOff, phGrid, pDist;
+          DevBuf<double>     phLo, phHi, phProb;
+          ProdHeightView<R>  ph{};
       };
 
       /// Launch the grid kernel on a slab.
@@ -2693,6 +3213,8 @@ namespace opg {
       BinSpec<R>                           fBins;
       size_t                               fNE = 0, fNC = 0;
       bool                                 fHaveEarth   = false;
+      bool                                 fPHGridSet   = false;  ///< grid distributions set
+      bool                                 fPHPerPoint  = false;  ///< ... per grid point
       int                                  fMaxSeg      = 0;  ///< bound on path segments
       bool                                 fHostValid   = false;
       bool                                 fBinnedValid = false;
