@@ -726,6 +726,72 @@ namespace opg {
   }
 
   namespace prodh {
+    // The walks of the reverse mode through the rest of the path run in
+    // functions of their own, with every array they fill (checkpoints,
+    // states, segments) in the caller's memory, so that the binned Earth's
+    // walker state is the only object in their frame that lives across the
+    // walk. nvcc 11.8 (-O3, sm_70) put the walker state of a walk inlined
+    // into prod_height_adjoint into the local-memory slot of its checkpoint
+    // array, live at the same time (the walker overwrote the checkpoints:
+    // wrong binned-Earth reverse-mode gradients for NUNM and LIV; see also
+    // binned_walk_next's seg_len).
+
+    /// Forward pass from the identity: S <- the rest of the path, with the
+    /// state before every kAdjBlock-th segment in ckpt[]. Returns the number
+    /// of segments, or -1 if there are more than kAdjMaxSeg.
+    template <class Model, class R>
+    OPG_HD OPG_NOINLINE int adjoint_rest_forward(const typename Model::Prepared& P,
+                                                 const EarthView<R>& earth, R cosZ,
+                                                 int atm_type, R E, bool nubar,
+                                                 Mat<Model::N, R>* ckpt, Mat<Model::N, R>& S)
+    {
+      S        = Mat<Model::N, R>::identity();
+      int  n   = 0;
+      bool ok  = true;
+      ckpt[0]  = S;
+      for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
+        if (n % kAdjBlock == 0) {
+          if (n / kAdjBlock >= kAdjMaxCkpt) ok = false;
+          else ckpt[n / kAdjBlock] = S;
+        }
+        if (ok) Model::step(P, E, nubar, s, S);
+        n++;
+      });
+      return ok ? n : -1;
+    }
+
+    /// Segments first .. first+len-1 of the rest of the path into seg[] and
+    /// the states before them into buf[], from T (the state before segment
+    /// first; used as scratch).
+    template <class Model, class R>
+    OPG_HD OPG_NOINLINE void adjoint_rest_block(const typename Model::Prepared& P,
+                                                const EarthView<R>& earth, R cosZ, int atm_type,
+                                                R E, bool nubar, int first, int len,
+                                                Mat<Model::N, R>& T, Mat<Model::N, R>* buf,
+                                                Segment<R>* seg)
+    {
+      int i = 0;
+      for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
+        const int j = i++ - first;
+        if (j < 0 || j >= len) return;
+        buf[j] = T;
+        seg[j] = s;
+        if (j + 1 < len) Model::step(P, E, nubar, s, T);
+      });
+    }
+
+    /// adjoint_prem as a function of its own (see above).
+    template <class Model, class R, int K, class Chunk>
+    OPG_HD OPG_NOINLINE bool adjoint_prem_call(const typename Model::Prepared& P,
+                                               const Chunk& chunk, int npar,
+                                               const EarthView<R>& earth, R E, R cosZ,
+                                               bool nubar, const R* w, size_t stride, R* acc)
+    {
+      return adjoint_prem<Model, R, K>(P, chunk, npar, earth, E, cosZ, nubar, w, stride, acc);
+    }
+  } // namespace prodh
+
+  namespace prodh {
     /// The backward pass of prod_height_adjoint through the rest of the path
     /// (as in adjoint_prem), from the checkpoints of the forward pass and
     /// the cotangent lamS of the state after it. A function of its own on
@@ -759,15 +825,8 @@ namespace opg {
         const int  len   = nseg - first < kAdjBlock ? nseg - first : kAdjBlock;
         State      buf[kAdjBlock];
         Segment<R> seg[kAdjBlock];
-        int        i = 0;
         State      T = ckpt[bk];
-        prodh::for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
-          const int j = i++ - first;
-          if (j < 0 || j >= len) return;
-          buf[j] = T;
-          seg[j] = s;
-          if (j + 1 < len) Model::step(P, E, nubar, s, T);
-        });
+        adjoint_rest_block<Model, R>(P, earth, cosZ, atm_type, E, nubar, first, len, T, buf, seg);
         for (int j = len - 1; j >= 0; j--) {
           typename Model::AdjSeg Gs;
           Model::adj_step(P, E, nubar, seg[j], buf[j], lamS, Gs);
@@ -836,7 +895,8 @@ namespace opg {
                                          const prodh::BinSeries* pre = nullptr)
   {
     if (dist < 0 || !(std::fabs(cosZ) <= 1))
-      return adjoint_prem<Model, R, K>(P, chunk, npar, earth, E, cosZ, nubar, w, stride, acc);
+      return prodh::adjoint_prem_call<Model, R, K>(P, chunk, npar, earth, E, cosZ, nubar, w,
+                                                   stride, acc);
     constexpr int N      = Model::N;
     using State          = Mat<N, R>;
     using C              = Complex<double>;
@@ -845,20 +905,11 @@ namespace opg {
     const auto atm       = hv.atm_segment();
 
     // forward pass over the rest of the path, with checkpoints
-    State ckpt[kAdjMaxCkpt];
-    State S    = State::identity();
-    int   nseg = 0;
-    bool  ok   = true;
-    ckpt[0]    = S;
-    prodh::for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
-      if (nseg % kAdjBlock == 0) {
-        if (nseg / kAdjBlock >= kAdjMaxCkpt) ok = false;
-        else ckpt[nseg / kAdjBlock] = S;
-      }
-      if (ok) Model::step(P, E, nubar, s, S);
-      nseg++;
-    });
-    if (!ok) return false;
+    State     ckpt[kAdjMaxCkpt];
+    State     S;
+    const int nseg =
+        prodh::adjoint_rest_forward<Model, R>(P, earth, cosZ, atm_type, E, nubar, ckpt, S);
+    if (nseg < 0) return false;
 
     State Rf = S;
     Model::finalize(P, nubar, Rf);
