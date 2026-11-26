@@ -17,6 +17,7 @@ if(SKBUILD)
   file(GLOB _prem_tables ${PROJECT_SOURCE_DIR}/data/prem_*layers.txt)
   install(FILES ${PROJECT_SOURCE_DIR}/data/prem_default.txt
                 ${PROJECT_SOURCE_DIR}/data/prem_lbl.txt ${_prem_tables}
+                ${PROJECT_SOURCE_DIR}/data/earth_binned_default.txt
           DESTINATION oscprobgpu/data)
 endif()
 

@@ -10,6 +10,14 @@
 /// given cos(zenith) and calls a functor per segment, reproducing
 /// PremModel::FillPath operation by operation. It runs on host and device
 /// over an EarthView, a POD of pointers into the layer table.
+///
+/// An EarthView can also describe a binned 3D Earth (EarthModelBinned,
+/// earth/binned.h): then `binned` points to its geometry, the density, Z/A
+/// and type arrays hold one entry per bin (type = region index), and
+/// for_each_segment() walks the path with the binned walker
+/// (earth/binned_walk.h) for the view's azimuth. The switch is made at run
+/// time, in one loop with a single call of the functor, so the kernels are
+/// compiled once for both Earth models.
 ///////////////////////////////////////////////////////////////////////////////
 
 #ifndef OPG_EARTH_PREM_H
@@ -24,6 +32,7 @@
 #include <vector>
 
 #include "../core/macros.h"
+#include "binned_walk.h"
 
 namespace opg {
 
@@ -45,82 +54,123 @@ namespace opg {
       int  layer;
   };
 
-  /// Device/host view of a PREM layer table (non-owning).
+  /// Device/host view of a PREM layer table, or of a binned Earth
+  /// (non-owning).
   template <class Real> struct EarthView {
-      int         nlayers;     ///< number of layers
-      int         det_layer;   ///< index of the detector layer
+      int         nlayers;     ///< number of layers (binned: number of bins)
+      int         det_layer;   ///< index of the detector layer (PREM)
       Real        det_radius;  ///< km
-      const Real* radius;      ///< outer radius of each layer (km)
-      const Real* density;     ///< g/cm^3
-      const Real* zoa;         ///< Z/A
-      const int*  type;        ///< layer type index
+      const Real* radius;      ///< outer radius of each layer (km; PREM)
+      const Real* density;     ///< g/cm^3, per layer (binned: per bin)
+      const Real* zoa;         ///< Z/A, per layer (binned: per bin)
+      const int*  type;        ///< layer type index (binned: region index)
+      /// Binned Earth geometry; nullptr: PREM layers.
+      const BinnedGeom* binned = nullptr;
+      /// Azimuth of the path (degrees, as EarthModelBinned::FillPath);
+      /// binned Earth only.
+      double azimuth = 0;
   };
+
+  /// The view with the azimuth of event i (az: per-event azimuths in
+  /// degrees, or nullptr for the view's own).
+  template <class Real>
+  OPG_HD OPG_INLINE EarthView<Real> event_earth(const EarthView<Real>& e, const Real* az,
+                                                size_t i)
+  {
+    EarthView<Real> v = e;
+    if (az) v.azimuth = double(az[i]);
+    return v;
+  }
 
   //...........................................................................
   /// Walk the neutrino path for direction cosT and call
   /// f(const Segment<Real>&) for each segment, from production to detector.
-  /// Returns the number of segments. Port of PremModel::FillPath.
+  /// Returns the number of segments. Port of PremModel::FillPath, or for a
+  /// binned view of EarthModelBinned::FillPath(cosT, e.azimuth).
   template <class Real, class F>
   OPG_HD inline int for_each_segment(const EarthView<Real>& e, Real cosT, F&& f)
   {
     // Do nothing if cosine is unphysical
     if (std::fabs(cosT) > 1) return 0;
 
-    // Define the minimum path radius
-    Real minR   = e.det_radius * std::sqrt(1 - cosT * cosT);
-    Real minRsq = minR * minR;
+    // Binned Earth: generator state in memory (see binned_walk.h)
+    const bool binned = e.binned != nullptr;
+    BinnedWalk w;
 
-    // Set the top layer index
-    int toplayer = e.nlayers - 1;
+    Real minRsq = 0;
+    int  nsteps = 0, layer = 0, dl = -1;
+    if (binned) {
+      if (!binned_walk_init(*e.binned, w, double(cosT), e.azimuth)) return 0;
+      nsteps = e.binned->max_seg;
+    }
+    else {
+      // Define the minimum path radius
+      Real minR = e.det_radius * std::sqrt(1 - cosT * cosT);
+      minRsq    = minR * minR;
 
-    // Find the inner-most crossed layer
-    int minlayer = 0;
-    while (e.radius[minlayer] < minR) minlayer++;
+      // Set the top layer index
+      int toplayer = e.nlayers - 1;
 
-    // Compute the number of path segments needed
-    int nsteps = toplayer - e.det_layer;
-    if (cosT < 0) nsteps += 2 * (e.det_layer - minlayer) + 1;
+      // Find the inner-most crossed layer
+      int minlayer = 0;
+      while (e.radius[minlayer] < minR) minlayer++;
 
-    // Start at the top layer and go down
-    int layer = toplayer;
-    int dl    = -1;
+      // Compute the number of path segments needed
+      nsteps = toplayer - e.det_layer;
+      if (cosT < 0) nsteps += 2 * (e.det_layer - minlayer) + 1;
+
+      // Start at the top layer and go down
+      layer = toplayer;
+    }
+
     int count = 0;
-
     for (int i = 0; i < nsteps; i++) {
-      // Square of the path length between this layer's outer radius and
-      // the inner-most radius
-      Real L1 = e.radius[layer] * e.radius[layer] - minRsq;
+      Segment<Real> s;
+      bool          ismin = false;
+      if (binned) {
+        double len;
+        int    b;
+        if (!binned_walk_next(*e.binned, w, len, b)) return count;
+        s = Segment<Real>{Real(len), e.density[b], e.zoa[b], e.type[b]};
+      }
+      else {
+        // Square of the path length between this layer's outer radius and
+        // the inner-most radius
+        Real L1 = e.radius[layer] * e.radius[layer] - minRsq;
 
-      // If L1 is negative, outer radius is not crossed. This only happens
-      // if detector is at the top layer and the neutrino is coming from
-      // above.
-      if (L1 < 0) return count;
+        // If L1 is negative, outer radius is not crossed. This only happens
+        // if detector is at the top layer and the neutrino is coming from
+        // above.
+        if (L1 < 0) return count;
 
-      // Square of the path length between this layer's inner radius and
-      // the inner-most radius
-      Real L2 = -minRsq;
-      if (layer > 0) L2 += e.radius[layer - 1] * e.radius[layer - 1];
+        // Square of the path length between this layer's inner radius and
+        // the inner-most radius
+        Real L2 = -minRsq;
+        if (layer > 0) L2 += e.radius[layer - 1] * e.radius[layer - 1];
 
-      // If L2 is negative, inner radius is not crossed, so set this as the
-      // minimum layer.
-      bool ismin = (L2 <= 0 && cosT < 0);
+        // If L2 is negative, inner radius is not crossed, so set this as the
+        // minimum layer.
+        ismin = (L2 <= 0 && cosT < 0);
 
-      Real dL;
-      if (ismin)
-        dL = 2 * std::sqrt(L1);
-      else if (L2 >= 0)
-        dL = std::sqrt(L1) - std::sqrt(L2);
-      else
-        dL = std::sqrt(L1);
+        Real dL;
+        if (ismin)
+          dL = 2 * std::sqrt(L1);
+        else if (L2 >= 0)
+          dL = std::sqrt(L1) - std::sqrt(L2);
+        else
+          dL = std::sqrt(L1);
 
-      Segment<Real> s{dL, e.density[layer], e.zoa[layer], e.type[layer]};
+        s = Segment<Real>{dL, e.density[layer], e.zoa[layer], e.type[layer]};
+      }
       f(s);
       count++;
 
-      // If we reached the inner-most layer, start moving up again.
-      if (ismin) dl = 1;
+      if (!binned) {
+        // If we reached the inner-most layer, start moving up again.
+        if (ismin) dl = 1;
 
-      layer += dl;
+        layer += dl;
+      }
     }
 
     return count;
