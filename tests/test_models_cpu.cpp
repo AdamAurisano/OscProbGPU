@@ -178,6 +178,97 @@ TEST_CASE("Sterile 3+1 (CPU) is accurate against a long-double calculation")
   }
 }
 
+TEST_CASE("Sterile 3+2 and 3+3 (CPU) match OscProb PMNS_Sterile(5), PMNS_Sterile(6)")
+{
+  // As for 3+1: Jacobi vs Eigen, OscProb's own error ~1e-11 (see below)
+  const double tol = 1e-10;
+  {
+    opg::Propagator<opg::Sterile5<>> prop;
+    opg::Sterile5<>::Params          p;
+    p.mix = variants::sterile5_mix();
+    prop.set_params(p);
+    check_all(prop, "sterile5", tol);
+  }
+  {
+    opg::Propagator<opg::Sterile6<>> prop;
+    opg::Sterile6<>::Params          p;
+    p.mix = variants::sterile6_mix();
+    prop.set_params(p);
+    check_all(prop, "sterile6", tol);
+  }
+}
+
+namespace {
+  template <int NF> void check_sterile_ld(const opg::MixingParams<NF>& mix)
+  {
+    using LD = long double;
+    auto E   = npy::load<double>("grid_E_test.npy");
+    std::vector<LD> EL(E.data.begin(), E.data.end());
+    typename opg::Sterile<LD, NF>::Params     pl;
+    typename opg::Sterile<double, NF>::Params pd;
+    pd.mix = mix;
+    pl.mix = mix;
+    opg::Propagator<opg::Sterile<LD, NF>>     pL;
+    opg::Propagator<opg::Sterile<double, NF>> pD;
+    pL.set_params(pl);
+    pD.set_params(pd);
+    for (int w = 0; w < 2; w++) {
+      std::vector<opg::Segment<LD>> sl;
+      for (auto& sg : w ? refcmp::vacuum_path() : refcmp::test_path())
+        sl.push_back({sg.length, sg.density, sg.zoa, sg.layer});
+      const auto& sd = w ? refcmp::vacuum_path() : refcmp::test_path();
+      double      m  = 0;
+      for (int nb = 0; nb < 2; nb++) {
+        auto oL = pL.prob_path(EL, sl, nb);
+        auto oD = pD.prob_path(E.data, sd, nb);
+        for (size_t i = 0; i < oD.size(); i++)
+          m = std::max(m, std::fabs(oD[i] - double(oL[i])));
+      }
+      MESSAGE("Sterile N = " << NF << std::string(w ? " vacuum" : " testpath")
+                             << ": max |P - P_longdouble| = " << m);
+      CHECK(m < 1e-11);
+    }
+  }
+} // namespace
+
+TEST_CASE("Sterile 3+2 and 3+3 (CPU) are accurate against a long-double calculation")
+{
+  check_sterile_ld<5>(variants::sterile5_mix());
+  check_sterile_ld<6>(variants::sterile6_mix());
+}
+
+TEST_CASE("Sterile 3+2 with a decoupled fifth state equals 3+1")
+{
+  opg::Propagator<opg::Sterile<>>  p4;
+  opg::Propagator<opg::Sterile5<>> p5;
+  opg::Sterile<>::Params           a;
+  opg::Sterile5<>::Params          b;
+  a.mix = variants::sterile_phases_mix();
+  for (int i = 0; i < 4; i++) {
+    b.mix.dm[i] = a.mix.dm[i];
+    for (int j = 0; j < 4; j++) {
+      b.mix.th[i][j]  = a.mix.th[i][j];
+      b.mix.dcp[i][j] = a.mix.dcp[i][j];
+    }
+  }
+  b.mix.SetDm(5, 0.7);  // no mixing with the 5th state
+  p4.set_params(a);
+  p5.set_params(b);
+  auto   E = npy::load<double>("grid_E_test.npy");
+  double m = 0;
+  for (int nb = 0; nb < 2; nb++) {
+    auto o4 = p4.prob_path(E.data, refcmp::test_path(), nb);
+    auto o5 = p5.prob_path(E.data, refcmp::test_path(), nb);
+    for (int x = 0; x < 4; x++)
+      for (int y = 0; y < 4; y++)
+        for (size_t i = 0; i < E.size(); i++)
+          m = std::max(m, std::fabs(o4[(x * 4 + y) * E.size() + i] -
+                                    o5[(x * 5 + y) * E.size() + i]));
+  }
+  MESSAGE("Sterile 3+2 with a decoupled fifth state vs 3+1: " << m);
+  CHECK(m < 1e-12);
+}
+
 TEST_CASE("Decay (CPU) matches OscProb PMNS_Decay")
 {
   // Our expm follows Eigen's algorithm, but not its exact operation order.

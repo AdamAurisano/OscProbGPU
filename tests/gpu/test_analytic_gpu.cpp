@@ -137,6 +137,57 @@ TEST_CASE("GPU analytic averages agree with the host computation")
   }
 }
 
+TEST_CASE("GPU analytic averages for 3+2 and 3+3 agree with the host computation")
+{
+  auto run = [](auto mix, double scale) {
+    using P     = decltype(mix);
+    constexpr int NF = sizeof(P{}.dm) / sizeof(double);
+    using M     = opg::Sterile<double, NF>;
+    typename M::Params p;
+    p.mix = mix;
+    for (int j = 4; j <= NF; j++) p.mix.SetDm(j, mix.dm[j - 1] * scale);
+    for (auto d : {devs("OPG_TEST_DEVICES", "0"), devs("OPG_TEST_MULTI_DEVICES", "0,1")}) {
+      if (opg::cuda_device_count() < int(d.size())) continue;
+      opg::Propagator<M> g(opg::PremModel(), d), c;
+      g.set_params(p);
+      c.set_params(p);
+      g.set_gradient_params();
+      c.set_gradient_params();
+      std::vector<double> fe;
+      for (double ie = 1 / 0.3; ie > 1 / 44.7; ie -= 0.02237) fe.push_back(1 / ie);
+      fe.push_back(44.7);
+      const std::string label = "Sterile N = " + std::to_string(NF) + " x" + std::to_string(scale);
+      compare(g, c, fe, {{810, 2.84, 0.5, 0}}, opg::EMeasure::InvE, opg::BinVar::E,
+              label + " FD");
+      compare(g, c, {0.5, 1.0, 2.0, 5.0, 20.0},
+              {{1000, 2, 0.5, 0}, {1000, 4, 0.5, 1}, {1000, 2, 0.5, 0}}, opg::EMeasure::Linear,
+              opg::BinVar::E, label + " 3 segments");
+      // batches equal per-point calls on the same device to round-off
+      std::vector<typename M::Params> pts{p, p};
+      pts[1].mix.SetDm(4, 0.7);
+      g.set_gradient_params({"th24", "dm41", "dm51"});
+      auto h = g.analytic_batch(fe, {{810, 2.84, 0.5, 0}}, false, opg::EMeasure::InvE,
+                                opg::BinVar::E);
+      std::vector<double> out, dout;
+      g.avg_path_analytic_batch(h, pts, out, &dout);
+      const size_t n = size_t(NF) * NF * (fe.size() - 1);
+      double       m = 0;
+      for (size_t k = 0; k < pts.size(); k++) {
+        g.set_params(pts[k]);
+        std::vector<double> A, dA;
+        g.avg_path_analytic_grad(fe, {{810, 2.84, 0.5, 0}}, false, A, dA, opg::EMeasure::InvE,
+                                 opg::BinVar::E);
+        for (size_t i = 0; i < n; i++) m = std::max(m, std::fabs(A[i] - out[k * n + i]));
+      }
+      MESSAGE(label << ": batch vs single calls " << m);
+      CHECK(m < 1e-12);
+    }
+  };
+  run(variants::sterile5_mix(), 1.0);
+  run(variants::sterile5_mix(), 30.0);
+  run(variants::sterile6_mix(), 1.0);
+}
+
 TEST_CASE("GPU batched analytic averages: per-point agreement, bit-identity across batches")
 {
   const int dev = devs("OPG_TEST_DEVICES", "0").front();

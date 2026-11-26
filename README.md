@@ -10,7 +10,7 @@ neutrino oscillation calculators, with a batched C++ API and Python bindings.
 | `opg::Fast`      | `PMNS_Fast`              | standard 3-flavour, matter                |
 | `opg::NSI`       | `PMNS_NSI`               | vector non-standard interactions          |
 | `opg::NUNM`      | `PMNS_NUNM` (scale 0, 1) | non-unitary mixing                        |
-| `opg::Sterile`   | `PMNS_Sterile(4)`        | 3+1 sterile neutrino                      |
+| `opg::Sterile`   | `PMNS_Sterile(n)`        | 3+1 sterile neutrino; 3+2, 3+3 as `Sterile5`, `Sterile6` |
 | `opg::Decay`     | `PMNS_Decay`             | invisible decay (non-hermitian H)         |
 | `opg::LIV`       | `PMNS_LIV`               | Lorentz invariance violation (SME, d = 3..8) |
 | `opg::SNSI`      | `PMNS_SNSI`              | scalar non-standard interactions          |
@@ -67,6 +67,10 @@ value, phase)` (dim 4, 6, 8), `SNSI.set_eps(i, j, value, phase)` (MeV⁻²),
 first), `set_azimuth(azimuth)` (Earth paths then use their own zenith,
 arccos cos θ_z), `set_time_hours(t)`, `OQS.set_deco_element(i, value)`
 (|a_i|, i = 1..8), `OQS.set_deco_angle(i, j, theta)`, `OQS.set_power(n)`.
+Sterile neutrinos as OscProb's `PMNS_Sterile(n)`: `opg.Sterile(nus=n)` with
+n = 4 (default, 3+1), 5 or 6 returns a `Sterile`, `Sterile5` or `Sterile6`
+(separate compiled classes with the same methods; `n_flavours` gives N, and
+`set_angle`/`set_delta`/`set_dm` take indices up to N).
 All models start
 from OscProb's PDG defaults (`set_std_pars()`). See `python/examples/`:
 `oscillogram.py`, `lbl_spectrum.py`, and `gradient_fit.py` (a binned
@@ -90,6 +94,10 @@ prop.calculate(opg::Flavor::Both);  // asynchronous
 const double* P = prop.probs();     // probs[nubar][a][b][iC][iE]
 double pmue = prop.prob(1, 0, iC, iE, /*nubar=*/false);
 ```
+
+Sterile models: `opg::Sterile<R, N>` has N flavours (`opg::Sterile<>` is
+3+1); the library compiles N = 4, 5, 6 for the GPU (aliases
+`opg::Sterile5<>`, `opg::Sterile6<>`), and the CPU backend takes any N.
 
 Link against the `OscProbGPU::oscprobgpu` CMake target. Precision is a
 template parameter (`opg::Fast<float>` is compiled for the GPU for
@@ -173,14 +181,14 @@ On pre-Ampere GPUs with old drivers (no PTX JIT), set
 Result layouts are structure-of-arrays:
 `probs[nubar][a][b][iC][iE]`, `binned[nubar][a][b][iCbin][iEbin]`,
 `prob_points -> [a][b][i]`, `prob_path -> [a][b][iE]`, with `P(a -> b)` and
-flavour indices 0 = e, 1 = μ, 2 = τ, 3 = s.
+flavour indices 0 = e, 1 = μ, 2 = τ, 3.. = s.
 
 ### Numerical methods
 
 | Model | Per-segment evolution |
 |-------|-----------------------|
 | Fast, NSI, NUNM, SNSI, LIV | `eigh3`: analytic (trigonometric Cardano eigenvalues, eigenvectors from row cross products) on the matrix scaled to O(1), Jacobi for near-degenerate matrices; with `OPG_OSCPROB_BITWISE`, Kopp's `zheevh3` ported bit-exactly. Vacuum (ρ < 1e-6) uses the analytic PMNS eigensystem as OscProb (not for LIV, whose terms persist in vacuum) |
-| Sterile (4x4) | cyclic complex Jacobi with Numerical Recipes' stable update, fully unrolled (register-resident) |
+| Sterile (NxN, N = 4, 5, 6) | cyclic complex Jacobi with Numerical Recipes' stable update, fully unrolled (register-resident for N = 4) |
 | Decay | `exp(-iHL)` by scaling and squaring with Padé degree 3–13 and Eigen's thresholds (Higham 2005), LU with partial pivoting |
 
 ### Bin averaging
@@ -251,7 +259,7 @@ p.wait(); A = out.get()
 
 ### Analytic averages (fixed paths)
 
-`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, NUNM, Sterile;
+`avg_path_analytic()` and `avg_path_analytic_grad()` (Fast, NSI, NUNM, Sterile of any N;
 `include/opg/avg/analytic.h`) average P(a → b) over bins of E or L/E for a
 fixed path without resolving the oscillations, after OscProb's
 `PMNS_Maltoni` (arXiv:2308.00037). To first order in u = 1/E around a
@@ -397,7 +405,7 @@ values 4x and 6 gradients 1.6x faster; on the GPU only the values gain (ND
 4.9 → 2.9 ms per 1024 points): the per-sub-bin tables dominate the
 gradients there. Off by default.
 
-**Python** (`Fast`, `NSI`, `NUNM`, `Sterile`): the same calls, with points
+**Python** (`Fast`, `NSI`, `NUNM`, `Sterile`, `Sterile5`, `Sterile6`): the same calls, with points
 given as for `binned_batch` (names and one row of values per point) and the
 options as an `AnalyticAvgOptions` object:
 
@@ -516,7 +524,7 @@ the model parameters and the Earth model's Z/A per layer type (see
 | Fast    | `th12 th13 th23 d13 dm21 dm31` |
 | NSI     | mixing, `eps_ee eps_emu eps_etau eps_mumu eps_mutau eps_tautau` (magnitudes as in `set_eps`), `ph_emu ph_etau ph_mutau`, `coup_e coup_u coup_d` |
 | NUNM    | mixing, `alpha_ee alpha_mue alpha_taue alpha_mumu alpha_taumu alpha_tautau` (values as in `set_alpha`, diagonal = 1 + value), `ph_mue ph_taue ph_taumu`, `frac_vnc` |
-| Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41` |
+| Sterile | `th12 th13 th23 th14 th24 th34 d13 d14 d24 dm21 dm31 dm41`; for N flavours the angles `th<ij>` (i < j), phases `d<ij>` (i + 1 < j), each ordered by j then i, then `dm<j>1` (Sterile5: 20, Sterile6: 30) |
 | Decay   | mixing, `alpha2 alpha3` (eV²; at α = 0 the derivative is the one-sided one from α > 0) |
 | LIV     | mixing, `aT<d>_<ab>` / `cT<d>_<ab>` magnitudes and `ph_aT<d>_<ab>` / `ph_cT<d>_<ab>` phases for d = 3..8 (60 in total; default: mixing, aT3, cT4) |
 | SNSI    | NSI's, plus `mlight` (lightest mass, eV; one-sided at 0); default as NSI |
@@ -716,6 +724,7 @@ results.
 | Fast, NSI, NUNM (scale 0) | 1.8e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.8e-13 | |
 | NUNM (scale 1) | 4e-14 | 5e-14 | see note below |
 | Sterile 3+1 | 1.1e-11 | 1.1e-11 | dominated by round-off amplified by phases ~1e4 rad at Δm²₄₁ = 1.3 eV²; against a long-double calculation ours is 3–4x closer than OscProb in 3 of 4 test cases and comparable in the 4th |
+| Sterile 3+2, 3+3 | 9.7e-12, 1.4e-11 | 9.9e-12, 1.4e-11 (GTX 1650 Ti) | as 3+1 (Δm² up to 1.3 and 1.7 eV², complex phases); against long double 3.1e-12 and 4.5e-12 |
 | Decay | 1e-14 | 1.6e-14 | |
 | LIV | 7.7e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1e-11 | test values with large LIV phases (aT ~ 1e-21 GeV over the Earth) |
 | SNSI | 3.3e-13 (**0** with `OPG_OSCPROB_BITWISE`) | 1.5e-13 | the default build drops the common m₁²/2E term before squaring (more accurate than OscProb's form) |

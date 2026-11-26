@@ -7,6 +7,22 @@ import oscprobgpu as opg
 from conftest import TEST_PATH, VAC_PATH, load, set_nominal
 
 
+# 3+2 and 3+3 (tests/variants.h sterile5_mix, sterile6_mix): nus, dm_j1,
+# theta_ij, delta_ij
+STERILE_N = {
+    "sterile5": (5, {4: 0.5, 5: 1.3},
+                 {(1, 4): 0.15, (2, 4): 0.1, (3, 4): 0.2, (1, 5): 0.05, (2, 5): 0.12,
+                  (3, 5): 0.1, (4, 5): 0.3},
+                 {(1, 4): 0.9, (2, 4): -1.7, (1, 5): 0.4, (2, 5): 2.2, (3, 5): -0.6}),
+    "sterile6": (6, {4: 0.1, 5: 0.8, 6: 1.7},
+                 {(1, 4): 0.1, (2, 4): 0.1, (3, 4): 0.1, (1, 5): 0.08, (2, 5): 0.06,
+                  (3, 5): 0.04, (4, 5): 0.2, (1, 6): 0.05, (2, 6): 0.07, (3, 6): 0.03,
+                  (4, 6): 0.15, (5, 6): 0.25},
+                 {(1, 4): 0.3, (2, 4): -1.1, (1, 5): 1.9, (2, 5): -0.4, (3, 5): 0.8,
+                  (1, 6): -2.5, (2, 6): 1.2, (3, 6): 0.5, (4, 6): -0.9}),
+}
+
+
 def make(tag, devices):
     """Model instance configured as the reference variant `tag`."""
     if tag in ("fast", "fast_io"):
@@ -43,6 +59,16 @@ def make(tag, devices):
             p.set_alpha(2, 1, 0.05, 1.2)
             p.set_alpha(2, 2, -0.02, 0)
             p.set_frac_vnc(0.7)
+    elif tag in STERILE_N:
+        nus, dms, angles, deltas = STERILE_N[tag]
+        p = set_nominal(opg.Sterile(devices=devices, nus=nus))
+        assert p.n_flavours == nus
+        for j, v in dms.items():
+            p.set_dm(j, v)
+        for (i, j), v in angles.items():
+            p.set_angle(i, j, v)
+        for (i, j), v in deltas.items():
+            p.set_delta(i, j, v)
     elif tag.startswith("sterile"):
         p = set_nominal(opg.Sterile(devices=devices))
         if tag == "sterile":
@@ -145,7 +171,7 @@ def make(tag, devices):
 
 
 TAGS = ["fast", "fast_io", "nsi", "nsi_phases", "nunm", "nunm_phases",
-        "nunm_high", "sterile", "sterile_phases", "decay", "decay_both",
+        "nunm_high", "sterile", "sterile_phases", "sterile5", "sterile6", "decay", "decay_both",
         "liv", "liv_phases", "snsi", "snsi_io", "deco", "deco_power",
         "sidereal", "sidereal_fixed", "oqs", "oqs_full"]
 
@@ -328,3 +354,19 @@ def test_version_matches_pyproject():
     with open(os.path.join(root, "pyproject.toml")) as f:
         v = re.search(r'^version = "([^"]+)"', f.read(), re.M).group(1)
     assert opg.__version__ == v
+
+
+def test_sterile_nus():
+    """opg.Sterile(nus=N) as OscProb's PMNS_Sterile(N)."""
+    assert type(opg.Sterile()) is opg.Sterile and opg.Sterile().n_flavours == 4
+    assert isinstance(opg.Sterile(nus=4), opg.Sterile)
+    for nus, cls in ((5, opg.Sterile5), (6, opg.Sterile6)):
+        p = opg.Sterile(nus=nus, threads=1)
+        assert type(p) is cls and p.n_flavours == nus == cls.n_flavours
+        assert cls.parameter_names[-1] == f"dm{nus}1"
+        with pytest.raises(ValueError):
+            p.set_angle(1, nus + 1, 0.1)
+    assert len(opg.Sterile5.parameter_names) == 20
+    assert len(opg.Sterile6.parameter_names) == 30
+    with pytest.raises(ValueError):
+        opg.Sterile(nus=7)

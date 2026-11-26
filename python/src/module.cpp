@@ -1337,11 +1337,20 @@ NB_MODULE(_oscprobgpu, m)
 
   auto cs = bind_model<Sterile>(m, "Sterile", "3+1 oscillations (PMNS_Sterile with 4 flavours).");
   bind_ctor<Sterile>(cs);
+  // 3+2 and 3+3; opg.Sterile(..., nus=5) picks these (python/oscprobgpu/__init__.py)
+  using Sterile5 = opg::Sterile5<double>;
+  using Sterile6 = opg::Sterile6<double>;
+  auto cs5 = bind_model<Sterile5>(m, "Sterile5", "3+2 oscillations (PMNS_Sterile with 5 flavours).");
+  bind_ctor<Sterile5>(cs5);
+  auto cs6 = bind_model<Sterile6>(m, "Sterile6", "3+3 oscillations (PMNS_Sterile with 6 flavours).");
+  bind_ctor<Sterile6>(cs6);
 
   bind_analytic<Fast>(m, cf, "Fast");
   bind_analytic<NSI>(m, cn, "NSI");
   bind_analytic<NUNM>(m, cu, "NUNM");
   bind_analytic<Sterile>(m, cs, "Sterile");
+  bind_analytic<Sterile5>(m, cs5, "Sterile5");
+  bind_analytic<Sterile6>(m, cs6, "Sterile6");
 
   using LIV  = opg::LIV<double>;
   using SNSI = opg::SNSI<double>;

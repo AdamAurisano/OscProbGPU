@@ -26,6 +26,8 @@
 /// A build may define its own list first (fewer models compile faster),
 /// e.g. with a header passed to the compilers by -include that contains
 /// `#define OPG_FOR_EACH_MODEL(X) X(opg::Sterile<double>)`.
+/// Entries must not contain commas (macro arguments): use the aliases
+/// opg::Sterile5<double>, opg::Sterile6<double> for 3+2 and 3+3.
 #ifndef OPG_FOR_EACH_MODEL
 #define OPG_FOR_EACH_MODEL(X) \
   X(opg::Fast<double>)        \
@@ -33,6 +35,8 @@
   X(opg::NSI<double>)         \
   X(opg::NUNM<double>)        \
   X(opg::Sterile<double>)     \
+  X(opg::Sterile5<double>)    \
+  X(opg::Sterile6<double>)    \
   X(opg::Decay<double>)       \
   X(opg::LIV<double>)         \
   X(opg::SNSI<double>)        \

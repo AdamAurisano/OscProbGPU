@@ -267,6 +267,12 @@ namespace antest {
   template <template <class> class M, class R> struct LongDouble<M<R>> {
       using type = M<long double>;
   };
+  template <> struct LongDouble<opg::Sterile<double, 5>> {
+      using type = opg::Sterile<long double, 5>;
+  };
+  template <> struct LongDouble<opg::Sterile<double, 6>> {
+      using type = opg::Sterile<long double, 6>;
+  };
 
   /// dP/dp of the analytic averages vs 4-point central differences in long
   /// double (prepared state built in long double from the shifted
@@ -440,6 +446,99 @@ TEST_CASE("Batched analytic averages on the host equal per-point calls")
   CHECK(v == out);
   double* none = nullptr;  // device output needs a handle on a GPU
   CHECK_THROWS_AS(prop.avg_path_analytic_batch(b, pts, out.data(), none), std::logic_error);
+}
+#endif
+
+#ifndef OPG_DISABLE_GRADIENTS
+namespace antest {
+  /// 3+2 / 3+3 on top of the NOvA-like 3+1 point: dm51 (dm61 = 3 dm51),
+  /// small mixing of the extra states with phases.
+  template <int NF>
+  typename opg::Sterile<double, NF>::Params nova_sterile_n(double dm41, double dm51,
+                                                           bool io = false)
+  {
+    const auto                                p4 = nova_sterile(dm41, 0.1, io);
+    typename opg::Sterile<double, NF>::Params p;
+    for (int i = 0; i < 4; i++) {
+      p.mix.dm[i] = p4.mix.dm[i];
+      for (int j = 0; j < 4; j++) {
+        p.mix.th[i][j]  = p4.mix.th[i][j];
+        p.mix.dcp[i][j] = p4.mix.dcp[i][j];
+      }
+    }
+    for (int j = 5; j <= NF; j++) {
+      p.mix.SetDm(j, dm51 * (j == 5 ? 1 : 3));
+      for (int i = 1; i < j; i++) p.mix.SetAngle(i, j, 0.03 * i + 0.02 * (j - 4));
+      for (int i = 1; i + 1 < j; i++) p.mix.SetDelta(i, j, 0.4 * i - 0.7 * (j - 4));
+    }
+    return p;
+  }
+
+  template <int NF> void check_sterile_n_analytic()
+  {
+    using M = opg::Sterile<double, NF>;
+    constexpr int NN = NF * NF;
+    opg::Propagator<M> prop;
+    const auto         fe = fd_edges();
+    std::vector<double> flo, fhi;
+    e_to_u(fe, flo, fhi);
+    const Path<double> fd{{810, 2.84, 0.5, 0}}, two{{405, 2.84, 0.5, 0}, {405, 2.84, 0.5, 0}};
+    const size_t       nb = fe.size() - 1;
+    for (double dm : {1e-3, 0.3, 5.0}) {
+      for (int nubar = 0; nubar < 2; nubar++) {
+        prop.set_params(nova_sterile_n<NF>(dm, 1.3 * dm, nubar));
+        auto a = prop.avg_path_analytic(fe, fd, nubar, EMeasure::InvE, BinVar::E);
+        const double maxdm = std::max(3 * 1.3 * dm, 2.5e-3);
+        const double e = max_abs_diff(a, brute(prop, flo, fhi, fd, nubar, EMeasure::InvE, maxdm));
+        MESSAGE("Sterile N = " << NF << " dm41 = " << dm << " nubar = " << nubar
+                               << ": analytic vs brute-force GL " << e);
+        CHECK(e < 3e-6);
+      }
+      // gradients: long-double finite differences; fused one-segment path
+      // vs the general path; batch vs single calls
+      std::vector<double> fsub(fe.begin(), fe.begin() + 30);
+      fsub.push_back(5);
+      fsub.push_back(44.7);
+      auto sub = opg::Propagator<M>::analytic_subbins(fsub, fd, EMeasure::InvE, BinVar::E);
+      char label[64];
+      std::snprintf(label, sizeof label, "Sterile N = %d, dm41 = %g", NF, dm);
+      CHECK(check_grad<M>(nova_sterile_n<NF>(dm, 1.3 * dm), sub, fsub.size() - 1, fd, false,
+                          810 / 0.3, label) < 1e-6);
+
+      prop.set_params(nova_sterile_n<NF>(dm, 1.3 * dm));
+      prop.set_gradient_params();
+      auto sf = opg::Propagator<M>::analytic_subbins(fe, fd, EMeasure::InvE, BinVar::E);
+      std::vector<double> P1, dP1, P2, dP2;
+      prop.avg_path_analytic_subbins_grad(sf, nb, fd, false, P1, dP1);
+      prop.avg_path_analytic_subbins_grad(sf, nb, two, false, P2, dP2);
+      double sg = 10;
+      for (double v : dP2) sg = std::max(sg, std::fabs(v));
+      MESSAGE(label << ": fused vs general P " << max_abs_diff(P1, P2) << ", dP (rel) "
+                    << max_abs_diff(dP1, dP2) / sg);
+      CHECK(max_abs_diff(P1, P2) < 1e-11);
+      CHECK(max_abs_diff(dP1, dP2) / sg < 1e-10);
+    }
+    prop.set_gradient_params({"th24", "th25", "dm41", "dm51"});
+    std::vector<typename M::Params> pts;
+    for (double dm : {1e-3, 0.5, 30.0}) pts.push_back(nova_sterile_n<NF>(dm, 2 * dm));
+    auto b = prop.analytic_batch(fe, fd, false, EMeasure::InvE, BinVar::E);
+    std::vector<double> out, dout;
+    prop.avg_path_analytic_batch(b, pts, out, &dout);
+    const size_t n = NN * nb;
+    for (size_t p = 0; p < pts.size(); p++) {
+      prop.set_params(pts[p]);
+      std::vector<double> P, dP;
+      prop.avg_path_analytic_grad(fe, fd, false, P, dP, EMeasure::InvE, BinVar::E);
+      CHECK(std::equal(P.begin(), P.end(), out.begin() + p * n));
+      CHECK(std::equal(dP.begin(), dP.end(), dout.begin() + p * 4 * n));
+    }
+  }
+} // namespace antest
+
+TEST_CASE("Analytic averages and gradients for 3+2 and 3+3")
+{
+  check_sterile_n_analytic<5>();
+  check_sterile_n_analytic<6>();
 }
 #endif
 

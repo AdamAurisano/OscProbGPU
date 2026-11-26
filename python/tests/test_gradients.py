@@ -93,6 +93,17 @@ def _sterile(devices, th24=0.15):
     return p
 
 
+def _sterile5(devices, th25=0.12):
+    p = set_nominal(opg.Sterile(devices=devices, nus=5))
+    p.set_dm(4, 0.5)
+    p.set_dm(5, 0.3)  # small phases: double-precision FD with h = 1e-6
+    p.set_angle(2, 4, 0.1)
+    p.set_angle(2, 5, th25)
+    p.set_angle(4, 5, 0.3)
+    p.set_delta(2, 5, 0.7)
+    return p
+
+
 def _decay(devices, alpha3=2e-4):
     p = set_nominal(opg.Decay(devices=devices))
     p.set_alpha2(3e-5)
@@ -105,6 +116,7 @@ def _decay(devices, alpha3=2e-4):
     (_nsi, "eps_emu", 0.1, 3),
     (_nunm, "alpha_mue", 0.03, 3),
     (_sterile, "th24", 0.15, 4),
+    (_sterile5, "th25", 0.12, 5),
 ])
 def test_g3_path_grad_vs_fd(make, name, x0, nflv, devices):
     cls = type(make(devices))
@@ -203,9 +215,17 @@ def _model(cls, devices):
     p = set_nominal(cls(devices=devices))
     if cls is opg.NSI:
         p.set_eps(0, 1, 0.1, 0.4)
-    elif cls is opg.Sterile:
+    elif cls in (opg.Sterile, opg.Sterile5, opg.Sterile6):
         p.set_dm(4, 0.5)
         p.set_angle(2, 4, 0.15)
+        if cls.n_flavours > 4:
+            p.set_dm(5, 1.3)
+            p.set_angle(1, 5, 0.1)
+            p.set_angle(4, 5, 0.2)
+            p.set_delta(2, 5, 0.6)
+        if cls.n_flavours > 5:
+            p.set_dm(6, 2.1)
+            p.set_angle(3, 6, 0.1)
     elif cls is opg.Decay:
         p.set_alpha3(2e-4)
     elif cls is opg.LIV:
@@ -230,7 +250,8 @@ def _model(cls, devices):
     return p
 
 
-@pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Decay,
+@pytest.mark.parametrize("cls", [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Sterile5,
+                                 opg.Sterile6, opg.Decay,
                                  opg.LIV, opg.SNSI, opg.Deco, opg.SiderealLIV, opg.OQS],
                          ids=lambda c: c.__name__)
 def test_all_models_grid_points_weighted_binned(cls, devices):
@@ -240,7 +261,7 @@ def test_all_models_grid_points_weighted_binned(cls, devices):
     p.set_gradient_params()                       # model defaults
     names = p.gradient_params
     assert names == cls.default_gradient_params
-    n = 4 if cls is opg.Sterile else 3
+    n = cls.n_flavours
     E, C = np.geomspace(0.5, 30, 17), np.linspace(-1, 0.4, 11)
     p.set_grid(E, C)
     p.calculate_gradient()
@@ -291,8 +312,8 @@ def test_device_weights(devices):
                           p.weighted_gradient_binned(p.binned()))
 
 
-ADJOINT_MODELS = [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.LIV, opg.SNSI, opg.SiderealLIV,
-                  opg.OQS]
+ADJOINT_MODELS = [opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Sterile5, opg.Sterile6, opg.LIV,
+                  opg.SNSI, opg.SiderealLIV, opg.OQS]
 
 
 @pytest.mark.parametrize("cls", ADJOINT_MODELS, ids=lambda c: c.__name__)
@@ -305,10 +326,11 @@ def test_adjoint_weighted_gradient(cls, devices):
     p = _model(cls, devices)
     p.set_gradient_params(p.gradient_parameter_names)   # model and Earth Z/A
     p.set_grid(np.geomspace(0.5, 30, 9), np.linspace(-1, 0.4, 7))
-    n = 4 if cls is opg.Sterile else 3
+    n = cls.n_flavours
     w = np.random.default_rng(3).normal(size=(2, n, n, 7, 9))
     assert p.adjoint_gradients
     ga = p.weighted_gradient(w)
     p.adjoint_gradients = False
     gf = p.weighted_gradient(w)
-    assert np.all(np.abs(ga - gf) <= 1e-11 * (np.abs(gf) + 1e-6 * np.abs(gf).max()))
+    tol = 1e-11 if n <= 4 else 1e-10   # 3+2, 3+3: more round-off in the reverse sums
+    assert np.all(np.abs(ga - gf) <= tol * (np.abs(gf) + 1e-6 * np.abs(gf).max()))

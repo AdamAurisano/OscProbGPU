@@ -1,6 +1,7 @@
 """OscProbGPU: CUDA port of selected OscProb neutrino oscillation calculators.
 
-Models: Fast, NSI, NUNM, Sterile (3+1), Decay, LIV (SME), SNSI (scalar NSI),
+Models: Fast, NSI, NUNM, Sterile (3+1; 3+2 and 3+3 with nus=5, 6), Decay,
+LIV (SME), SNSI (scalar NSI),
 Deco (decoherence), SiderealLIV (direction/time-dependent SME), OQS (open
 quantum system). Each model exposes OscProb-style
 parameter setters and a batched API::
@@ -13,7 +14,13 @@ parameter setters and a batched API::
     p.calculate()                          # asynchronous on GPU
     P = p.probs()                          # P[nubar, a, b, iC, iE] = P(a -> b)
 
-Flavour indices: 0 = e, 1 = mu, 2 = tau, 3 = sterile.
+Flavour indices: 0 = e, 1 = mu, 2 = tau, 3.. = sterile.
+
+Sterile neutrinos, as OscProb's PMNS_Sterile(numNus)::
+
+    p = opg.Sterile(nus=5)                 # 3+2: an opg.Sterile5 (nus=6: Sterile6)
+    p.set_dm(5, 1.3); p.set_angle(2, 5, 0.1); p.set_delta(2, 5, 0.4)
+    p.n_flavours                           # 5; probs() is [nubar, 5, 5, iC, iE]
 
 Exact gradients (off unless requested)::
 
@@ -85,7 +92,9 @@ from ._oscprobgpu import (  # noqa: E402,F401
     __version__,
     Fast,
     PremModel,
-    Sterile,
+    Sterile as _Sterile4,
+    Sterile5,
+    Sterile6,
     _cuda_alloc,
     _cuda_to_host,
     _dlpack,
@@ -95,8 +104,9 @@ from ._oscprobgpu import (  # noqa: E402,F401
     has_cuda,
 )
 
-__all__ = ["__version__", "Fast", "NSI", "NUNM", "Sterile", "Decay", "LIV", "SNSI", "Deco",
-           "SiderealLIV", "OQS", "PremModel", "EarthModelBinned", "AnalyticAvgOptions", "DeviceArray", "cuda_empty",
+__all__ = ["__version__", "Fast", "NSI", "NUNM", "Sterile", "Sterile5", "Sterile6", "Decay",
+           "LIV", "SNSI", "Deco", "SiderealLIV", "OQS", "PremModel", "EarthModelBinned",
+           "AnalyticAvgOptions", "DeviceArray", "cuda_empty",
            "cuda_device_count", "has_cuda", "default_devices", "path_column_depth",
            "path_transmission"]
 
@@ -214,7 +224,31 @@ def _checks_device_arrays(f):
 _CUDA_ARG_METHODS = ("weighted_gradient", "weighted_gradient_binned", "calculate_binned_batch",
                      "avg_path_analytic_batch_device", "avg_path_analytic_batch_weighted")
 
-for _cls in (Fast, NSI, NUNM, Sterile, Decay, LIV, SNSI, Deco, SiderealLIV, OQS):
+_STERILE_N = {5: Sterile5, 6: Sterile6}
+
+
+class Sterile(_Sterile4):
+    """Oscillations with sterile neutrinos (OscProb's PMNS_Sterile(nus)).
+
+    ``Sterile(earth=PremModel(), devices=[], threads=0, nus=4)``: nus = 4
+    (3+1, the default) makes a Sterile; nus = 5 or 6 returns a Sterile5 or
+    Sterile6 (3+2, 3+3), the classes compiled for those sizes, which take
+    the same arguments and have the same methods with N = nus flavours.
+    """
+
+    def __new__(cls, *args, nus=4, **kwargs):
+        if nus == 4:
+            return super().__new__(cls)
+        if nus in _STERILE_N:
+            return _STERILE_N[nus](*args, **kwargs)
+        raise ValueError(f"Sterile: nus = {nus} is not built (4, 5 or 6)")
+
+    def __init__(self, *args, nus=4, **kwargs):
+        super().__init__(*args, **kwargs)
+
+
+for _cls in (Fast, NSI, NUNM, _Sterile4, Sterile5, Sterile6, Decay, LIV, SNSI, Deco,
+             SiderealLIV, OQS):
     _cls.device_probs = _device_probs
     _cls.device_binned = _device_binned
     for _m in _CUDA_ARG_METHODS:
