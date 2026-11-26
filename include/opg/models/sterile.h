@@ -236,6 +236,35 @@ namespace opg {
                                                          const Mat<N, R>&, R (&)[K])
       {
       }
+
+      // --- production-height averaging (avg/prod_height.h) --------------------
+      static constexpr bool has_seg_eigen = true;
+      OPG_HD OPG_INLINE static void seg_eigen(const Prepared& P, R E, bool nubar,
+                                              const Segment<R>& s, Mat<N, R>& V, R lam[N])
+      {
+        Mat<N, R> H;
+        hamiltonian(P, E, nubar, s, H);
+        jacobi_hermitian<N, R>(H, V, lam);
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void seg_hamiltonian_dual(const PreparedT<Dual<R, K>>& PD, R E,
+                                                         bool nubar,
+                                                         const SegmentZ<R, Dual<R, K>>& sz,
+                                                         Mat<N, Dual<R, K>>& HD)
+      {
+        hamiltonian(PD, E, nubar, sz, HD);
+      }
+      OPG_HD OPG_INLINE static void adj_final_cot(const Prepared&, bool, const Mat<N, R>&,
+                                                  const Mat<N, R>& Fb, Mat<N, R>& Sb)
+      {
+        Sb = Fb;
+      }
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_final_cot(const PreparedT<Dual<R, K>>&, bool,
+                                                           const Mat<N, R>&, const Mat<N, R>&,
+                                                           R (&)[K])
+      {
+      }
       template <int K>
       OPG_HD OPG_INLINE static void adj_contract_final(const PreparedT<Dual<R, K>>&, bool,
                                                        const Mat<N, R>&, const R*, size_t,

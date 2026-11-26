@@ -256,6 +256,22 @@ namespace opg {
       const SegmentZ<R, Dual<R, K>>& sz, const Mat<3, R>& Hb, R (&acc)[K])                \
   {                                                                                      \
     hermitian3_adj_contract<MODEL, R, K>(PD, E, nubar, sz, Hb, acc);                     \
+  }                                                                                      \
+  /* segment eigensystem and dual hamiltonian (avg/prod_height.h) */                    \
+  static constexpr bool has_seg_eigen = true;                                            \
+  OPG_HD OPG_INLINE static void seg_eigen(const Prepared& P, R E, bool nubar,            \
+                                          const Segment<R>& s, Mat<3, R>& V, R lam[3])   \
+  {                                                                                      \
+    hermitian3_eigen<MODEL, R>(P, E, nubar, s, V, lam);                                  \
+  }                                                                                      \
+  template <int K>                                                                       \
+  OPG_HD OPG_INLINE static void seg_hamiltonian_dual(                                    \
+      const PreparedT<Dual<R, K>>& PD, R E, bool nubar,                                  \
+      const SegmentZ<R, Dual<R, K>>& sz, Mat<3, Dual<R, K>>& HD)                         \
+  {                                                                                      \
+    SegmentZ<R, Dual<R, K>> sd = sz;                                                     \
+    if (uses_vacuum_shortcut<MODEL>::value && sz.density.v < R(1.0e-6)) sd.density = 0;  \
+    hamiltonian(PD, E, nubar, sd, HD);                                                   \
   }
 
 /// OPG_HERMITIAN3_ADJOINT_STEPS for an identity initial state and no final
@@ -266,6 +282,18 @@ namespace opg {
                                           const R* w, size_t stride, Mat<3, R>& Sb)      \
   {                                                                                      \
     amplitude_adj_final<3, R>(S, w, stride, Sb);                                         \
+  }                                                                                      \
+  /* cotangent Fb of the final amplitude given (avg/prod_height.h) */                   \
+  OPG_HD OPG_INLINE static void adj_final_cot(const Prepared&, bool, const Mat<3, R>&,   \
+                                              const Mat<3, R>& Fb, Mat<3, R>& Sb)        \
+  {                                                                                      \
+    Sb = Fb;                                                                             \
+  }                                                                                      \
+  template <int K>                                                                       \
+  OPG_HD OPG_INLINE static void adj_contract_final_cot(const PreparedT<Dual<R, K>>&,     \
+                                                       bool, const Mat<3, R>&,           \
+                                                       const Mat<3, R>&, R (&)[K])       \
+  {                                                                                      \
   }                                                                                      \
   template <int K>                                                                       \
   OPG_HD OPG_INLINE static void adj_contract_initial(const PreparedT<Dual<R, K>>&, bool, \

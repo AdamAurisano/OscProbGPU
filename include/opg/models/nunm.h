@@ -312,6 +312,23 @@ namespace opg {
         Sb = matmul(P.alphaD, Fb);
       }
 
+      /// adj_final for a given cotangent Fb of the final amplitude alpha S
+      /// (avg/prod_height.h).
+      OPG_HD OPG_INLINE static void adj_final_cot(const Prepared& P, bool, const Mat<3, R>&,
+                                                  const Mat<3, R>& Fb, Mat<3, R>& Sb)
+      {
+        Sb = matmul(P.alphaD, Fb);
+      }
+
+      /// adj_contract_final for a given cotangent Fb of the final amplitude.
+      template <int K>
+      OPG_HD OPG_INLINE static void adj_contract_final_cot(const PreparedT<Dual<R, K>>& PD, bool,
+                                                           const Mat<3, R>& S,
+                                                           const Mat<3, R>& Fb, R (&acc)[K])
+      {
+        contract_full<K>(matmul(Fb, adjoint(S)), PD.alpha, acc);
+      }
+
       /// acc[k] += Re tr(lam^dag d(alpha^dagger)_k), lam the cotangent of the
       /// initial state.
       template <int K>
