@@ -134,6 +134,21 @@ namespace opg {
   } // namespace detail
   template <class Model> constexpr int n_extra_v = detail::extra_count<Model>::value;
 
+  /// Index of the per-event extra input that is an azimuth in degrees
+  /// (Model::extra_azimuth, e.g. SiderealLIV: 0), or -1. Event lists through
+  /// a binned Earth use it as the azimuth of the path unless separate event
+  /// azimuths are given.
+  namespace detail {
+    template <class Model, class = void> struct extra_azimuth {
+        static constexpr int value = -1;
+    };
+    template <class Model>
+    struct extra_azimuth<Model, std::void_t<decltype(Model::extra_azimuth)>> {
+        static constexpr int value = Model::extra_azimuth;
+    };
+  } // namespace detail
+  template <class Model> constexpr int extra_azimuth_v = detail::extra_azimuth<Model>::value;
+
   /// Initial state for a path through the Earth with direction cosZ (models
   /// whose Hamiltonian depends on the direction, e.g. sidereal LIV, provide
   /// initial(P, nubar, cosZ)); with per-event extra inputs ex (n_extra

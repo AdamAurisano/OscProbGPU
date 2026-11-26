@@ -134,14 +134,14 @@ namespace opg {
                                   const R* __restrict__ E,
                                   const R* __restrict__ C,
                                   const uint8_t* __restrict__ nubar,
-                                  const R* __restrict__ extra, size_t n,
+                                  const R* __restrict__ extra, const R* __restrict__ az, size_t n,
                                   size_t stride, R* __restrict__ out)
     {
       constexpr int N = Model::N;
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
         R    ex[kMaxExtra];
-        auto S = evolve_prem<Model, R>(P, earth, E[i], C[i], nubar[i] != 0,
+        auto S = evolve_prem<Model, R>(P, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0,
                                        gather_extra<Model, R>(extra, i, n, ex));
         store_model_probs<Model, R>(S, out + i, stride);
       }
@@ -424,7 +424,7 @@ namespace opg {
                                        const EarthView<R> earth, const R* __restrict__ E,
                                        const R* __restrict__ C,
                                        const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra, size_t n,
+                                       const R* __restrict__ extra, const R* __restrict__ az, size_t n,
                                        int offset, int count, bool write_probs,
                                        R* __restrict__ probs, R* __restrict__ grad)
     {
@@ -434,7 +434,7 @@ namespace opg {
            i += size_t(gridDim.x) * blockDim.x) {
         StateOf<Model> S, dS[K];
         R ex[kMaxExtra];
-        evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS,
+        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, S, dS,
                                       gather_extra<Model, R>(extra, i, n, ex));
         if (write_probs) store_model_probs<Model, R>(S, probs + i, n);
         store_model_grads<Model, R, K>(S, dS, count, grad + size_t(offset) * N * N * n + i, n);
@@ -447,7 +447,7 @@ namespace opg {
                                         const EarthView<R> earth, const R* __restrict__ E,
                                         const R* __restrict__ C,
                                         const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra, size_t n,
+                                       const R* __restrict__ extra, const R* __restrict__ az, size_t n,
                                         const R* __restrict__ w, R* __restrict__ partial)
     {
       const auto&   PD = GradArg<Model>::get(PDa);
@@ -457,7 +457,7 @@ namespace opg {
            i += size_t(gridDim.x) * blockDim.x) {
         StateOf<Model> S, dS[K];
         R ex[kMaxExtra];
-        evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS,
+        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, S, dS,
                                       gather_extra<Model, R>(extra, i, n, ex));
         R a[K];
         contract_model_grads<Model, R, K>(S, dS, w + i, n, a);
@@ -474,7 +474,7 @@ namespace opg {
                                           const EarthView<R> earth, const R* __restrict__ E,
                                           const R* __restrict__ C,
                                           const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra,
+                                       const R* __restrict__ extra, const R* __restrict__ az,
                                           const int* __restrict__ bin, size_t n,
                                           const R* __restrict__ w, R* __restrict__ contrib)
     {
@@ -485,7 +485,7 @@ namespace opg {
         if (bin[i] < 0) continue;
         StateOf<Model> S, dS[K];
         R ex[kMaxExtra];
-        evolve_prem_grad<Model, R, K>(P, PD, earth, E[i], C[i], nubar[i] != 0, S, dS,
+        evolve_prem_grad<Model, R, K>(P, PD, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, S, dS,
                                       gather_extra<Model, R>(extra, i, n, ex));
         R a[K];
         contract_model_grads<Model, R, K>(S, dS, w + i, n, a);
@@ -583,7 +583,7 @@ namespace opg {
                                        int npar, const EarthView<R> earth,
                                        const R* __restrict__ E, const R* __restrict__ C,
                                        const uint8_t* __restrict__ nubar,
-                                       const R* __restrict__ extra, size_t n,
+                                       const R* __restrict__ extra, const R* __restrict__ az, size_t n,
                                        const R* __restrict__ w, R* __restrict__ partial,
                                        int* err)
     {
@@ -592,7 +592,7 @@ namespace opg {
       for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < n;
            i += size_t(gridDim.x) * blockDim.x) {
         R ex[kMaxExtra];
-        if (!adjoint_prem<Model, R, K>(P, ch, npar, earth, E[i], C[i], nubar[i] != 0, w + i, n,
+        if (!adjoint_prem<Model, R, K>(P, ch, npar, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, w + i, n,
                                        acc, gather_extra<Model, R>(extra, i, n, ex)))
           *err = 1;
       }
@@ -606,7 +606,7 @@ namespace opg {
                                               int npar, const EarthView<R> earth,
                                               const R* __restrict__ E, const R* __restrict__ C,
                                               const uint8_t* __restrict__ nubar,
-                                              const R* __restrict__ extra,
+                                              const R* __restrict__ extra, const R* __restrict__ az,
                                               const int* __restrict__ bin, size_t n,
                                               const R* __restrict__ w, R* __restrict__ contrib,
                                               int* err)
@@ -617,7 +617,7 @@ namespace opg {
         if (bin[i] < 0) continue;
         R acc[kAdjMaxPar] = {};
         R ex[kMaxExtra];
-        if (!adjoint_prem<Model, R, K>(P, ch, npar, earth, E[i], C[i], nubar[i] != 0, w + i, n,
+        if (!adjoint_prem<Model, R, K>(P, ch, npar, event_earth(earth, az, i), E[i], C[i], nubar[i] != 0, w + i, n,
                                        acc, gather_extra<Model, R>(extra, i, n, ex)))
           *err = 1;
         for (int p = 0; p < npar; p++) contrib[i * npar + p] = acc[p];
@@ -939,10 +939,10 @@ namespace opg {
         }
       }
 
-      void set_earth(const PremModel& earth) override
+      void set_earth(const EarthModel& earth) override
       {
         wait_binned_batch();
-        PremModel::HostTable<R> t(earth);
+        EarthTable<R> t(earth);
         for (auto& Dp : fDev) {
           Device& D = *Dp;
           OPG_CUDA(cudaSetDevice(D.id));
@@ -950,12 +950,33 @@ namespace opg {
           D.density.upload(D.id, t.density.data(), t.density.size(), D.stream);
           D.zoa.upload(D.id, t.zoa.data(), t.zoa.size(), D.stream);
           D.type.upload(D.id, t.type.data(), t.type.size(), D.stream);
-          D.earth = EarthView<R>{int(t.radius.size()), t.det_layer,
-                                 t.det_radius,         D.radius.ptr,
-                                 D.density.ptr,        D.zoa.ptr,
-                                 D.type.ptr};
+          D.earth = EarthView<R>{t.rows(),      t.det_layer, t.det_radius, D.radius.ptr,
+                                 D.density.ptr, D.zoa.ptr,   D.type.ptr};
+          if (t.binned) {
+            // bin geometry (double) and the walker's constants, with device pointers
+            D.brout.upload(D.id, t.rout.data(), t.rout.size(), D.stream);
+            D.brin.upload(D.id, t.rin.data(), t.rin.size(), D.stream);
+            D.blat.upload(D.id, t.lat.data(), t.lat.size(), D.stream);
+            D.blon.upload(D.id, t.lon.data(), t.lon.size(), D.stream);
+            BinnedGeom g = t.geom;
+            g.radius_out = D.brout.ptr;
+            g.radius_in  = D.brin.ptr;
+            g.latitude   = D.blat.ptr;
+            g.longitude  = D.blon.ptr;
+            D.bgeom.upload(D.id, &g, 1, D.stream);
+            D.earth.binned  = D.bgeom.ptr;
+            D.earth.azimuth = t.azimuth;
+          }
+          else {
+            D.brout.release();
+            D.brin.release();
+            D.blat.release();
+            D.blon.release();
+            D.bgeom.release();
+          }
           OPG_CUDA(cudaStreamSynchronize(D.stream));
         }
+        fMaxSeg    = t.max_seg;
         fHaveEarth = true;
       }
 
@@ -1095,7 +1116,7 @@ namespace opg {
 
       void prob_points(const Prepared& P, const R* E, const R* cosZ,
                        const uint8_t* nubar, size_t n, R* out,
-                       const R* extra = nullptr) override
+                       const R* extra = nullptr, const R* az = nullptr) override
       {
         if (!fHaveEarth) throw std::logic_error("CudaEngine: earth not set");
         // Contiguous chunks per device.
@@ -1113,6 +1134,7 @@ namespace opg {
           D.pOut.resize(D.id, N * N * cnt[k]);
           points_kernel<Model, R><<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
               P, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, xptr(D, extra, off[k], cnt[k], n),
+              azptr(D, az, off[k], cnt[k]),
               cnt[k], cnt[k], D.pOut.ptr);
           OPG_CUDA(cudaGetLastError());
         }
@@ -1318,7 +1340,7 @@ namespace opg {
       void prob_points_grad(const Prepared& P, const Chunks& chunks, int npar,
                             const R* E, const R* cosZ, const uint8_t* nubar,
                             size_t n, R* outP, R* outG,
-                            const R* extra = nullptr) override
+                            const R* extra = nullptr, const R* az = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
@@ -1337,11 +1359,12 @@ namespace opg {
             D.pC.upload(D.id, cosZ + off[k], cnt[k], D.stream);
             D.pNb.upload(D.id, nubar + off[k], cnt[k], D.stream);
             xptr(D, extra, off[k], cnt[k], n);
+            azptr(D, az, off[k], cnt[k]);
             D.pOut.resize(D.id, N * N * cnt[k]);
             D.pGrad.resize(D.id, size_t(npar) * N * N * cnt[k]);
             if constexpr (kSepP) {
               points_kernel<Model, R><<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
-                  P, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr, cnt[k], cnt[k],
+                  P, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr, D.pAz.ptr, cnt[k], cnt[k],
                   D.pOut.ptr);
               OPG_CUDA(cudaGetLastError());
             }
@@ -1349,7 +1372,7 @@ namespace opg {
               points_grad_kernel<Model, R, GK>
                   <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
                       P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
-                      D.pX.ptr, cnt[k], chunks[c].offset, chunks[c].count, c == 0 && !kSepP,
+                      D.pX.ptr, D.pAz.ptr, cnt[k], chunks[c].offset, chunks[c].count, c == 0 && !kSepP,
                       D.pOut.ptr,
                       D.pGrad.ptr);
               OPG_CUDA(cudaGetLastError());
@@ -1363,7 +1386,7 @@ namespace opg {
       void weighted_grad_points(const Prepared& P, const Chunks& chunks, int npar,
                                 const R* E, const R* cosZ, const uint8_t* nubar,
                                 size_t n, const R* w, R* g,
-                                const R* extra = nullptr) override
+                                const R* extra = nullptr, const R* az = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
@@ -1383,6 +1406,7 @@ namespace opg {
             D.pC.upload(D.id, cosZ + off[k], cnt[k], D.stream);
             D.pNb.upload(D.id, nubar + off[k], cnt[k], D.stream);
             xptr(D, extra, off[k], cnt[k], n);
+            azptr(D, az, off[k], cnt[k]);
             std::vector<R> loc(N * N * cnt[k]);
             for (int ab = 0; ab < N * N; ab++)
               std::copy(w + ab * n + off[k], w + ab * n + off[k] + cnt[k],
@@ -1401,7 +1425,7 @@ namespace opg {
                 const unsigned nblk = std::min(blocks_for(cnt[k], kAdjBlockT), 4096u);
                 D.partial.resize(D.id, size_t(nblk) * kAdjMaxPar);
                 points_wadj_kernel<Model, R, GK><<<nblk, kAdjBlockT, 0, D.stream>>>(
-                    P, D.pd.ptr, npar, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr,
+                    P, D.pd.ptr, npar, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr, D.pAz.ptr,
                     cnt[k], D.wts.ptr, D.partial.ptr, D.adjErr.ptr);
                 OPG_CUDA(cudaGetLastError());
               }
@@ -1417,7 +1441,7 @@ namespace opg {
               D.partial.resize(D.id, size_t(nblk) * GK);
               points_wgrad_kernel<Model, R, GK><<<nblk, 128, 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
-                  D.pX.ptr, cnt[k], D.wts.ptr, D.partial.ptr);
+                  D.pX.ptr, D.pAz.ptr, cnt[k], D.wts.ptr, D.partial.ptr);
               OPG_CUDA(cudaGetLastError());
             }
             sum_partials(chunks[c], g);
@@ -1770,7 +1794,7 @@ namespace opg {
                                        int npar, const R* E, const R* cosZ,
                                        const uint8_t* nubar, size_t n, const R* w,
                                        const int* bin, int nbins, R* G,
-                                       const R* extra = nullptr) override
+                                       const R* extra = nullptr, const R* az = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
@@ -1791,6 +1815,7 @@ namespace opg {
             D.pC.upload(D.id, cosZ + off[k], cnt[k], D.stream);
             D.pNb.upload(D.id, nubar + off[k], cnt[k], D.stream);
             xptr(D, extra, off[k], cnt[k], n);
+            azptr(D, az, off[k], cnt[k]);
             std::vector<R> loc(N * N * cnt[k]);
             for (int ab = 0; ab < N * N; ab++)
               std::copy(w + ab * n + off[k], w + ab * n + off[k] + cnt[k],
@@ -1825,7 +1850,7 @@ namespace opg {
                 D.contrib.resize(D.id, cnt[k] * size_t(npar));
                 points_adj_contrib_kernel<Model, R, GK>
                     <<<blocks_for(cnt[k], kAdjBlockT), kAdjBlockT, 0, D.stream>>>(
-                        P, D.pd.ptr, npar, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr,
+                        P, D.pd.ptr, npar, D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr, D.pX.ptr, D.pAz.ptr,
                         D.pBin.ptr, cnt[k], D.wts.ptr, D.contrib.ptr, D.adjErr.ptr);
                 OPG_CUDA(cudaGetLastError());
                 D.partial.resize(D.id, size_t(nbins) * kAdjMaxPar);
@@ -1862,7 +1887,7 @@ namespace opg {
               points_contrib_kernel<Model, R, GK>
                   <<<blocks_for(cnt[k], 128), 128, 0, D.stream>>>(
                       P, pd_arg(D, chunks, c), D.earth, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
-                      D.pX.ptr, D.pBin.ptr, cnt[k], D.wts.ptr, D.contrib.ptr);
+                      D.pX.ptr, D.pAz.ptr, D.pBin.ptr, cnt[k], D.wts.ptr, D.contrib.ptr);
               OPG_CUDA(cudaGetLastError());
               D.partial.resize(D.id, size_t(nbins) * GK);
               if (D.binPerm.n)
@@ -2378,6 +2403,8 @@ namespace opg {
           cudaStream_t       stream = nullptr;
           DevBuf<R>          radius, density, zoa;
           DevBuf<int>        type;
+          DevBuf<double>     brout, brin, blat, blon;  ///< binned Earth geometry
+          DevBuf<BinnedGeom> bgeom;                    ///< binned Earth walker constants
           EarthView<R>       earth{};
           Slab               grid;      ///< plain (E, cosZ) grid
           Slab               nodes;     ///< GL node grid (rows = C nodes)
@@ -2389,6 +2416,7 @@ namespace opg {
           DevBuf<int>        pBin, binStart, binPerm;  ///< per-bin event lists
           DevBuf<R>          contrib;   ///< per-event weighted contractions
           DevBuf<R>          pX;        ///< per-event extra inputs [x][cnt]
+          DevBuf<R>          pAz;       ///< per-event azimuths (binned Earth)
           DevBuf<int>        adjErr;    ///< adjoint path overflow flag
           DevBuf<R>          wts;       ///< weights for weighted gradients
           DevBuf<typename grad_traits<Model>::Prepared> pd;  ///< dual states (GradArg)
@@ -2538,6 +2566,19 @@ namespace opg {
         return D.pX.ptr;
       }
 
+      /// Upload the azimuths of events off .. off+cnt to D.pAz; returns the
+      /// device pointer, or nullptr (and D.pAz empty) without azimuths.
+      const R* azptr(Device& D, const R* az, size_t off, size_t cnt)
+      {
+        if (!az) {
+          D.pAz.release();
+          return nullptr;
+        }
+        D.pAz.upload(D.id, az + off, cnt, D.stream);
+        OPG_CUDA(cudaStreamSynchronize(D.stream));
+        return D.pAz.ptr;
+      }
+
       /// The value state is a kernel argument (CUDA limit: 4 KB in total);
       /// the dual state too unless GradArg passes it by pointer.
       static void check_param_size()
@@ -2552,7 +2593,7 @@ namespace opg {
       /// Whether weighted modes with npar parameters use the adjoint path.
       bool use_adj(int npar) const
       {
-        return !fDev.empty() && this->use_adjoint(npar, fDev[0]->earth);
+        return !fDev.empty() && this->use_adjoint(npar, fMaxSeg);
       }
 
       /// Upload all gradient chunks to D.pd and clear D.adjErr (adjoint path).
@@ -2643,6 +2684,7 @@ namespace opg {
       BinSpec<R>                           fBins;
       size_t                               fNE = 0, fNC = 0;
       bool                                 fHaveEarth   = false;
+      int                                  fMaxSeg      = 0;  ///< segment bound of the Earth's paths
       bool                                 fHostValid   = false;
       bool                                 fBinnedValid = false;
 

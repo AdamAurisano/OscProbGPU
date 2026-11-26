@@ -32,9 +32,9 @@ namespace opg {
       /// nthreads <= 0 means OpenMP default (OMP_NUM_THREADS).
       explicit CpuEngine(int nthreads = 0) : fThreads(nthreads) {}
 
-      void set_earth(const PremModel& earth) override
+      void set_earth(const EarthModel& earth) override
       {
-        fTable.reset(new PremModel::HostTable<R>(earth));
+        fTable.reset(new EarthTable<R>(earth));
       }
 
       void set_grid(const std::vector<R>& E, const std::vector<R>& cosZ) override
@@ -47,7 +47,7 @@ namespace opg {
       void calculate(const Prepared& P, Flavor which) override
       {
         require_earth();
-        const EarthView<R> earth = fTable->view();
+        const EarthView<R> earth = view();
         const size_t       nE = fE.size(), nC = fC.size(), npt = nE * nC;
         const size_t       stride = npt;
 
@@ -76,7 +76,7 @@ namespace opg {
       void calculate_binned(const Prepared& P, Flavor which) override
       {
         require_earth();
-        const EarthView<R> earth = fTable->view();
+        const EarthView<R> earth = view();
         const auto&        B     = fBins;
         const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size();
         const size_t npt = nEn * nCn;
@@ -108,7 +108,7 @@ namespace opg {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           const auto&        B     = fBins;
           const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size(), npt = nEn * nCn;
           const size_t nbin = B.nCb * B.nEb;
@@ -155,7 +155,7 @@ namespace opg {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           const auto&        B     = fBins;
           const size_t nEn = B.nodesE.size(), nCn = B.nodesC.size();
           const size_t nbin = B.nCb * B.nEb;
@@ -163,7 +163,7 @@ namespace opg {
           std::vector<size_t> binOfRow(nCn);
           for (size_t icb = 0; icb < B.nCb; icb++)
             for (size_t rc = B.offC[icb]; rc < B.offC[icb + 1]; rc++) binOfRow[rc] = icb;
-          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, fTable->max_seg)) {
             auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
             std::vector<R> part(2 * nCn * size_t(npar), R(0));
             const long long nrow = (long long)nCn;
@@ -229,7 +229,7 @@ namespace opg {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           const size_t       nE = fE.size(), nC = fC.size(), npt = nE * nC;
           fGrad.resize(2 * size_t(npar) * N * N * npt);
           for (int nb = 0; nb < 2; nb++) {
@@ -266,10 +266,10 @@ namespace opg {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           const size_t       nE = fE.size(), nC = fC.size(), npt = nE * nC;
           for (int p = 0; p < npar; p++) g[p] = 0;
-          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, fTable->max_seg)) {
             auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
             std::vector<R> part(2 * nC * size_t(npar), R(0));
             const long long nrow = (long long)nC;
@@ -317,13 +317,14 @@ namespace opg {
 
       void prob_points_grad(const Prepared& P, const Chunks& chunks, int npar,
                             const R* E, const R* cosZ, const uint8_t* nubar,
-                            size_t n, R* outP, R* outG, const R* extra = nullptr) override
+                            size_t n, R* outP, R* outG, const R* extra = nullptr,
+                            const R* az = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
           (void)npar;
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           const long long    nn    = (long long)n;
           for (size_t c = 0; c < chunks.size(); c++) {
             const auto& ch = chunks[c];
@@ -331,8 +332,8 @@ namespace opg {
             for (long long i = 0; i < nn; i++) {
               StateOf<Model> S, dS[GK];
               R              ex[kMaxExtra];
-              evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
-                                             nubar[i] != 0, S, dS,
+              evolve_prem_grad<Model, R, GK>(P, ch.P, event_earth(earth, az, size_t(i)), E[i],
+                                             cosZ[i], nubar[i] != 0, S, dS,
                                              gather_extra<Model, R>(extra, size_t(i), n, ex));
               if (c == 0) store_model_probs<Model, R>(S, outP + i, n);
               store_model_grads<Model, R, GK>(S, dS, ch.count,
@@ -345,15 +346,16 @@ namespace opg {
       void weighted_grad_points(const Prepared& P, const Chunks& chunks,
                                 int npar, const R* E, const R* cosZ,
                                 const uint8_t* nubar, size_t n, const R* w,
-                                R* g, const R* extra = nullptr) override
+                                R* g, const R* extra = nullptr,
+                                const R* az = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           for (int p = 0; p < npar; p++) g[p] = 0;
           const size_t   bs = 256, nblk = (n + bs - 1) / bs;
-          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, fTable->max_seg)) {
             auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
             std::vector<R>  part(nblk * size_t(npar), R(0));
             const long long nb_ = (long long)nblk;
@@ -362,8 +364,8 @@ namespace opg {
               R* acc = &part[size_t(b) * size_t(npar)];
               for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++) {
                 R ex[kMaxExtra];
-                adjoint_prem<Model, R, GK>(P, chunk, npar, earth, E[i], cosZ[i], nubar[i] != 0,
-                                           w + i, n, acc,
+                adjoint_prem<Model, R, GK>(P, chunk, npar, event_earth(earth, az, i), E[i],
+                                           cosZ[i], nubar[i] != 0, w + i, n, acc,
                                            gather_extra<Model, R>(extra, i, n, ex));
               }
             }
@@ -380,8 +382,8 @@ namespace opg {
               for (size_t i = size_t(b) * bs; i < std::min(n, size_t(b + 1) * bs); i++) {
                 StateOf<Model> S, dS[GK];
                 R              ex[kMaxExtra];
-                evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
-                                               nubar[i] != 0, S, dS,
+                evolve_prem_grad<Model, R, GK>(P, ch.P, event_earth(earth, az, i), E[i],
+                                               cosZ[i], nubar[i] != 0, S, dS,
                                                gather_extra<Model, R>(extra, i, n, ex));
                 R acc[GK];
                 contract_model_grads<Model, R, GK>(S, dS, w + i, n, acc);
@@ -399,14 +401,14 @@ namespace opg {
                                        int npar, const R* E, const R* cosZ,
                                        const uint8_t* nubar, size_t n, const R* w,
                                        const int* bin, int nbins, R* G,
-                                       const R* extra = nullptr) override
+                                       const R* extra = nullptr, const R* az = nullptr) override
       {
         if constexpr (!GT::enabled) { this->no_grad(); }
         else {
           require_earth();
-          const EarthView<R> earth = fTable->view();
+          const EarthView<R> earth = view();
           std::fill(G, G + size_t(nbins) * npar, R(0));
-          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, earth)) {
+          if constexpr (has_adjoint_v<Model>) if (this->use_adjoint(npar, fTable->max_seg)) {
             auto chunk = [&](int c) -> const auto& { return chunks[size_t(c)].P; };
             std::vector<R>  contrib(n * size_t(npar), R(0));
             const long long nn = (long long)n;
@@ -414,8 +416,9 @@ namespace opg {
             for (long long i = 0; i < nn; i++) {
               if (bin[i] < 0 || bin[i] >= nbins) continue;
               R ex[kMaxExtra];
-              adjoint_prem<Model, R, GK>(P, chunk, npar, earth, E[i], cosZ[i], nubar[i] != 0,
-                                         w + i, n, &contrib[size_t(i) * size_t(npar)],
+              adjoint_prem<Model, R, GK>(P, chunk, npar, event_earth(earth, az, size_t(i)), E[i],
+                                         cosZ[i], nubar[i] != 0, w + i, n,
+                                         &contrib[size_t(i) * size_t(npar)],
                                          gather_extra<Model, R>(extra, size_t(i), n, ex));
             }
             for (size_t i = 0; i < n; i++)  // fixed summation order
@@ -432,8 +435,8 @@ namespace opg {
               if (bin[i] < 0 || bin[i] >= nbins) continue;
               StateOf<Model> S, dS[GK];
               R              ex[kMaxExtra];
-              evolve_prem_grad<Model, R, GK>(P, ch.P, earth, E[i], cosZ[i],
-                                             nubar[i] != 0, S, dS,
+              evolve_prem_grad<Model, R, GK>(P, ch.P, event_earth(earth, az, size_t(i)), E[i],
+                                             cosZ[i], nubar[i] != 0, S, dS,
                                              gather_extra<Model, R>(extra, size_t(i), n, ex));
               R acc[GK];
               contract_model_grads<Model, R, GK>(S, dS, w + i, n, acc);
@@ -473,15 +476,16 @@ namespace opg {
 
       void prob_points(const Prepared& P, const R* E, const R* cosZ,
                        const uint8_t* nubar, size_t n, R* out,
-                       const R* extra = nullptr) override
+                       const R* extra = nullptr, const R* az = nullptr) override
       {
         require_earth();
-        const EarthView<R> earth = fTable->view();
+        const EarthView<R> earth = view();
         const long long    nn    = (long long)n;
 #pragma omp parallel for schedule(dynamic, 64) num_threads(threads())
         for (long long i = 0; i < nn; i++) {
           R    ex[kMaxExtra];
-          auto S = evolve_prem<Model, R>(P, earth, E[i], cosZ[i], nubar[i] != 0,
+          auto S = evolve_prem<Model, R>(P, event_earth(earth, az, size_t(i)), E[i], cosZ[i],
+                                         nubar[i] != 0,
                                          gather_extra<Model, R>(extra, size_t(i), n, ex));
           store_model_probs<Model, R>(S, out + i, n);
         }
@@ -540,8 +544,12 @@ namespace opg {
         if (!fTable) throw std::logic_error("CpuEngine: earth model not set");
       }
 
+      /// View of the Earth table (fGeom holds a binned model's geometry).
+      EarthView<R> view() { return fTable->view(fGeom); }
+
       int                                          fThreads;
-      std::unique_ptr<PremModel::HostTable<R>>     fTable;
+      std::unique_ptr<EarthTable<R>>               fTable;
+      BinnedGeom                                   fGeom;
       std::vector<R>                               fE, fC, fProbs;
       BinSpec<R>                                   fBins;
       std::vector<R>                               fNodeProbs, fBinned, fBinnedGrad;

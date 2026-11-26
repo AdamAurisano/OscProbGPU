@@ -61,9 +61,10 @@ namespace opg {
       using Prepared         = typename Model::Prepared;
       static constexpr int N = Model::N;
 
+      /// earth: a PremModel or an EarthModelBinned.
       /// devices: CUDA device ids to use; empty = CPU backend.
       /// cpu_threads: OpenMP threads for the CPU backend (0 = default).
-      explicit Propagator(const PremModel& earth = PremModel(),
+      explicit Propagator(const EarthModel& earth = EarthModel(),
                           const std::vector<int>& devices = {},
                           int cpu_threads = 0)
           : fDevices(devices)
@@ -89,13 +90,12 @@ namespace opg {
       bool on_gpu() const { return !fDevices.empty(); }
       const std::vector<int>& devices() const { return fDevices; }
 
-      void set_earth(const PremModel& earth)
+      /// Set the Earth model: a PremModel or an EarthModelBinned (paths at
+      /// its azimuth, see set_earth_azimuth; region indices play the role
+      /// of layer types for zoa_<t>, rho_<t>).
+      void set_earth(const EarthModel& earth)
       {
-        std::vector<int> types;
-        for (const auto& l : earth.GetLayers())
-          if (std::find(types.begin(), types.end(), l.type) == types.end())
-            types.push_back(l.type);
-        std::sort(types.begin(), types.end());
+        const std::vector<int> types = earth.types();
         // Check the selected Earth parameters against the new layer types
         // before changing anything, so a throw leaves the propagator as it was.
         if constexpr (grad_traits<Model>::enabled)
@@ -109,7 +109,7 @@ namespace opg {
             if (!found)
               throw std::invalid_argument("opg::Propagator::set_earth: selected gradient "
                                           "parameter '" + n + "' has no layer of that type "
-                                          "in the new Earth model");
+                                          "(or region) in the new Earth model");
           }
         // Layer-adapted cosZ nodes sit at the old Earth's grazing cosines.
         const bool rebin = fHaveBins && fBinArgs.rule == CosZRule::LayerAdapted &&
@@ -126,7 +126,24 @@ namespace opg {
         }
       }
 
-      const PremModel& earth() const { return fEarth; }
+      /// The PREM Earth model (throws std::logic_error if the Earth is an
+      /// EarthModelBinned; see earth_model()).
+      const PremModel& earth() const { return fEarth.prem(); }
+      /// The Earth model (PREM or binned).
+      const EarthModel& earth_model() const { return fEarth; }
+      bool earth_is_binned() const { return fEarth.is_binned(); }
+
+      /// Azimuth (degrees, EarthModelBinned::FillPath convention) of the
+      /// paths through a binned Earth for grids, bin averages and event lists
+      /// without per-event azimuths (EarthModelBinned::SetAzimuth of the
+      /// propagator's copy). Throws std::logic_error for a PREM Earth.
+      void set_earth_azimuth(double phi)
+      {
+        EarthModel e = fEarth;
+        e.binned().SetAzimuth(phi);
+        set_earth(e);
+      }
+      double earth_azimuth() const { return fEarth.binned().GetAzimuth(); }
 
       /// Set the (E, cosZ) grid. E in GeV.
       void set_grid(const std::vector<R>& E, const std::vector<R>& cosZ)
@@ -538,6 +555,39 @@ namespace opg {
                                   R* dout = nullptr, void* stream = nullptr,
                                   Flavor which = Flavor::Both)
       {
+        calculate_binned_batch_impl(points, earths, out, dout, stream, which);
+      }
+      /// As above with per-point binned Earths (the bins, detector and
+      /// azimuth of earth_model(); only densities and Z/A may differ).
+      void calculate_binned_batch(const std::vector<Params>& points,
+                                  const std::vector<EarthModelBinned>* earths, R* out,
+                                  R* dout = nullptr, void* stream = nullptr,
+                                  Flavor which = Flavor::Both)
+      {
+        calculate_binned_batch_impl(points, earths, out, dout, stream, which);
+      }
+
+      /// The same into host vectors on any backend, one point at a time
+      /// through set_params, set_earth and calculate_binned (the reference
+      /// for calculate_binned_batch); the parameters and Earth are restored.
+      void binned_batch(const std::vector<Params>& points, const std::vector<PremModel>* earths,
+                        std::vector<R>& out, std::vector<R>* dout = nullptr)
+      {
+        binned_batch_impl(points, earths, out, dout);
+      }
+      void binned_batch(const std::vector<Params>& points,
+                        const std::vector<EarthModelBinned>* earths, std::vector<R>& out,
+                        std::vector<R>* dout = nullptr)
+      {
+        binned_batch_impl(points, earths, out, dout);
+      }
+
+    private:
+      template <class EarthT>
+      void calculate_binned_batch_impl(const std::vector<Params>& points,
+                                       const std::vector<EarthT>* earths, R* out, R* dout,
+                                       void* stream, Flavor which)
+      {
         if (!on_gpu())
           throw std::logic_error("calculate_binned_batch: device output needs the CUDA "
                                  "backend (binned_batch: host output on any backend)");
@@ -574,11 +624,10 @@ namespace opg {
                               which, out, dout, stream);
       }
 
-      /// The same into host vectors on any backend, one point at a time
-      /// through set_params, set_earth and calculate_binned (the reference
-      /// for calculate_binned_batch); the parameters and Earth are restored.
-      void binned_batch(const std::vector<Params>& points, const std::vector<PremModel>* earths,
-                        std::vector<R>& out, std::vector<R>* dout = nullptr)
+      template <class EarthT>
+      void binned_batch_impl(const std::vector<Params>& points,
+                             const std::vector<EarthT>* earths, std::vector<R>& out,
+                             std::vector<R>* dout)
       {
         const size_t np = points.size();
         if (earths && earths->size() != np)
@@ -586,9 +635,9 @@ namespace opg {
         const size_t per = 2 * size_t(N) * N * fNCb * fNEb, nq = fGradIdx.size();
         out.assign(np * per, R(0));
         if (dout) dout->assign(np * per * nq, R(0));
-        const Params    p0 = fParams;
-        const bool      had = fHaveParams;
-        const PremModel e0 = fEarth;
+        const Params     p0  = fParams;
+        const bool       had = fHaveParams;
+        const EarthModel e0  = fEarth;
         if (earths) {
           std::vector<R> dens, zoa;
           batch_earth_tables(*earths, dens, zoa);  // the same checks as the device batch
@@ -618,6 +667,7 @@ namespace opg {
         restore();
       }
 
+    public:
       /// 1D bin averages along E for a fixed path (e.g. long baseline),
       /// using nglE Gauss-Legendre nodes per bin. Returns out[a][b][iEbin].
       std::vector<R> avg_path(const std::vector<double>& Eedges, int nglE,
@@ -898,7 +948,7 @@ namespace opg {
       // attenuation exp(-sigma X / u) along the Earth path, X = column depth.
 
       /// Column depth sum rho L (g/cm^2) through the Earth model for each
-      /// cosine of the zenith angle.
+      /// cosine of the zenith angle (binned Earth: at its azimuth).
       std::vector<double> column_depth(const std::vector<double>& cosZ) const
       {
         std::vector<double> x(cosZ.size());
@@ -928,32 +978,40 @@ namespace opg {
 
       /// Event list through the Earth model. Returns out[a][b][i]. extra:
       /// optional per-event inputs extra[x * n + i], x < n_event_extra()
-      /// (empty: the values set in the parameters).
+      /// (empty: the values set in the parameters). azimuth: optional
+      /// per-event azimuths (degrees) of the paths through a binned Earth;
+      /// if empty, a model whose extra inputs include an azimuth
+      /// (SiderealLIV) uses that one when extra is given, else the paths
+      /// use the Earth model's azimuth (set_earth_azimuth). Ignored for PREM.
       std::vector<R> prob_points(const std::vector<R>& E,
                                  const std::vector<R>& cosZ,
                                  const std::vector<uint8_t>& nubar,
-                                 const std::vector<R>& extra = {})
+                                 const std::vector<R>& extra = {},
+                                 const std::vector<R>& azimuth = {})
       {
         require_params();
-        check_points(E, cosZ, nubar, extra);
+        check_points(E, cosZ, nubar, extra, azimuth);
         std::vector<R> out(size_t(N) * N * E.size());
         fEngine->prob_points(fPrepared, E.data(), cosZ.data(), nubar.data(),
-                             E.size(), out.data(), xdata(extra));
+                             E.size(), out.data(), xdata(extra),
+                             event_azimuths(extra, azimuth, E.size()));
         return out;
       }
 
       /// Event list with gradients: P[a][b][i] and dP[p][a][b][i].
       void prob_points_grad(const std::vector<R>& E, const std::vector<R>& cosZ,
                             const std::vector<uint8_t>& nubar, std::vector<R>& P,
-                            std::vector<R>& dP, const std::vector<R>& extra = {})
+                            std::vector<R>& dP, const std::vector<R>& extra = {},
+                            const std::vector<R>& azimuth = {})
       {
         require_params();
-        check_points(E, cosZ, nubar, extra);
+        check_points(E, cosZ, nubar, extra, azimuth);
         P.assign(size_t(N) * N * E.size(), R(0));
         dP.assign(fGradIdx.size() * N * N * E.size(), R(0));
         fEngine->prob_points_grad(fPrepared, chunks(), int(fGradIdx.size()),
                                   E.data(), cosZ.data(), nubar.data(), E.size(),
-                                  P.data(), dP.data(), xdata(extra));
+                                  P.data(), dP.data(), xdata(extra),
+                                  event_azimuths(extra, azimuth, E.size()));
       }
 
       /// Weighted gradient over an event list: g[p] = sum_i,ab w[a][b][i]
@@ -962,17 +1020,19 @@ namespace opg {
                                               const std::vector<R>& cosZ,
                                               const std::vector<uint8_t>& nubar,
                                               const std::vector<R>& w,
-                                              const std::vector<R>& extra = {})
+                                              const std::vector<R>& extra = {},
+                                              const std::vector<R>& azimuth = {})
       {
         require_params();
-        check_points(E, cosZ, nubar, extra);
+        check_points(E, cosZ, nubar, extra, azimuth);
         if (w.size() != size_t(N) * N * E.size())
           throw std::invalid_argument("weighted_gradient_points: weights must "
                                       "be [a][b][i]");
         std::vector<R> g(fGradIdx.size(), R(0));
         fEngine->weighted_grad_points(fPrepared, chunks(), int(fGradIdx.size()),
                                       E.data(), cosZ.data(), nubar.data(),
-                                      E.size(), w.data(), g.data(), xdata(extra));
+                                      E.size(), w.data(), g.data(), xdata(extra),
+                                      event_azimuths(extra, azimuth, E.size()));
         return g;
       }
 
@@ -986,10 +1046,11 @@ namespace opg {
                                                      const std::vector<R>& w,
                                                      const std::vector<int>& bin,
                                                      int nbins,
-                                                     const std::vector<R>& extra = {})
+                                                     const std::vector<R>& extra = {},
+                                                     const std::vector<R>& azimuth = {})
       {
         require_params();
-        check_points(E, cosZ, nubar, extra);
+        check_points(E, cosZ, nubar, extra, azimuth);
         if (w.size() != size_t(N) * N * E.size() || bin.size() != E.size())
           throw std::invalid_argument("weighted_gradient_points_binned: weights "
                                       "must be [N][N][n] and bins [n]");
@@ -998,7 +1059,8 @@ namespace opg {
         fEngine->weighted_grad_points_binned(fPrepared, chunks(), int(fGradIdx.size()),
                                              E.data(), cosZ.data(), nubar.data(), E.size(),
                                              w.data(), bin.data(), nbins, G.data(),
-                                             xdata(extra));
+                                             xdata(extra),
+                                             event_azimuths(extra, azimuth, E.size()));
         return G;
       }
 
@@ -1099,13 +1161,33 @@ namespace opg {
 
       static void check_points(const std::vector<R>& E, const std::vector<R>& C,
                                const std::vector<uint8_t>& nb,
-                               const std::vector<R>& extra = {})
+                               const std::vector<R>& extra = {},
+                               const std::vector<R>& azimuth = {})
       {
         if (E.size() != C.size() || E.size() != nb.size())
           throw std::invalid_argument("prob_points: size mismatch");
         if (!extra.empty() && extra.size() != size_t(n_extra_v<Model>) * E.size())
           throw std::invalid_argument("prob_points: extra must hold n_event_extra() "
                                       "values per event ([x][i])");
+        if (!azimuth.empty() && azimuth.size() != E.size())
+          throw std::invalid_argument("prob_points: azimuth must have one value per event");
+      }
+
+      /// Per-event azimuths of the paths through a binned Earth (nullptr:
+      /// the Earth model's): the explicit ones, else the model's azimuth
+      /// extra input if it has one and extras are given. PREM: nullptr.
+      const R* event_azimuths(const std::vector<R>& extra, const std::vector<R>& azimuth,
+                              size_t n) const
+      {
+        if (!fEarth.is_binned()) return nullptr;
+        if (!azimuth.empty()) return azimuth.data();
+        if constexpr (extra_azimuth_v<Model> >= 0) {
+          if (!extra.empty()) return extra.data() + size_t(extra_azimuth_v<Model>) * n;
+        }
+        else {
+          (void)extra, (void)n;
+        }
+        return nullptr;
       }
 
       /// Gradient passes for the selected parameters (cached until the
@@ -1122,20 +1204,21 @@ namespace opg {
         return fChunks;
       }
 
-      /// Layer densities and Z/A of per-point Earths, dens[p][l] and
-      /// zoa[p][l]; each must have the layers of earth() (radii, types and
-      /// detector position), only densities and Z/A may differ.
-      void batch_earth_tables(const std::vector<PremModel>& earths, std::vector<R>& dens,
+      /// Layer (or bin) densities and Z/A of per-point Earths, dens[p][l]
+      /// and zoa[p][l]; each must have the geometry of earth_model() (radii,
+      /// types, detector position; binned: bins, detector and azimuth), only
+      /// densities and Z/A may differ.
+      template <class EarthT>
+      void batch_earth_tables(const std::vector<EarthT>& earths, std::vector<R>& dens,
                               std::vector<R>& zoa) const
       {
-        const PremModel::HostTable<R> base(fEarth);
-        const size_t                  nl = base.radius.size();
+        const EarthTable<R> base(fEarth);
+        const size_t        nl = size_t(base.rows());
         dens.resize(earths.size() * nl);
         zoa.resize(earths.size() * nl);
         for (size_t p = 0; p < earths.size(); p++) {
-          const PremModel::HostTable<R> t(earths[p]);
-          if (t.radius != base.radius || t.type != base.type || t.det_layer != base.det_layer ||
-              t.det_radius != base.det_radius)
+          const EarthTable<R> t{EarthModel(earths[p])};
+          if (!t.same_geometry(base))
             throw std::invalid_argument("batched bin averages: a point's Earth must have the "
                                         "layers of earth() (only densities and Z/A may differ)");
           std::copy(t.density.begin(), t.density.end(), dens.begin() + long(p * nl));
@@ -1249,13 +1332,13 @@ namespace opg {
       }
 
       std::vector<int>                    fDevices;
-      PremModel                           fEarth;
+      EarthModel                          fEarth;
       std::unique_ptr<EngineBase<Model>>  fEngine;
       Prepared                            fPrepared{};
       Params                              fParams{};
       std::vector<std::string>            fGradNames;
       std::vector<int>                    fGradIdx;
-      std::vector<int>                    fZoaTypes;  ///< layer types (zoa_<t>)
+      std::vector<int>                    fZoaTypes;  ///< layer types / regions (zoa_<t>)
       std::vector<GradChunk<Model>>       fChunks;
       bool                                fChunksValid = false;
       bool                                fHaveParams = false;

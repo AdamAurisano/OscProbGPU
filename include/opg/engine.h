@@ -21,7 +21,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "earth/prem.h"
+#include "earth/earth.h"
 #include "physics/adjoint.h"
 #include "physics/grad.h"
 
@@ -142,22 +142,23 @@ namespace opg {
     protected:
       bool fAdjoint = true;
 
-      /// Whether a weighted mode with npar parameters through the Earth
-      /// model e uses the adjoint path (model support, the switch, and the
-      /// bounds of adjoint_prem on parameters and path segments).
-      bool use_adjoint(int npar, const EarthView<R>& e) const
+      /// Whether a weighted mode with npar parameters through an Earth model
+      /// whose paths have at most max_seg segments uses the adjoint path
+      /// (model support, the switch, and the bounds of adjoint_prem on
+      /// parameters and path segments).
+      bool use_adjoint(int npar, int max_seg) const
       {
         if constexpr (has_adjoint_v<Model>)
-          return fAdjoint && npar <= kAdjMaxPar && e.nlayers + e.det_layer <= kAdjMaxSeg;
+          return fAdjoint && npar <= kAdjMaxPar && max_seg <= kAdjMaxSeg;
         else {
-          (void)npar, (void)e;
+          (void)npar, (void)max_seg;
           return false;
         }
       }
 
     public:
 
-      virtual void set_earth(const PremModel& earth) = 0;
+      virtual void set_earth(const EarthModel& earth) = 0;
 
       // --- grid mode ---------------------------------------------------------
       virtual void set_grid(const std::vector<R>& E,
@@ -255,7 +256,8 @@ namespace opg {
       /// a single device: point p has the prepared state P[p], the gradient
       /// passes G[p * nchunk + c] (nchunk 0: values only) and the layer
       /// densities and Z/A dens[p][l], zoa[p][l] (nullptr: those of
-      /// set_earth; the radii and types are always set_earth's). Device
+      /// set_earth; the geometry and types are always set_earth's; rows are
+      /// layers, or bins of a binned Earth). Device
       /// memory out[p][nubar][a][b][iCb][iEb] and, with nchunk > 0,
       /// dout[p][nubar][q][a][b][iCb][iEb] (npar parameters), written for
       /// the halves in `which`, asynchronously on `stream` (nullptr: the
@@ -302,17 +304,21 @@ namespace opg {
       }
       // Event-list modes take optional per-event extra inputs (models with
       // n_extra > 0, e.g. azimuth and sidereal time): extra[x * n + i], or
-      // nullptr for the model's defaults.
+      // nullptr for the model's defaults; and optional per-event azimuths
+      // (degrees) of the paths through a binned Earth, az[i], or nullptr
+      // for the Earth model's azimuth.
       virtual void prob_points_grad(const Prepared&, const Chunks&, int,
                                     const R*, const R*, const uint8_t*, size_t,
-                                    R* /*P*/, R* /*G*/, const R* /*extra*/ = nullptr)
+                                    R* /*P*/, R* /*G*/, const R* /*extra*/ = nullptr,
+                                    const R* /*az*/ = nullptr)
       {
         no_grad();
       }
       virtual void weighted_grad_points(const Prepared&, const Chunks&, int,
                                         const R*, const R*, const uint8_t*,
                                         size_t, const R* /*w*/, R* /*g*/,
-                                        const R* /*extra*/ = nullptr)
+                                        const R* /*extra*/ = nullptr,
+                                        const R* /*az*/ = nullptr)
       {
         no_grad();
       }
@@ -323,7 +329,8 @@ namespace opg {
                                                const R*, const R*, const uint8_t*,
                                                size_t, const R* /*w*/,
                                                const int* /*bin*/, int /*nbins*/,
-                                               R* /*G*/, const R* /*extra*/ = nullptr)
+                                               R* /*G*/, const R* /*extra*/ = nullptr,
+                                               const R* /*az*/ = nullptr)
       {
         no_grad();
       }
@@ -357,7 +364,7 @@ namespace opg {
       /// Event list: out[a][b][i], i < n
       virtual void prob_points(const Prepared& P, const R* E, const R* cosZ,
                                const uint8_t* nubar, size_t n, R* out,
-                               const R* extra = nullptr) = 0;
+                               const R* extra = nullptr, const R* az = nullptr) = 0;
       /// Fixed path: out[a][b][iE]
       virtual void prob_path(const Prepared& P, const R* E, size_t nE,
                              const Segment<R>* path, int nseg, bool nubar,
