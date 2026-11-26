@@ -313,7 +313,7 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   P <= 4e-15, dP <= 4e-13 relative (LIV coefficients on the scale of their
   group: a diagonal aT derivative at a 0.6 km detector is ~1e-6 of the
   off-diagonal ones and known only to their round-off); GPU batches vs
-  single calls <= 4e-16. gpubox CUDA build (nvcc 13,
+  single calls <= 4e-16. GTX 1650 Ti CUDA build (nvcc 13,
   sm_75, other builds running): engine library 2536 -> 2746 s (+8%); one-
   model engines 42-53 -> 138-148 s each for SNSI, LIV, SiderealLIV.
   Not done: d >= 4 / cT terms (would need A(u0) per sub-bin and new error
