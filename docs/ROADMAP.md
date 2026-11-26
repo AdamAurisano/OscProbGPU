@@ -309,7 +309,11 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   extra_potential = 2 max |aT|; SNSI on three segments of different density
   1.2e-4 (the mass term changes between segments), <= 1e-6 with 3e-11 eV;
   one segment <= 2e-6 at the default rule. Gradients vs long-double FD
-  <= 5e-8 relative (Earth parameters ~1e-13). gpubox CUDA build (nvcc 13,
+  <= 5e-8 relative (Earth parameters ~1e-13). GPU (GTX 1650 Ti) vs host:
+  P <= 4e-15, dP <= 4e-13 relative (LIV coefficients on the scale of their
+  group: a diagonal aT derivative at a 0.6 km detector is ~1e-6 of the
+  off-diagonal ones and known only to their round-off); GPU batches vs
+  single calls <= 4e-16. gpubox CUDA build (nvcc 13,
   sm_75, other builds running): engine library 2536 -> 2746 s (+8%); one-
   model engines 42-53 -> 138-148 s each for SNSI, LIV, SiderealLIV.
   Not done: d >= 4 / cT terms (would need A(u0) per sub-bin and new error

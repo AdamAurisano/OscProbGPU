@@ -546,21 +546,29 @@ namespace {
               sc[p * nq + k] += std::fabs(t);
             }
         double ew = 0, ec = 0;
+        size_t qw = 0;
         for (size_t p = 0; p < pts.size(); p++) {
-          double gs = 1e-300;  // scale of the coefficient group of this point
+          // scale of the coefficient group of this point; floor: 1e-10 sum |w|
+          // (Earth parameters at the near detector: dP ~ 1e-11, second order
+          // in V L, from first-order terms that cancel)
+          double ws = 0, gs = 1e-300;
+          for (size_t c = 0; c < n; c++) ws += std::fabs(w[p * n + c]);
           for (size_t k = 0; k < nq; k++)
             if (grp[k]) gs = std::max(gs, sc[p * nq + k]);
           for (size_t k = 0; k < nq; k++) {
             const size_t i  = p * nq + k;
-            const double sk = grp[k] ? gs : std::max(sc[i], 1e-300);
-            ew              = std::max(ew, std::fabs(g[i] - ref[i]) / sk);
-            ec              = std::max(ec, std::fabs(g[i] - gc[i]) / sk);
+            const double sk = std::max(grp[k] ? gs : sc[i], 1e-10 * ws);
+            const double e1 = std::fabs(g[i] - ref[i]) / sk, e2 = std::fabs(g[i] - gc[i]) / sk;
+            if (std::max(e1, e2) > std::max(ew, ec)) qw = k;
+            ew = std::max(ew, e1);
+            ec = std::max(ec, e2);
           }
         }
         MESSAGE(label << " config " << cfg << " nubar " << nubar << ": single GPU vs host P "
                       << sp << ", dP (rel) " << sg << "; batch GPU vs host P " << ep << ", dP "
                       << eg << "; batch vs single (GPU) P " << bp << ", dP " << bg
-                      << "; weighted vs contracted " << ew << ", vs host " << ec);
+                      << "; weighted vs contracted " << ew << ", vs host " << ec << " ("
+                      << names[qw] << ")");
         CHECK(sp < 1e-10);
         CHECK(sg < 1e-9);
         CHECK(ep < 1e-10);
