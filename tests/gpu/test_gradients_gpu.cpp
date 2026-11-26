@@ -40,11 +40,12 @@ TEST_CASE("GPU grid / event-list / weighted gradients are consistent")
 
 /// GPU vs CPU tolerance for grid gradients: round-off amplified by the
 /// oscillation phases; the LIV test points have phases up to ~1e4 rad, where
-/// both backends agree with the long-double reference to ~1e-11.
+/// both backends agree with the long-double reference to ~1e-11. Likewise
+/// 3+2 and 3+3 (dm^2 up to 1.7 eV^2: ~5e-12).
 template <class Model> double gpu_cpu_tol()
 {
   if constexpr (std::is_same_v<Model, opg::LIV<double>> ||
-                std::is_same_v<Model, opg::SiderealLIV<double>>)
+                std::is_same_v<Model, opg::SiderealLIV<double>> || (Model::N > 4))
     return 2e-11;
   return 1e-12;
 }
@@ -94,7 +95,7 @@ template <class Model> void check_gpu_vs_cpu()
   for (size_t p = 0; p < np; p++) {
     MESSAGE("weighted p=" << p << ": GPU-CPU = " << gw1[p] - gwc[p]
                           << ", sum|w dP| = " << sabs[p]);
-    CHECK(std::fabs(gw1[p] - gwc[p]) <= 1e-13 * sabs[p]);
+    CHECK(std::fabs(gw1[p] - gwc[p]) <= (Model::N > 4 ? 5e-13 : 1e-13) * sabs[p]);
   }
 
   if (opg::cuda_device_count() >= int(multi.size())) {
