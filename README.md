@@ -495,6 +495,144 @@ auto P = prop.prob_points(E, cosZ, nubar, /*extra=*/{}, /*azimuth=*/az);
   and with OscProb to 1.5e-13 (CPU 1.5e-13, and **0** with
   `OPG_OSCPROB_BITWISE`; Fast, NSI, SiderealLIV).
 
+## Production-height averaging
+
+Atmospheric neutrinos are produced over a range of heights (tens of km, with
+a distribution that depends on energy and direction, e.g. Honda's tables).
+OscProbGPU averages the probabilities over a production-height distribution
+**exactly, in one propagation per point**, with gradients.
+
+**Method** (`include/opg/avg/prod_height.h`). The atmosphere is the Earth
+model's top layer (PREM: 0.001 g/cm³ from 6371 km up), a single segment of
+constant matter whose length L is the only thing the height changes; the rest
+of the path (and so its evolution `Rest`, including the model's final
+rotation) does not depend on it. With the atmosphere's Hamiltonian
+H = V diag(λ) V†, the amplitude for a fixed height is
+S(L) = Rest · V diag(e^{−iλL}) V† · I₀ (I₀ the model's initial state), so
+
+  ⟨P(a → b)⟩ = Σ_jk A_bj B_ja conj(A_bk B_ka) φ(λ_j − λ_k),
+  A = Rest V, B = V† I₀, φ(ω) = ⟨e^{−iωL}⟩,
+
+i.e. the initial density matrix decoheres in the atmosphere's eigenbasis by
+the characteristic function φ of the path-length distribution and is then
+propagated through the Earth. Matter in the atmosphere is kept (the averaged
+segment is not assumed to be vacuum), so the result is exact for the model's
+own atmosphere.
+
+**Height distributions** are histograms, uniform in height within each bin
+(a bin of zero width is a fixed height), with heights in km above the base of
+the atmosphere (PREM: above 6371 km; the default PREM atmosphere is 15 km
+thick, i.e. the plain calculators use a fixed height of 15 km). The path
+length is L(h) = √((r_s + h)² − r_d² sin²θ) − √(r_s² − r_d² sin²θ) (r_s the
+atmosphere's base, r_d ≤ r_s the detector radius), so a bin uniform in h is
+not uniform in L: its density in L is dh/dL = g(L)/Δh with
+g = (L + c)/√((L + c)² + r_d² sin²θ). g is analytic with singularities at
+least r_s ≈ 6371 km from the bin's range, and is replaced on each bin by its
+degree-11 Legendre interpolant at 12 Gauss–Legendre nodes (error below
+(hw / 2r_s)¹², hw the half width of the bin in L: < 1e-15 for ranges up to
+~1000 km of path, i.e. ~80 km of height at the horizon; coefficients below
+1e-18 of the bin's weight are dropped). The oscillating factor is integrated
+exactly against that polynomial,
+
+  ∫₋₁¹ P_k(t) e^{−iθt} dt = 2 (−i)^k j_k(θ)
+
+(spherical Bessel functions; Filon-type quadrature), so there is no error
+growing with the phase ωL and no sampling in height. Each bin is normalised
+by the integral of its interpolant, so φ(0) = 1 exactly.
+
+**Gradients.** dH (the model's Hamiltonian in dual numbers, so Earth Z/A and
+density parameters of the atmosphere's layer type are included) enters
+through the two-sided Daleckii–Krein formula for
+F(H)ρ = Σ_jk φ(λ_j − λ_k) P_j ρ P_k, with divided differences
+[φ(λ_j − λ_k) − φ(λ_l − λ_k)]/(λ_j − λ_l) and φ′ = ⟨−iL e^{−iωL}⟩ (from the
+same Bessel functions as φ); very close arguments
+(|λ_j − λ_l| L_max < 2e-3) use ⟨−iL sinc(dL) e^{−iμL}⟩ with the sinc series
+on Legendre series of g Lᵖ. The rest of the path is
+differentiated by the models' own forward (`step_grad`) or reverse
+(`adj_step`) code; the weighted modes use reverse mode where the model has it.
+
+**Models:** Fast, NSI, NUNM (its non-unitary initial state and final rotation
+are part of I₀ and Rest), LIV, SNSI and Sterile (3+1, 3+2, 3+3), i.e. the
+hermitian models whose state is the amplitude matrix. The rest throw
+`std::logic_error` (`has_prod_height()` is false): Decay (non-hermitian),
+Deco and OQS (density matrices with dissipation), SiderealLIV (its
+Hamiltonian depends on the per-path state). **Earth models:** PREM and
+`EarthModelBinned`; the atmosphere must be one medium (PREM's top layer, or
+the binned table's top depth shell with one density, Z/A and region in all
+its bins), its layer type must not occur below it, and the detector must be
+below it.
+
+```python
+p = opg.Fast(devices=[0])                     # any Earth model
+edges = [np.array([0, 5, 10, 15, 20, 30, 50]),        # km above the atmosphere's base
+         np.array([15.0, 15.0])]                      # a fixed height
+probs = [np.array([.05, .2, .3, .25, .15, .05]), np.array([1.0])]
+p.set_prod_heights(edges, probs)              # distribution d = 0, 1, ...
+# grid: one distribution per cosine, or per (cosine, energy); -1 = the plain calculation
+p.set_grid(E, cosZ)
+p.set_grid_prod_heights(dist)                 # shape (nC,) or (nC, nE)
+p.calculate_prod_height()                     # -> p.probs(), as calculate()
+p.calculate_prod_height(gradient=True)        # -> p.grad()
+g = p.weighted_gradient_prod_height(w)        # w shaped as probs()
+# event lists: one distribution index per event (int32 or int64)
+P = p.prob_points_prod_height(E_ev, cosZ_ev, nubar_ev, dist_ev)    # azimuth= for binned
+P, dP = p.prob_points_grad_prod_height(E_ev, cosZ_ev, nubar_ev, dist_ev)
+g = p.weighted_gradient_points_prod_height(E_ev, cosZ_ev, nubar_ev, dist_ev, w_ev)
+L = p.prod_height_path_length(-0.1, 20.0)     # km of atmosphere for h = 20 km
+```
+
+In C++ the same calls are `Propagator::set_prod_heights(edges, probs)`,
+`set_grid_prod_heights(dist)`, `calculate_prod_height(which, gradient)`,
+`weighted_gradient_prod_height(w)`, `prob_points_prod_height(E, cosZ, nubar,
+dist, azimuth)`, `prob_points_grad_prod_height(...)` and
+`weighted_gradient_points_prod_height(...)`. A shared table of distributions
+with an index per point is the natural form for Honda-style tables (one
+histogram per (E, cosZ) table cell): PISCES- or NuTauOsc-style event lists
+pass the index of the cell of each event. The plain calculators are
+untouched: index −1 runs exactly the plain per-point code.
+
+Not covered: the GL bin averages (`set_bins`), the analytic averages and the
+batched modes (average over heights first per event or grid point, or ask).
+
+**Validation** (`tests/test_prod_height.cpp`, `tests/gpu/test_prod_height_gpu.cpp`,
+`python/tests/test_prod_height.py`; five distributions including a Honda-like
+9-bin histogram to 70 km, one bin [0, 80] km, a fixed height and a mixture;
+cosZ from −1 through the horizon (−0.01, 0, 0.02) to 1; 0.3–60 GeV; ν and ν̄):
+
+| Check | Result |
+|-------|--------|
+| exact vs brute force (Gauss–Legendre in h, pieces of ≤ 15 rad of phase, fixed-height paths), PREM and binned Earth | ≤ 1.3e-14 (3ν models), ≤ 3.3e-14 (3+2, 3+3 with phases ~1e4 rad; GPU against the CPU reference 1.4e-12) |
+| fixed height (15 km) vs the plain calculator | ≤ 2.5e-14 (3ν), ≤ 9.7e-13 (3+2, 3+3: round-off in L times the phase) |
+| index −1 vs the plain calculator | bit-identical (CPU), ≤ 1e-12 (GPU, other kernels) |
+| Σ_b P(a → b) − 1 | ≤ 6e-14 |
+| gradients vs long-double finite differences (all model parameters) | ≤ 3e-10 (Sterile), 3e-9 (LIV, at the FD noise of cT4), others ≤ 6e-11 |
+| Earth Z/A and density (atmosphere, outer core, mantle) vs FD | ≤ 6e-7 (double FD) |
+| reverse vs forward mode (events, grid) | ≤ 1.8e-12 |
+| GPU (GTX 1650 Ti) vs CPU: P, dP (relative), weighted gradients (both modes); grid and event lists, PREM and binned | 3ν: ≤ 2.6e-14, 1.9e-14, 4.5e-14; 3+N: ≤ 1.4e-12, 7.4e-13, 7e-13 (phases ~1e4 rad); the GPU suite repeats all checks above |
+
+**Performance** (`opg_bench_prod_height`; 1000 x 1000 grid over cosZ ∈ [−1, 1],
+ν and ν̄, one histogram on [0, 60] km per cosine row; time relative to the
+plain calculation of the same grid):
+
+| | 1 bin | 5 bins | 20 bins |
+|---|---:|---:|---:|
+| Fast, probabilities (GTX 1650 Ti; plain 0.71 s) | 1.10x | 1.40x | 2.47x |
+| Fast, weighted gradient, 6 parameters, reverse mode (plain 3.17 s) | 1.12x | 1.36x | 2.28x |
+| Sterile 3+1, probabilities (plain 2.86 s) | 1.04x | 1.18x | 1.73x |
+| Sterile 3+1, weighted gradient, 12 parameters (plain 16.6 s) | 1.04x | 1.11x | 1.39x |
+| Fast, probabilities, CPU 1 thread (100 x 100) | 1.11x | 1.30x | 2.01x |
+| Fast, weighted gradient, CPU 1 thread | 1.08x | 1.20x | 1.66x |
+
+The cost is the propagation plus, per height bin, one set of spherical
+Bessel functions per pair of eigenvalues (3 for 3 flavours, 6 for 3+1); with
+one distribution per cosine row the bins' Legendre series are computed once
+per row (per block in shared memory on the GPU), with a distribution per
+point or per event once per point. The plain modes are unchanged: on the GPU
+their results are bit-identical to before the feature (Fast and Sterile:
+grid, gradients, weighted gradients in both modes, event lists) and their
+timings within 1%.
+
+
 ## Absorption
 
 `OscProb::Absorption` is available as flavour- and model-independent
@@ -856,7 +994,7 @@ include/opg/physics   mixing (BuildHms port), propagation, gradients
 include/opg/models    fast, nsi, nunm, sterile, decay, liv, snsi, deco, sidereal_liv, oqs
                       (hermitian3: shared 3x3 hermitian machinery)
 include/opg/earth     PremModel, EarthModelBinned, on-device path walkers
-include/opg/avg       Gauss-Legendre, analytic (Maltoni) averages
+include/opg/avg       Gauss-Legendre, analytic (Maltoni) averages, production-height averages
 include/opg/propagator.h, engine*.h   user API and CPU backend
 src/                  CUDA backend
 python/               nanobind module, tests, examples

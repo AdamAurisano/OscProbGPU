@@ -1,8 +1,9 @@
 # Roadmap
 
-Status as of 2026-11-25: ten models (Fast, NSI, NUNM, Sterile 3+N, Decay,
+Status as of 2026-11-26: ten models (Fast, NSI, NUNM, Sterile 3+N, Decay,
 LIV, SNSI, Deco, SiderealLIV, OQS) validated against OscProb on CPU and GPU;
-GL and analytic bin averages, batched over parameter points; multi-GPU;
+GL and analytic bin averages, batched over parameter points; exact
+averages over the production height of atmospheric neutrinos; multi-GPU;
 Python bindings. Exact gradients for every model (forward mode, and reverse
 mode for the weighted modes of the hermitian models and OQS), including bin
 averages, Earth Z/A and density and per-analysis-bin weighted modes, with
@@ -216,6 +217,40 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   11 KB, analytic gradient kernels 4.1 / 12 / 28 KB). GTX 1650 Ti, 500 x 500
   grid relative to 3+1: probabilities 1.35x / 1.8x the time, weighted
   gradients (all parameters, reverse mode) 1.9x / 3.8x. Not timed on a V100.
+* Done (2026-11-26): exact averages over the production height of
+  atmospheric neutrinos (`avg/prod_height.h`; README "Production-height
+  averaging"). The atmosphere is one constant-matter segment (the Earth
+  model's top layer, matter kept) whose length is the only h dependence:
+  <P_ab> = sum_jk A_bj B_ja conj(A_bk B_ka) phi(lam_j - lam_k), A = Rest V,
+  B = V^dag I0, phi the characteristic function of L. Height histograms
+  (uniform in h per bin, zero-width bins = fixed heights); per bin dh/dL is
+  interpolated at 12 GL nodes in L (analytic, singularities >= r_s away:
+  < 1e-15) and integrated exactly against exp(-i w L) via spherical Bessel
+  functions, so no phase-dependent error. Gradients: two-sided
+  Daleckii-Krein with divided differences of phi (sinc series when close),
+  forward and reverse mode; model hooks seg_eigen / seg_hamiltonian_dual /
+  adj_final_cot / adj_contract_final_cot (hermitian3 macro, NUNM, Sterile).
+  Models: Fast, NSI, NUNM, LIV, SNSI, Sterile 3+N; Decay, Deco, OQS,
+  SiderealLIV refused. PREM and binned Earth (top shell must be one
+  medium). API: a table of distributions + an index per grid row, grid point
+  or event (-1 = plain code); grid, event-list, gradient and weighted modes,
+  CPU and GPU, Python. Bin series shared per row (CPU) / per block in shared
+  memory (GPU) when a row has one distribution. Validation: brute-force GL
+  in h over fixed-height paths <= 1e-14 (3+2, 3+3: 3.3e-14 at phases ~1e4
+  rad), fixed height vs plain <= 2.3e-14 (3+N: 9.6e-13), gradients vs
+  long-double FD <= 3e-10 (LIV 3e-9, FD noise), reverse vs forward <=
+  1.8e-12; GPU (GTX 1650 Ti) vs CPU <= 2.6e-14 (3+N 1.4e-12). Cost on the
+  GTX 1650 Ti, 1000 x 1000 grid, 20 height bins: probabilities 2.5x (Fast),
+  1.7x (3+1) the plain grid, weighted gradients (reverse) 2.3x, 1.4x; 1
+  bin 1.1x. Plain modes bit-identical to b641d98 on the GPU and within
+  1% in time. nvcc 13.0 (-O3, sm_75) miscompiled some inlining choices
+  (wrong phi tables, LIV reverse mode, Sterile grid gradients; right with -G
+  and on the host, sanitizers clean): phi tables, prod_height_adjoint and
+  its backward pass are noinline on the device, prod_height_grad inline;
+  re-run the GPU tests after touching that.
+  Not done: GL bin averages (set_bins), analytic averages and batched modes
+  with production heights; possible speed-up of the gradient tables (one
+  Bessel evaluation per bin, pair and k for close eigenvalues).
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,
