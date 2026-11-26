@@ -773,6 +773,10 @@ reference/            OscProb reference generator and benchmark
 tests/                doctest suites (cpu, gpu) and reference data
 ```
 
+The headers under `include/opg` include each other by relative path, so a
+single header such as `opg/earth/prem.h` can be used from a copy or submodule
+without adding `include/` to the include path.
+
 ## Credits and licensing
 
 OscProbGPU is a reimplementation of **[OscProb](https://github.com/joaoabcoelho/OscProb)** by

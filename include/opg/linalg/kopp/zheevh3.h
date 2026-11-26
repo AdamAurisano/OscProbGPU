@@ -36,7 +36,7 @@
 
 #include <cmath>
 
-#include "opg/core/matrix.h"
+#include "../../core/matrix.h"
 
 namespace opg {
   namespace kopp {

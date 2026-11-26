@@ -21,10 +21,10 @@
 
 #include <cmath>
 
-#include "opg/core/dual.h"
-#include "opg/core/matrix.h"
-#include "opg/linalg/eig3_general.h"
-#include "opg/physics/eigen_grad.h"
+#include "../core/dual.h"
+#include "../core/matrix.h"
+#include "../linalg/eig3_general.h"
+#include "eigen_grad.h"
 
 namespace opg {
 

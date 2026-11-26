@@ -23,7 +23,7 @@
 #include <utility>
 #include <vector>
 
-#include "opg/models/fast.h"
+#include "fast.h"
 
 namespace opg {
 

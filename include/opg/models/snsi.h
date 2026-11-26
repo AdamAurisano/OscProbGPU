@@ -20,7 +20,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "opg/models/nsi.h"
+#include "nsi.h"
 
 namespace opg {
 

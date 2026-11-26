@@ -16,9 +16,9 @@
 
 #include <type_traits>
 
-#include "opg/core/constants.h"
-#include "opg/core/matrix.h"
-#include "opg/earth/prem.h"
+#include "../core/constants.h"
+#include "../core/matrix.h"
+#include "../earth/prem.h"
 
 namespace opg {
 

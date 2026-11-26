@@ -17,7 +17,7 @@
 #include <cmath>
 #include <vector>
 
-#include "opg/earth/prem.h"
+#include "prem.h"
 
 namespace opg {
 

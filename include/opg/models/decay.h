@@ -19,12 +19,12 @@
 #include <string>
 #include <vector>
 
-#include "opg/core/constants.h"
-#include "opg/core/dual.h"
-#include "opg/linalg/expm.h"
-#include "opg/physics/eigen_grad_general.h"
-#include "opg/physics/mixing.h"
-#include "opg/physics/propagate.h"
+#include "../core/constants.h"
+#include "../core/dual.h"
+#include "../linalg/expm.h"
+#include "../physics/eigen_grad_general.h"
+#include "../physics/mixing.h"
+#include "../physics/propagate.h"
 
 namespace opg {
 

@@ -21,9 +21,9 @@
 
 #include <cmath>
 
-#include "opg/core/dual.h"
-#include "opg/core/matrix.h"
-#include "opg/physics/propagate.h"
+#include "../core/dual.h"
+#include "../core/matrix.h"
+#include "propagate.h"
 
 namespace opg {
 

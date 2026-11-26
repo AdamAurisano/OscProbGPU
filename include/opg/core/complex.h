@@ -15,8 +15,8 @@
 
 #include <cmath>
 
-#include "opg/core/dual.h"
-#include "opg/core/macros.h"
+#include "dual.h"
+#include "macros.h"
 
 namespace opg {
 

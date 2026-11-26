@@ -17,9 +17,9 @@
 #include <omp.h>
 #endif
 
-#include "opg/engine.h"
-#include "opg/physics/grad.h"
-#include "opg/physics/propagate.h"
+#include "engine.h"
+#include "physics/grad.h"
+#include "physics/propagate.h"
 
 namespace opg {
 

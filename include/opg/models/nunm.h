@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-#include "opg/models/hermitian3.h"
+#include "hermitian3.h"
 
 namespace opg {
 

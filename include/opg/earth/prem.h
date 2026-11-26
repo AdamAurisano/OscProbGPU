@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#include "opg/core/macros.h"
+#include "../core/macros.h"
 
 namespace opg {
 

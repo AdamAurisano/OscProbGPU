@@ -16,9 +16,9 @@
 
 #include <type_traits>
 
-#include "opg/core/dual.h"
-#include "opg/physics/eigen_grad.h"
-#include "opg/physics/propagate.h"
+#include "../core/dual.h"
+#include "eigen_grad.h"
+#include "propagate.h"
 
 namespace opg {
 

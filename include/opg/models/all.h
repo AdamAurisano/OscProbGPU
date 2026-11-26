@@ -10,16 +10,16 @@
 
 #include <type_traits>
 
-#include "opg/models/decay.h"
-#include "opg/models/deco.h"
-#include "opg/models/fast.h"
-#include "opg/models/liv.h"
-#include "opg/models/nsi.h"
-#include "opg/models/nunm.h"
-#include "opg/models/oqs.h"
-#include "opg/models/sidereal_liv.h"
-#include "opg/models/snsi.h"
-#include "opg/models/sterile.h"
+#include "decay.h"
+#include "deco.h"
+#include "fast.h"
+#include "liv.h"
+#include "nsi.h"
+#include "nunm.h"
+#include "oqs.h"
+#include "sidereal_liv.h"
+#include "snsi.h"
+#include "sterile.h"
 
 /// X(ModelType) for every model compiled into the CUDA backend. Other
 /// instantiations (e.g. long double) are available on the CPU backend only.

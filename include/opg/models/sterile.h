@@ -16,12 +16,12 @@
 #include <string>
 #include <vector>
 
-#include "opg/core/constants.h"
-#include "opg/core/dual.h"
-#include "opg/linalg/jacobi_herm.h"
-#include "opg/physics/eigen_grad.h"
-#include "opg/physics/mixing.h"
-#include "opg/physics/propagate.h"
+#include "../core/constants.h"
+#include "../core/dual.h"
+#include "../linalg/jacobi_herm.h"
+#include "../physics/eigen_grad.h"
+#include "../physics/mixing.h"
+#include "../physics/propagate.h"
 
 namespace opg {
 

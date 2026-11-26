@@ -48,15 +48,15 @@
 #include <omp.h>
 #endif
 
-#include "opg/core/constants.h"
-#include "opg/core/dual.h"
-#include "opg/core/matrix.h"
-#include "opg/earth/prem.h"
-#include "opg/engine.h"
-#include "opg/linalg/jacobi_herm.h"
-#include "opg/physics/eigen_grad.h"
-#include "opg/physics/grad.h"
-#include "opg/physics/propagate.h"
+#include "../core/constants.h"
+#include "../core/dual.h"
+#include "../core/matrix.h"
+#include "../earth/prem.h"
+#include "../engine.h"
+#include "../linalg/jacobi_herm.h"
+#include "../physics/eigen_grad.h"
+#include "../physics/grad.h"
+#include "../physics/propagate.h"
 
 namespace opg {
 

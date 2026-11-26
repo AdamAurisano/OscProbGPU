@@ -11,7 +11,7 @@
 #ifndef OPG_CORE_MATRIX_H
 #define OPG_CORE_MATRIX_H
 
-#include "opg/core/complex.h"
+#include "complex.h"
 
 namespace opg {
 

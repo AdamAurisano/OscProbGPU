@@ -24,8 +24,8 @@
 #include <string>
 #include <vector>
 
-#include "opg/linalg/expm.h"
-#include "opg/models/hermitian3.h"
+#include "../linalg/expm.h"
+#include "hermitian3.h"
 
 namespace opg {
 

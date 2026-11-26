@@ -21,9 +21,9 @@
 #include <stdexcept>
 #include <vector>
 
-#include "opg/earth/prem.h"
-#include "opg/physics/adjoint.h"
-#include "opg/physics/grad.h"
+#include "earth/prem.h"
+#include "physics/adjoint.h"
+#include "physics/grad.h"
 
 namespace opg {
 

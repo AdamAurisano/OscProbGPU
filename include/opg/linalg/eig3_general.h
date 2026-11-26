@@ -18,8 +18,8 @@
 
 #include <cmath>
 
-#include "opg/core/matrix.h"
-#include "opg/physics/eigen_grad.h"  // sin_cos
+#include "../core/matrix.h"
+#include "../physics/eigen_grad.h"  // sin_cos
 
 namespace opg {
 

@@ -30,8 +30,8 @@
 #include <string>
 #include <vector>
 
-#include "opg/core/dual.h"
-#include "opg/core/matrix.h"
+#include "../core/dual.h"
+#include "../core/matrix.h"
 
 namespace opg {
 

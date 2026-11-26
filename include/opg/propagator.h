@@ -27,12 +27,12 @@
 #include <type_traits>
 #include <vector>
 
-#include "opg/avg/analytic.h"
-#include "opg/avg/gauss_legendre.h"
-#include "opg/earth/absorption.h"
-#include "opg/engine.h"
-#include "opg/engine_cpu.h"
-#include "opg/models/all.h"
+#include "avg/analytic.h"
+#include "avg/gauss_legendre.h"
+#include "earth/absorption.h"
+#include "engine.h"
+#include "engine_cpu.h"
+#include "models/all.h"
 
 namespace opg {
 

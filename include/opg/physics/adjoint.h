@@ -36,10 +36,10 @@
 
 #include <type_traits>
 
-#include "opg/earth/prem.h"
-#include "opg/physics/eigen_grad.h"
-#include "opg/physics/grad.h"
-#include "opg/physics/propagate.h"
+#include "../earth/prem.h"
+#include "eigen_grad.h"
+#include "grad.h"
+#include "propagate.h"
 
 namespace opg {
 

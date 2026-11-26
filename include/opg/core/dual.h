@@ -20,7 +20,7 @@
 
 #include <cmath>
 
-#include "opg/core/macros.h"
+#include "macros.h"
 
 namespace opg {
 

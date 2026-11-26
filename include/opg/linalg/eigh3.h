@@ -29,8 +29,8 @@
 #include <cmath>
 #include <type_traits>
 
-#include "opg/core/matrix.h"
-#include "opg/linalg/jacobi_herm.h"
+#include "../core/matrix.h"
+#include "jacobi_herm.h"
 
 namespace opg {
 

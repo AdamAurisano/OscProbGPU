@@ -19,14 +19,14 @@
 #include <complex>
 #include <type_traits>
 
-#include "opg/core/constants.h"
-#include "opg/linalg/eigh3.h"
+#include "../core/constants.h"
+#include "../linalg/eigh3.h"
 #ifdef OPG_OSCPROB_BITWISE
-#include "opg/linalg/kopp/zheevh3.h"
+#include "../linalg/kopp/zheevh3.h"
 #endif
-#include "opg/physics/eigen_grad.h"
-#include "opg/physics/mixing.h"
-#include "opg/physics/propagate.h"
+#include "../physics/eigen_grad.h"
+#include "../physics/mixing.h"
+#include "../physics/propagate.h"
 
 namespace opg {
 
