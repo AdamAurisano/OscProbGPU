@@ -161,7 +161,7 @@ def test_binned_and_earth_gradients(devices):
     nt = len(p.earth_parameter_names) // 2
     assert p.earth_parameter_names[nt] == "rho_0"
     assert p.gradient_parameter_names == (opg.Fast.parameter_names +
-                                          p.earth_parameter_names)
+                                          p.earth_parameter_names + ["prod_height_scale"])
     p.set_gradient_params(["dm31", "zoa_2"])
     Ee, Ce = np.geomspace(0.6, 20, 9), np.linspace(-1, -0.2, 5)
     p.set_bins(Ee, Ce, 3, 3)
