@@ -179,7 +179,26 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   adj_final / adj_contract_initial / adj_contract_final for alpha^dag and
   alpha), affine, both scales. V100 1000 x 1000, 16 params: 0.31 s reverse
   vs 0.90 s forward; agrees with forward mode to <= 2e-12.
-* Next: EarthModelBinned (uses the per-event azimuth).
+* Done (2026-11-25): EarthModelBinned (OscProb's 3D Earth of depth x
+  latitude x longitude bins with region indices; detector at radius,
+  latitude, longitude; paths depend on cosZ and azimuth), CPU and GPU, with
+  zoa_<i>/rho_<i> per region. Port of FillPath and its helpers as an OPG_HD
+  generator (earth/binned_walk.h), bit-identical segments on the CPU (1200
+  reference paths). One set of kernels: EarthView carries an optional
+  BinnedGeom pointer and for_each_segment switches at run time in a single
+  loop with one call of the functor (no doubled inlining of the model step,
+  no templating of Propagator/engines on the Earth type); the generator
+  functions are __noinline__ on the device so its state stays in local
+  memory, not in registers across the step. Azimuth: one per propagator for
+  grids and bin averages (EarthModelBinned::SetAzimuth /
+  Propagator::set_earth_azimuth), optional per event in event lists, else
+  shared with the model's azimuth extra (Model::extra_azimuth; SiderealLIV)
+  when extras are given. Layer-adapted cosZ nodes use the depth-shell
+  grazing cosines (and cosZ = 0); lateral boundaries are ignored. Per-point
+  binned Earths in binned_batch/calculate_binned_batch; analytic averages
+  through explicit paths (FillPath). Reference data: tag "binned" of
+  dump_reference (testdata-v4). PREM unchanged within noise on a GTX 1650 Ti
+  (<= 1.6%); the binned Earth costs ~4-7% more than PREM per grid point.
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,

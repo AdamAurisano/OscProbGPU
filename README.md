@@ -125,7 +125,8 @@ OPG_TEST_DATA_DIR=$PWD/tests/data pytest python/tests
 The pip build has been tested with the CPU backend (Python 3.12, numpy 2.5);
 the CUDA module is tested through the CMake build.
 
-`PremModel()` without a file name loads `prem_default.txt` from
+`PremModel()` without a file name loads `prem_default.txt` (and
+`EarthModelBinned()` loads `earth_binned_default.txt`) from
 `$OPG_DATA_DIR` when that is set, else from the source tree's `data/` (CMake
 builds compile that path in). Wheels ship the Earth model tables in
 `oscprobgpu/data` and point `OPG_DATA_DIR` there on import, so an installed
@@ -161,8 +162,11 @@ On pre-Ampere GPUs with old drivers (no PTX JIT), set
   threads of a warp walk the same layer sequence. All flavours are propagated
   together as the columns of an N x N evolution matrix.
 * **Earth model.** `opg::PremModel` reproduces OscProb's `PremModel` (same
-  tables, detector-layer insertion, `FillPath`). Paths are generated on the fly
-  on the device from the layer table.
+  tables, detector-layer insertion, `FillPath`), and `opg::EarthModelBinned`
+  OscProb's 3D `EarthModelBinned` (see [Binned 3D Earth](#binned-3d-earth)).
+  Paths are generated on the fly on the device from the layer or bin table;
+  one path walker serves both models, switched at run time, so the kernels are
+  compiled once.
 * **Multi-GPU.** cos-zenith rows (or bins) are dealt round-robin across devices
   and gathered with strided copies into a pinned buffer.
 
@@ -211,8 +215,9 @@ oscillation periods.) `avg_path()` provides 1D averages for fixed baselines.
 poorly, one launch per parameter point (40 x 20 bins with 1 x 5 nodes is
 8000 paths, 200 blocks of 64 threads). `calculate_binned_batch()` evaluates
 many points per launch, with the E nodes of all points packed into the
-blocks, and each point may have its own Earth (layer densities and Z/A, e.g.
-for fitted Earth parameters):
+blocks, and each point may have its own Earth (layer or bin densities and
+Z/A, e.g. for fitted Earth parameters; `PremModel`s, or `EarthModelBinned`s
+with the propagator's bins, detector and azimuth):
 
 ```cpp
 prop.set_bins(E_edges, cosZ_edges, 1, 5);           // as for calculate_binned()
@@ -418,6 +423,71 @@ CuPy, PyTorch); the device calls are asynchronous on `stream` (an integer
 stream before reading. All long calls release the GIL: other Python threads
 run meanwhile (use one propagator from one thread at a time).
 
+## Binned 3D Earth
+
+`opg::EarthModelBinned` ports OscProb's `EarthModelBinned` (Rebekah Pestes): an
+Earth of depth x latitude x longitude bins, each with a density, a Z/A and a
+region index, and a detector at a radius, latitude and longitude. Paths then
+depend on the azimuth as well as the cosine of the zenith angle. The table
+format, `SetDetPos(radius, lat, lon)`, `SetRegionZoA`, `GetRegionZoA`,
+`ScaleRegionDensity` and `FillPath(cosT, phi)` follow OscProb; the path
+segments are bit-identical to OscProb's on the CPU. The default table
+(`data/earth_binned_default.txt`, from OscProb) is PREM in 44 depth bins x 3
+latitudes x 4 longitudes, with the detector at 6368 km on the equator at
+longitude 0.
+
+```python
+e = opg.EarthModelBinned()                  # or EarthModelBinned("my_table.txt")
+e.set_det_pos(6368, 42.4, 13.5)             # radius (km), latitude, longitude (deg)
+e.set_region_zoa(2, 0.47)                   # Z/A of all bins of region 2
+p = opg.Fast(earth=e, devices=[0])
+p.set_earth_azimuth(250)                    # azimuth of grid / bin-average paths (deg)
+p.set_grid(E, cosZ); p.calculate()
+P = p.prob_points(E_ev, cosZ_ev, nubar_ev, azimuth=az_ev)   # one azimuth per event
+seg = e.fill_path(-0.5, 250)                # (length, density, zoa, region) rows
+```
+
+```cpp
+opg::EarthModelBinned e;                    // data/earth_binned_default.txt
+e.SetDetPos(6368, 42.4, 13.5);
+e.SetAzimuth(250);                          // or prop.set_earth_azimuth(250)
+opg::Propagator<opg::Fast<>> prop(e, {0});
+auto P = prop.prob_points(E, cosZ, nubar, /*extra=*/{}, /*azimuth=*/az);
+```
+
+* **Azimuth.** As in `FillPath(cosT, phi)`: degrees from North of the direction
+  from the detector to where the neutrino enters the Earth. Grids and bin
+  averages use one azimuth, stored with the model (`EarthModelBinned::SetAzimuth`,
+  or `set_earth_azimuth` on the propagator's copy; default 0). Event lists
+  take an optional azimuth per event (`azimuth`); without it, a model whose
+  per-event inputs include an azimuth shares it with the Earth: for
+  SiderealLIV, `extra[0]` (the azimuth of its direction, in OscProb's
+  `SetNeutrinoDirection` convention) is then also the azimuth of the path, as
+  an OscProb user would pass the same angle to both. Give `azimuth`
+  explicitly to use different values. Otherwise the Earth model's azimuth is
+  used. PREM ignores azimuths.
+* **Regions** play the role of PREM's layer types: `earth_parameter_names`
+  are `zoa_<i>` and `rho_<i>` for each region index i (Z/A of the region, and
+  dP/d ln of a common density scale, as `ScaleRegionDensity`), in all
+  gradient modes including reverse mode.
+* **Bin averages.** The layer-adapted cos-zenith rule splits bins at the
+  cosines grazing the depth-bin boundaries below the detector (and at
+  cosZ = 0); latitude and longitude boundaries are not used (they move with
+  the azimuth), so lateral density steps leave kinks that converge more
+  slowly in the number of nodes. For the reference tables the convergence is
+  that of PREM.
+* **Analytic averages** (`avg_path_analytic*`) work on explicit paths: pass
+  `fill_path(cosT, phi)` / `FillPath(cosT, phi)`.
+* **Performance.** The walker computes latitude and longitude crossings with
+  trigonometric functions, so a binned path costs more than a PREM path of
+  the same number of segments, and crossings add segments (up to 88 in the
+  reference cases). PREM propagation is unaffected by the switch (see
+  [Performance](#performance)).
+  On the GPU the segment lengths differ from the CPU's in the last bits
+  (device `sin`, `asin`, `atan2`); probabilities agree with the CPU to ~3e-14
+  and with OscProb to 1.5e-13 (CPU 1.5e-13, and **0** with
+  `OPG_OSCPROB_BITWISE`; Fast, NSI, SiderealLIV).
+
 ## Absorption
 
 `OscProb::Absorption` is available as flavour- and model-independent
@@ -456,8 +526,9 @@ the model parameters and the Earth model's Z/A per layer type (see
 | OQS     | mixing, `a1` .. `a8`, the angles `ang<i><j>` (1 ≤ i < j ≤ 8, e.g. `ang38`), `power` (default: mixing and `a1` .. `a8`). The 8x8 exponential is differentiated in dual arithmetic through the Padé approximant |
 
 Earth parameters (`earth_parameter_names`, per propagator), for each layer
-type t of the Earth model: `zoa_<t>`, the Z/A of all layers of that type
-(`PremModel::SetLayerZoA`), and `rho_<t>`, a common relative scale of the
+type t of the Earth model (region index of an `EarthModelBinned`): `zoa_<t>`,
+the Z/A of all layers of that type
+(`PremModel::SetLayerZoA`, `EarthModelBinned::SetRegionZoA`), and `rho_<t>`, a common relative scale of the
 densities of all layers of that type: the gradient is dP/d ln ρ_t, i.e. the
 change per unit fractional change of those densities (`PremModel::ScaleLayerDensity`
 applies such a scale), so a 2% density uncertainty on layer type t enters a
@@ -660,7 +731,9 @@ On the GPU `eigh3` passes the same suite (GTX 1650 Ti).
 Other checks: `eigh3` has an eigen-residual below 3e-13 relative on random,
 degenerate and near-degenerate matrices (1e-14 on atmospheric Hamiltonians);
 the ported Kopp eigensolver is bit-identical to OscProb's `MatrixDecomp`; `Hms` and the Decay effective mass matrix are bit-identical;
-PREM paths are bit-identical; `expm` agrees with Eigen to 1e-15; multi-GPU
+PREM paths are bit-identical, and so are `EarthModelBinned` paths (1200 cases:
+two tables, four detector positions including the pole and one 371 km deep,
+25 cosines, 6 azimuths); `expm` agrees with Eigen to 1e-15; multi-GPU
 results are bit-identical to single-GPU; bin averages agree with a 400²
 brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
 (within its 1e-4-target approximation).
@@ -699,8 +772,10 @@ brute-force midpoint average to 1.5e-6 and with OscProb's `AvgProb` to 4e-4
   and fading of fully fast pairs. With OscProb's sub-bins it agrees with
   `AvgProbLoE` to 8e-14. (OscProb returns NaN from the first `AvgProbLoE` call
   after `SetPath`; later calls are fine.)
-* Only spherical-shell Earth models (`PremModel`); `EarthModelBinned` and
-  OscProb's other models are not ported.
+* Earth models: `PremModel` and `EarthModelBinned`. `EarthModelBinned` throws
+  on malformed tables instead of printing an error and clearing the model,
+  stores a default azimuth (`SetAzimuth`), and stops a path that would leave
+  the table (OscProb would read outside it).
 
 ## Performance
 
@@ -736,6 +811,15 @@ gradient 5.9 s against 5.0 s, binned 0.29 s against 0.24 s), and about 12%
 slower end to end in a CPU fit. `OPG_OSCPROB_BITWISE=ON` restores the Kopp
 solver.
 
+Through the default `EarthModelBinned` (azimuth 30°, same grid, GTX 1650 Ti,
+`OPG_BENCH_EARTH=binned opg_bench`): Fast 1.37 s against 1.31 s through PREM
+(+4%), Sterile 6.07 s against 5.83 s (+4%), weighted gradient +7%, bin
+averages +4%, event-list gradients +6–13%; `Fast<float>` 0.093 s against
+0.052 s (the walker always runs in double). Adding the binned walker left
+PREM within the noise (same card, interleaved runs before/after: Fast double
++0.0–0.8%, float +1.2–1.6%, NSI 0%, Sterile +0.3%, gradients +0.2%, bin
+averages and event lists 0%).
+
 Binned: 40 x 20 bins with 8 nodes per direction (and per layer piece):
 5.4 ms per evaluation on 1 V100, 3.4 ms on 2 (4.3 s single-thread CPU).
 
@@ -763,7 +847,7 @@ include/opg/linalg    eigh3, Jacobi, expm, general 3x3 eigensystem; kopp/ (zheev
 include/opg/physics   mixing (BuildHms port), propagation, gradients
 include/opg/models    fast, nsi, nunm, sterile, decay, liv, snsi, deco, sidereal_liv, oqs
                       (hermitian3: shared 3x3 hermitian machinery)
-include/opg/earth     PremModel and on-device path walker
+include/opg/earth     PremModel, EarthModelBinned, on-device path walkers
 include/opg/avg       Gauss-Legendre, analytic (Maltoni) averages
 include/opg/propagator.h, engine*.h   user API and CPU backend
 src/                  CUDA backend
@@ -786,7 +870,8 @@ publication, please cite it as given in `CITATION.cff` and also cite OscProb thr
 ([![DOI](https://zenodo.org/badge/91241668.svg)](https://zenodo.org/badge/latestdoi/91241668)).
 
 - **OscProb** (MIT, Copyright (c) 2017 Joao Coelho): the portions derived from it remain subject to its
-  license as well, reproduced in `LICENSE-OscProb`. The Earth model tables in `data/` come from OscProb,
+  license as well, reproduced in `LICENSE-OscProb`. The Earth model tables in `data/` come from OscProb
+  (`PremTables/` and, for the binned 3D model of Rebekah Pestes, `EarthTables/earth_binned_default.txt`),
   which builds them from the Preliminary Reference Earth Model (A. M. Dziewonski and D. L. Anderson,
   Phys. Earth Planet. Inter. 25 (1981) 297).
 - **The 3x3 Hermitian eigensolver** in `include/opg/linalg/kopp/` is ported from Joachim Kopp's code
