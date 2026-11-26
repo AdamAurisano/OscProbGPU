@@ -1,6 +1,6 @@
 # Roadmap
 
-Status as of 2026-11-24: ten models (Fast, NSI, NUNM, Sterile 3+1, Decay,
+Status as of 2026-11-25: ten models (Fast, NSI, NUNM, Sterile 3+N, Decay,
 LIV, SNSI, Deco, SiderealLIV, OQS) validated against OscProb on CPU and GPU;
 GL and analytic bin averages, batched over parameter points; multi-GPU;
 Python bindings. Exact gradients for every model (forward mode, and reverse
@@ -180,6 +180,23 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   alpha), affine, both scales. V100 1000 x 1000, 16 params: 0.31 s reverse
   vs 0.90 s forward; agrees with forward mode to <= 2e-12.
 * Next: EarthModelBinned (uses the per-event azimuth).
+* Done (2026-11-25): Sterile with N flavours (OscProb `PMNS_Sterile(n)`):
+  `Sterile<R, NF = 4>`, so `Sterile<>` stays 3+1 bit for bit; the CUDA
+  engine and Python build N = 4, 5, 6 (`Sterile5`, `Sterile6`;
+  `opg.Sterile(nus=n)`), the CPU backend any N. Parameters from
+  `MixingRegistry<N>` (20 for 3+2, 30 for 3+3). Everything else (Jacobi,
+  analytic averages, forward and reverse gradients) was already generic in
+  N; `grad_chunk` stays 1. OscProb references `sterile5`, `sterile6`
+  (testdata-v4): CPU 9.7e-12 / 1.4e-11, gradients vs long-double FD <= 3.7e-9
+  relative (the FD reference's own noise, ~1e-11 absolute, at phases ~1e4
+  rad; long-double forward-mode gradients show the same deviation), adjoint
+  vs forward <= 2e-11. Cost on a GTX 1650 Ti (nvcc 13, sm_75): the full
+  engine compile grows from 30 to 45 min (single-model engines: 3+1 4.6 min,
+  3+2 4.5, 3+3 8.3); the probability kernels spill for N > 4 (grid kernel
+  spill stores 0 / 940 / 2984 bytes for N = 4 / 5 / 6, gradients 1.7 / 5.0 /
+  11 KB, analytic gradient kernels 4.1 / 12 / 28 KB). GTX 1650 Ti, 500 x 500
+  grid relative to 3+1: probabilities 1.35x / 1.8x the time, weighted
+  gradients (all parameters, reverse mode) 1.9x / 3.8x. Not timed on a V100.
 * LIV, SNSI, SiderealLIV keep grad_chunk K = 2 (V100: best or within 5% of
   K = 1, 3); Deco uses K = 1 (2.7 s vs 3.3 s at K = 2). Rejected for Deco:
   __noinline__ value helpers shared by step() and step_grad() (bit-identical,
