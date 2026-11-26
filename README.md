@@ -459,13 +459,12 @@ auto P = prop.prob_points(E, cosZ, nubar, /*extra=*/{}, /*azimuth=*/az);
   from the detector to where the neutrino enters the Earth. Grids and bin
   averages use one azimuth, stored with the model (`EarthModelBinned::SetAzimuth`,
   or `set_earth_azimuth` on the propagator's copy; default 0). Event lists
-  take an optional azimuth per event (`azimuth`); without it, a model whose
-  per-event inputs include an azimuth shares it with the Earth: for
-  SiderealLIV, `extra[0]` (the azimuth of its direction, in OscProb's
-  `SetNeutrinoDirection` convention) is then also the azimuth of the path, as
-  an OscProb user would pass the same angle to both. Give `azimuth`
-  explicitly to use different values. Otherwise the Earth model's azimuth is
-  used. PREM ignores azimuths.
+  take an optional azimuth per event (`azimuth`); without it, the Earth
+  model's azimuth is used. A model's own per-event inputs are never used for
+  the path: SiderealLIV's `extra[0]` is the azimuth of its direction in
+  OscProb's `SetNeutrinoDirection` convention, which need not match
+  `FillPath`'s, so pass the path azimuth as `azimuth` as well. PREM ignores
+  azimuths.
 * **Regions** play the role of PREM's layer types: `earth_parameter_names`
   are `zoa_<i>` and `rho_<i>` for each region index i (Z/A of the region, and
   dP/d ln of a common density scale, as `ScaleRegionDensity`), in all

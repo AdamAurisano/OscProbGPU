@@ -126,10 +126,6 @@ namespace opg {
       /// Per-event inputs in event lists: azimuth [deg], local sidereal
       /// time [h] (the zenith comes from the path unless fixed).
       static constexpr int n_extra = 2;
-      /// The per-event azimuth (extra 0) is also the azimuth of the path
-      /// through a binned Earth unless event azimuths are given separately
-      /// (Propagator::prob_points).
-      static constexpr int extra_azimuth = 0;
 
       template <class S> using ParamsT   = SiderealLIVParams<S>;
       using Params                       = SiderealLIVParams<double>;

@@ -1174,20 +1174,14 @@ namespace opg {
       }
 
       /// Per-event azimuths of the paths through a binned Earth (nullptr:
-      /// the Earth model's): the explicit ones, else the model's azimuth
-      /// extra input if it has one and extras are given. PREM: nullptr.
+      /// the Earth model's). Never taken from a model's own per-event inputs
+      /// (SiderealLIV's azimuth follows another convention). PREM: nullptr.
       const R* event_azimuths(const std::vector<R>& extra, const std::vector<R>& azimuth,
                               size_t n) const
       {
-        if (!fEarth.is_binned()) return nullptr;
-        if (!azimuth.empty()) return azimuth.data();
-        if constexpr (extra_azimuth_v<Model> >= 0) {
-          if (!extra.empty()) return extra.data() + size_t(extra_azimuth_v<Model>) * n;
-        }
-        else {
-          (void)extra, (void)n;
-        }
-        return nullptr;
+        (void)extra, (void)n;
+        if (!fEarth.is_binned() || azimuth.empty()) return nullptr;
+        return azimuth.data();
       }
 
       /// Gradient passes for the selected parameters (cached until the

@@ -138,8 +138,8 @@ TEST_CASE("EarthModelBinned probabilities match OscProb (CPU)")
     check_probs(prop, "nsi_phases");
   }
   {
-    // the direction's azimuth is that of the path; event lists share the
-    // azimuth extra with the Earth
+    // the reference uses the direction's azimuth as that of the path; event
+    // lists pass it both as the azimuth extra and as the path azimuth
     opg::Propagator<opg::SiderealLIV<>> prop;
     check_probs(prop, "sidereal", true, [&](int k) {
       auto p = variants::sidereal();

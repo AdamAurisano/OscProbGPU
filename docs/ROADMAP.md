@@ -191,9 +191,8 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   functions are __noinline__ on the device so its state stays in local
   memory, not in registers across the step. Azimuth: one per propagator for
   grids and bin averages (EarthModelBinned::SetAzimuth /
-  Propagator::set_earth_azimuth), optional per event in event lists, else
-  shared with the model's azimuth extra (Model::extra_azimuth; SiderealLIV)
-  when extras are given. Layer-adapted cosZ nodes use the depth-shell
+  Propagator::set_earth_azimuth), optional per event in event lists (never
+  taken from a model's extras: SiderealLIV's azimuth convention differs). Layer-adapted cosZ nodes use the depth-shell
   grazing cosines (and cosZ = 0); lateral boundaries are ignored. Per-point
   binned Earths in binned_batch/calculate_binned_batch; analytic averages
   through explicit paths (FillPath). Reference data: tag "binned" of

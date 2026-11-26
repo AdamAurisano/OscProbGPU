@@ -67,8 +67,8 @@ namespace bintest {
 
   /// Probabilities on the reference grid through config k against
   /// <tag>_binned.npy [2 cfg][2 nubar][nC][nE][N][N]: grid mode, and event
-  /// list mode with the azimuth per event (explicit, or through the
-  /// model's azimuth extra if use_extra).
+  /// list mode with the azimuth per event (and, if use_extra, the same
+  /// angle as the model's azimuth extra).
   template <class Model>
   void compare_probs(opg::Propagator<Model>& prop, const std::string& tag, int k,
                      refcmp::Result& rg, refcmp::Result& re, bool use_extra = false)
@@ -108,7 +108,7 @@ namespace bintest {
     }
     prop.set_earth_azimuth(m.GetAzimuth() + 77);
     std::vector<double> out;
-    if constexpr (opg::extra_azimuth_v<Model> == 0) {
+    if constexpr (opg::n_extra_v<Model> > 0) {
       if (use_extra) {  // azimuth extra, then the sidereal time
         constexpr int NX = opg::Propagator<Model>::n_event_extra();
         extra            = az;
@@ -118,7 +118,7 @@ namespace bintest {
     }
     else
       REQUIRE(!use_extra);
-    out = use_extra ? prop.prob_points(e, c, nbv, extra) : prop.prob_points(e, c, nbv, {}, az);
+    out = prop.prob_points(e, c, nbv, use_extra ? extra : std::vector<double>{}, az);
     for (size_t i = 0; i < idx.size(); i++) {
       const size_t q = idx[i];
       for (int a = 0; a < N; a++)

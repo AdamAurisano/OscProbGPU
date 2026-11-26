@@ -93,14 +93,15 @@ def test_probabilities_match_oscprob(tag, test_table, devices):
         p.calculate()
         got = p.probs().transpose(0, 3, 4, 1, 2)
         assert np.abs(got - ref[k]).max() < 1e-10
-        # event list: per-event azimuths (SiderealLIV: through its azimuth extra)
+        # event list: per-event azimuths (SiderealLIV: also its azimuth extra)
         Eg, Cg = np.meshgrid(E, C)
         n = Eg.size
         nb = np.zeros(n, np.uint8)
         az = np.full(n, e.azimuth)
         p.set_earth_azimuth(e.azimuth + 77)
         if tag == "sidereal":
-            P = p.prob_points(Eg.ravel(), Cg.ravel(), nb, extra=np.stack([az, np.full(n, 6.0)]))
+            P = p.prob_points(Eg.ravel(), Cg.ravel(), nb, extra=np.stack([az, np.full(n, 6.0)]),
+                              azimuth=az)
         else:
             P = p.prob_points(Eg.ravel(), Cg.ravel(), nb, azimuth=az)
         got = P.reshape(P.shape[0], P.shape[1], len(C), len(E)).transpose(2, 3, 0, 1)

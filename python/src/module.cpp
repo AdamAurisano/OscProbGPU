@@ -452,8 +452,8 @@ namespace {
              "Event list: returns P[a, b, i]. extra: optional per-event inputs "
              "extra[x, i], x < n_event_extra (None: the values set on the model). "
              "azimuth: optional per-event azimuths (degrees) of the paths through a "
-             "binned Earth (None: SiderealLIV's azimuth extra if extra is given, else "
-             "earth_azimuth); ignored for PREM.")
+             "binned Earth (None: earth_azimuth; never taken from extra); ignored for "
+             "PREM.")
         .def("prob_path",
              [](W& w, Arr1 E, Arr2 seg, bool nubar) {
                auto ev = to_vec(E);
