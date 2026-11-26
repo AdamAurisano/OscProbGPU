@@ -458,20 +458,28 @@ TEST_CASE("GPU batched analytic averages of a sandwiched model (NUNM)")
 
 namespace {
   /// max over gradient parameters q of max |a - b| / max(max |b|, floor),
-  /// each parameter q (blocks of n = N*N*nbins) with its own scale.
+  /// each parameter q (blocks of n = N*N*nbins, repeated per point) with its
+  /// own scale; parameters q in `group` share the largest scale of the
+  /// group (LIV coefficients of one unit: a diagonal aT derivative can be
+  /// far smaller than the off-diagonal ones and is then known only to the
+  /// group's round-off).
   double rel_diff_q(const std::vector<double>& a, const std::vector<double>& b, size_t n,
-                    double floor)
+                    double floor, const std::vector<bool>& group = {})
   {
     REQUIRE(a.size() == b.size());
-    double worst = 0;
-    for (size_t q = 0; q * n < a.size(); q++) {
-      double m = 0, s = floor;
-      for (size_t i = q * n; i < (q + 1) * n; i++) {
-        m = std::max(m, std::fabs(a[i] - b[i]));
-        s = std::max(s, std::fabs(b[i]));
+    const size_t        nblk = a.size() / n, nq = group.empty() ? nblk : group.size();
+    std::vector<double> m(nblk, 0.0), s(nblk, floor);
+    double              gs = floor;
+    for (size_t k = 0; k < nblk; k++) {
+      for (size_t i = k * n; i < (k + 1) * n; i++) {
+        m[k] = std::max(m[k], std::fabs(a[i] - b[i]));
+        s[k] = std::max(s[k], std::fabs(b[i]));
       }
-      worst = std::max(worst, m / s);
+      if (!group.empty() && group[k % nq]) gs = std::max(gs, s[k]);
     }
+    double worst = 0;
+    for (size_t k = 0; k < nblk; k++)
+      worst = std::max(worst, m[k] / (!group.empty() && group[k % nq] ? gs : s[k]));
     return worst;
   }
 
@@ -484,6 +492,8 @@ namespace {
                        const std::string& label)
   {
     opg::Propagator<Model> gpu(opg::PremModel(), {dev}), cpu;
+    std::vector<bool>      grp;  // LIV coefficients: aT3_*, aX_* ...
+    for (const auto& nm : names) grp.push_back(nm[0] == 'a');
     gpu.set_gradient_params(names);
     cpu.set_gradient_params(names);
     std::vector<double> fe, ne;
@@ -509,7 +519,7 @@ namespace {
         cpu.set_params(pts[0]);
         gpu.avg_path_analytic_grad(edges, path, nubar, Pg, dPg, meas, var, o);
         cpu.avg_path_analytic_grad(edges, path, nubar, Pc, dPc, meas, var, h);
-        const double sp = rel_diff_q(Pg, Pc, n, 1.0), sg = rel_diff_q(dPg, dPc, n, 1.0);
+        const double sp = rel_diff_q(Pg, Pc, n, 1.0), sg = rel_diff_q(dPg, dPc, n, 1.0, grp);
 
         auto b  = gpu.analytic_batch(edges, path, nubar, meas, var, o);
         auto bc = cpu.analytic_batch(edges, path, nubar, meas, var, o);
@@ -518,11 +528,11 @@ namespace {
         gpu.avg_path_analytic_batch(b, pts, out, &dout);
         cpu.avg_path_analytic_batch(bc, pts, co, &cd);
         const size_t nq = names.size();
-        const double ep = rel_diff_q(out, co, n, 1.0), eg = rel_diff_q(dout, cd, n, 1.0);
+        const double ep = rel_diff_q(out, co, n, 1.0), eg = rel_diff_q(dout, cd, n, 1.0, grp);
         // GPU batch point 0 vs the GPU single call
         const std::vector<double> o0(out.begin(), out.begin() + long(n)),
             d0(dout.begin(), dout.begin() + long(nq * n));
-        const double bp = rel_diff_q(o0, Pg, n, 1.0), bg = rel_diff_q(d0, dPg, n, 1.0);
+        const double bp = rel_diff_q(o0, Pg, n, 1.0), bg = rel_diff_q(d0, dPg, n, 1.0, grp);
 
         std::vector<double> w(out.size()), g, gc, ref(pts.size() * nq, 0.0), sc(ref.size(), 0.0);
         for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i) + 1.0);
@@ -536,9 +546,16 @@ namespace {
               sc[p * nq + k] += std::fabs(t);
             }
         double ew = 0, ec = 0;
-        for (size_t i = 0; i < g.size(); i++) {
-          ew = std::max(ew, std::fabs(g[i] - ref[i]) / std::max(sc[i], 1e-300));
-          ec = std::max(ec, std::fabs(g[i] - gc[i]) / std::max(sc[i], 1e-300));
+        for (size_t p = 0; p < pts.size(); p++) {
+          double gs = 1e-300;  // scale of the coefficient group of this point
+          for (size_t k = 0; k < nq; k++)
+            if (grp[k]) gs = std::max(gs, sc[p * nq + k]);
+          for (size_t k = 0; k < nq; k++) {
+            const size_t i  = p * nq + k;
+            const double sk = grp[k] ? gs : std::max(sc[i], 1e-300);
+            ew              = std::max(ew, std::fabs(g[i] - ref[i]) / sk);
+            ec              = std::max(ec, std::fabs(g[i] - gc[i]) / sk);
+          }
         }
         MESSAGE(label << " config " << cfg << " nubar " << nubar << ": single GPU vs host P "
                       << sp << ", dP (rel) " << sg << "; batch GPU vs host P " << ep << ", dP "
