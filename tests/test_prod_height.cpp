@@ -109,3 +109,15 @@ TEST_CASE_TEMPLATE("Production heights: gradients", Model, opg::Fast<double>,
   opg::Propagator<Model> prop;
   phtest::check_grads(prop, 1e-8, 1e-10);
 }
+
+TEST_CASE_TEMPLATE("Production heights: common height scale", Model, opg::Fast<double>,
+                   opg::NSI<double>, opg::NUNM<double>, opg::Sterile<double>,
+                   opg::Sterile5<double>, opg::Sterile6<double>, opg::LIV<double>,
+                   opg::SNSI<double>)
+{
+  opg::Propagator<Model> prop;
+  phtest::check_scale(prop, opg::EarthModel(opg::PremModel()), "PREM");
+  phtest::check_scale(prop, opg::EarthModel(bintest::config(0)), "binned");
+  CHECK_THROWS_AS(prop.set_prod_height_scale(0), std::invalid_argument);
+  CHECK_THROWS_AS(prop.set_prod_height_scale(-1), std::invalid_argument);
+}

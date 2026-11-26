@@ -86,7 +86,7 @@ namespace phtest {
   /// dist < 0 are left at 0.
   template <class Model>
   std::vector<double> brute(const typename Model::Params& par, const opg::EarthModel& earth,
-                            const Events& ev, int nsub = 2, int nq = 32)
+                            const Events& ev, int nsub = 2, int nq = 32, double scale = 1)
   {
     constexpr int     N = Model::N;
     opg::ProdHeightTable t;
@@ -114,7 +114,8 @@ namespace phtest {
         for (int ab = 0; ab < N * N; ab++) acc[ab] += wt * p[ab];
       };
       for (int b = t.off[size_t(d)]; b < t.off[size_t(d) + 1]; b++) {
-        const double lo = t.lo[size_t(b)], hi = t.hi[size_t(b)], p = t.prob[size_t(b)];
+        const double lo = scale * t.lo[size_t(b)], hi = scale * t.hi[size_t(b)];
+        const double p  = t.prob[size_t(b)];
         if (hi == lo) {
           add(lo, p);
           continue;
@@ -406,6 +407,95 @@ namespace phtest {
       CHECK(ea < tol_adj);
       CHECK(es < 1e-12);
     }
+  }
+
+  /// The common height scale s (prod_height_scale): values at s = 1.3
+  /// against the brute force with scaled heights, d/ds against central
+  /// finite differences (events and grid, stored gradients), forward
+  /// against reverse mode (weighted, events and grid), at s = 1.3.
+  template <class Model>
+  void check_scale(opg::Propagator<Model>& prop, const opg::EarthModel& earth,
+                   const std::string& label)
+  {
+    constexpr int N = Model::N, NN = N * N;
+    prop.set_earth(earth);
+    prop.set_params(params<Model>());
+    prop.set_prod_heights(edges(), probs());
+    const double s0 = 1.3;
+    prop.set_prod_height_scale(s0);
+    Events       ev(5, N > 4 ? 2 : 4);
+    const size_t n   = ev.E.size();
+    auto         P   = prop.prob_points_prod_height(ev.E, ev.C, ev.nb, ev.dist);
+    auto         ref = brute<Model>(params<Model>(), earth, ev, 2, 32, s0);
+    const double eb  = max_abs_diff(P, ref);
+
+    prop.set_gradient_params({"th23", "prod_height_scale", "dm31"});
+    std::vector<double> Pg, dP;
+    prop.prob_points_grad_prod_height(ev.E, ev.C, ev.nb, ev.dist, Pg, dP);
+    const double h = 1e-6;
+    prop.set_prod_height_scale(s0 + h);
+    auto pp = prop.prob_points_prod_height(ev.E, ev.C, ev.nb, ev.dist);
+    prop.set_prod_height_scale(s0 - h);
+    auto pm = prop.prob_points_prod_height(ev.E, ev.C, ev.nb, ev.dist);
+    prop.set_prod_height_scale(s0);
+    double m = 0, r = 0;
+    for (size_t k = 0; k < pp.size(); k++) {
+      const double fd = (pp[k] - pm[k]) / (2 * h);
+      m               = std::max(m, std::fabs(dP[NN * n + k] - fd));
+      r               = std::max(r, std::fabs(fd));
+    }
+    const double efd = m / std::max(r, 1e-3);
+
+    // grid (one distribution per point), stored gradients against the FD of the grid
+    std::vector<double> Eg = {0.4, 3.0, 25.0}, Cg = {-0.95, -0.1, 0.0, 0.4};
+    prop.set_grid(Eg, Cg);
+    std::vector<int> dg;
+    for (size_t ic = 0; ic < Cg.size(); ic++)
+      for (size_t ie = 0; ie < Eg.size(); ie++) dg.push_back(int((ic * 3 + ie) % 6) - 1);
+    prop.set_grid_prod_heights(dg);
+    prop.calculate_prod_height(opg::Flavor::Both, true);
+    const size_t        ng = 2 * NN * Eg.size() * Cg.size();
+    std::vector<double> gg(prop.grad(), prop.grad() + 3 * ng);
+    auto grid_at = [&](double sc) {
+      prop.set_prod_height_scale(sc);
+      prop.calculate_prod_height();
+      return std::vector<double>(prop.probs(), prop.probs() + ng);
+    };
+    auto gp = grid_at(s0 + h), gm = grid_at(s0 - h);
+    prop.set_prod_height_scale(s0);
+    m = r = 0;
+    const size_t per = NN * Eg.size() * Cg.size();  // [nb][p][ab][iC][iE]
+    for (int nb = 0; nb < 2; nb++)
+      for (size_t k = 0; k < per; k++) {
+        const double fd = (gp[nb * per + k] - gm[nb * per + k]) / (2 * h);
+        m               = std::max(m, std::fabs(gg[(size_t(nb) * 3 + 1) * per + k] - fd));
+        r               = std::max(r, std::fabs(fd));
+      }
+    const double efg = m / std::max(r, 1e-3);
+
+    // forward vs reverse, weighted
+    double ea = 0;
+    if constexpr (opg::Propagator<Model>::has_adjoint_gradients()) {
+      std::vector<double> w(NN * n), wg(ng);
+      for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.3 * double(i) + 1);
+      for (size_t i = 0; i < wg.size(); i++) wg[i] = std::cos(0.7 * double(i));
+      prop.set_adjoint_gradients(false);
+      auto f1 = prop.weighted_gradient_points_prod_height(ev.E, ev.C, ev.nb, ev.dist, w);
+      auto f2 = prop.weighted_gradient_prod_height(wg);
+      prop.set_adjoint_gradients(true);
+      auto a1 = prop.weighted_gradient_points_prod_height(ev.E, ev.C, ev.nb, ev.dist, w);
+      auto a2 = prop.weighted_gradient_prod_height(wg);
+      ea = std::max(std::fabs(f1[1] - a1[1]) / std::max(std::fabs(f1[1]), 1e-12),
+                    std::fabs(f2[1] - a2[1]) / std::max(std::fabs(f2[1]), 1e-12));
+    }
+    prop.set_prod_height_scale(1);
+    MESSAGE(label << " " << std::string(Model::name) << " N=" << N
+                  << " height scale 1.3: exact vs brute " << eb << ", d/ds vs FD events " << efd
+                  << " grid " << efg << ", reverse vs forward " << ea);
+    CHECK(eb < 1e-11);
+    CHECK(efd < 1e-6);
+    CHECK(efg < 1e-6);
+    CHECK(ea < 1e-10);
   }
 
 } // namespace phtest

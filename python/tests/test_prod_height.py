@@ -120,3 +120,36 @@ def test_errors(devices):
         p.set_prod_heights([np.array([0.0, 10.0])], [np.array([1.0, 2.0])])
     with pytest.raises(RuntimeError):
         opg.Decay(devices=devices).set_prod_heights(EDGES, PROBS)
+
+
+def test_height_scale(devices):
+    if not opg.Fast.has_gradients:
+        pytest.skip("gradients disabled at build time")
+    p = set_nominal(opg.Fast(devices=devices))
+    assert "prod_height_scale" in p.gradient_parameter_names
+    p.set_prod_heights(EDGES, PROBS)
+    assert p.prod_height_scale == 1.0
+    E, C, nb, d = events()
+    # scaling the heights = scaling the edges
+    p.set_prod_height_scale(1.25)
+    q = set_nominal(opg.Fast(devices=devices))
+    q.set_prod_heights([1.25 * e for e in EDGES], PROBS)
+    assert np.abs(p.prob_points_prod_height(E, C, nb, d)
+                  - q.prob_points_prod_height(E, C, nb, d)).max() < 1e-14
+    p.set_gradient_params(["prod_height_scale", "th23"])
+    P, dP = p.prob_points_grad_prod_height(E, C, nb, d)
+    h = 1e-6
+    p.set_prod_height_scale(1.25 + h)
+    Pp = p.prob_points_prod_height(E, C, nb, d)
+    p.set_prod_height_scale(1.25 - h)
+    Pm = p.prob_points_prod_height(E, C, nb, d)
+    p.set_prod_height_scale(1.25)
+    fd = (Pp - Pm) / (2 * h)
+    assert np.abs(dP[0] - fd).max() / np.abs(fd).max() < 1e-6
+    w = np.sin(np.arange(P.size)).reshape(P.shape)
+    for adj in (False, True):
+        p.adjoint_gradients = adj
+        g = p.weighted_gradient_points_prod_height(E, C, nb, d, w)
+        assert abs(g[0] - np.sum(w * dP[0])) < 1e-10 * max(1.0, abs(g[0]))
+    with pytest.raises(ValueError):
+        p.set_prod_height_scale(0.0)

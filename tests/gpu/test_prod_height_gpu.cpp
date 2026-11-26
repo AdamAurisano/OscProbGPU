@@ -38,6 +38,7 @@ namespace {
         for (auto* p : {&gpu, &cpu}) {
           p->set_params(phtest::params<Model>());
           p->set_prod_heights(phtest::edges(), phtest::probs());
+          p->set_prod_height_scale(1.2);  // (all gradient parameters include prod_height_scale)
           p->set_gradient_params(p->gradient_parameter_names());
         }
         phtest::Events      ev(5, 7);
@@ -123,6 +124,8 @@ TEST_CASE_TEMPLATE("GPU production heights: exact vs brute force, gradients", Mo
   phtest::check_values(prop, opg::EarthModel(opg::PremModel()), 1e-11, "GPU PREM", 1e-12);
   phtest::check_values(prop, opg::EarthModel(bintest::config(0)), 1e-11, "GPU binned", 1e-12);
   if (Model::N <= 4) phtest::check_grads(prop, 1e-8, 1e-10, 1e-12);
+  phtest::check_scale(prop, opg::EarthModel(opg::PremModel()), "GPU PREM");
+  phtest::check_scale(prop, opg::EarthModel(bintest::config(0)), "GPU binned");
 }
 
 TEST_CASE_TEMPLATE("GPU production heights: GPU vs CPU", Model, opg::Fast<double>,

@@ -972,7 +972,7 @@ namespace opg {
             P, PD, earth, hv, ph_grid_dist(dist, per_point, ic, ie, nE), E[ie], C[ic], nb == 1,
             write_probs ? probs + size_t(nb) * N * N * stride + pt : nullptr,
             grad + (size_t(nb) * npar + offset) * N * N * stride + pt, count, nullptr, stride,
-            acc);
+            acc, nullptr, offset);
       }
     }
 
@@ -983,7 +983,8 @@ namespace opg {
                                          const int* __restrict__ dist, bool per_point,
                                          const R* __restrict__ E, int nE,
                                          const R* __restrict__ C, int nC, int nb_first,
-                                         const R* __restrict__ w, R* __restrict__ partial)
+                                         const R* __restrict__ w, R* __restrict__ partial,
+                                         int offset)
     {
       const auto&   PD     = GradArg<Model>::get(PDa);
       constexpr int N      = Model::N;
@@ -999,7 +1000,7 @@ namespace opg {
         prod_height_grad<Model, R, K>(
             P, PD, earth, hv, ph_grid_dist(dist, per_point, ic, ie, nE), E[ie], C[ic],
             nb == 1, nullptr, nullptr, 0,
-            w + size_t(nb) * N * N * stride + size_t(ic) * nE + ie, stride, a, pre);
+            w + size_t(nb) * N * N * stride + size_t(ic) * nE + ie, stride, a, pre, offset);
         for (int k = 0; k < K; k++) acc[k] += a[k];
       }
       const size_t blk = (size_t(blockIdx.z) * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
@@ -1068,7 +1069,7 @@ namespace opg {
         prod_height_grad<Model, R, K>(P, PD, event_earth(earth, az, i), hv, dist[i], E[i], C[i],
                                       nubar[i] != 0, write_probs ? probs + i : nullptr,
                                       grad + size_t(offset) * N * N * n + i, count, nullptr, n,
-                                      acc);
+                                      acc, nullptr, offset);
       }
     }
 
@@ -1080,7 +1081,8 @@ namespace opg {
                                            const uint8_t* __restrict__ nubar,
                                            const int* __restrict__ dist,
                                            const R* __restrict__ az, size_t n,
-                                           const R* __restrict__ w, R* __restrict__ partial)
+                                           const R* __restrict__ w, R* __restrict__ partial,
+                                           int offset)
     {
       const auto& PD     = GradArg<Model>::get(PDa);
       R           acc[K] = {};
@@ -1088,7 +1090,7 @@ namespace opg {
            i += size_t(gridDim.x) * blockDim.x) {
         R a[K];
         prod_height_grad<Model, R, K>(P, PD, event_earth(earth, az, i), hv, dist[i], E[i], C[i],
-                                      nubar[i] != 0, nullptr, nullptr, 0, w + i, n, a);
+                                      nubar[i] != 0, nullptr, nullptr, 0, w + i, n, a, nullptr, offset);
         for (int k = 0; k < K; k++) acc[k] += a[k];
       }
       block_reduce_store<R, K, 128>(acc, partial + size_t(blockIdx.x) * K);
@@ -1847,7 +1849,7 @@ namespace opg {
               D.partial.resize(D.id, size_t(grid.x) * grid.y * grid.z * GK);
               ph_grid_wgrad_kernel<Model, R, GK><<<grid, dim3(kBlockE), 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, D.ph, D.phGrid.ptr, fPHPerPoint, G.E.ptr,
-                  int(fNE), G.C.ptr, int(nrow), lo, D.wts.ptr, D.partial.ptr);
+                  int(fNE), G.C.ptr, int(nrow), lo, D.wts.ptr, D.partial.ptr, chunks[c].offset);
               OPG_CUDA(cudaGetLastError());
             }
             sum_partials(chunks[c], g);
@@ -1966,7 +1968,7 @@ namespace opg {
               D.partial.resize(D.id, size_t(nblk) * GK);
               ph_points_wgrad_kernel<Model, R, GK><<<nblk, 128, 0, D.stream>>>(
                   P, pd_arg(D, chunks, c), D.earth, D.ph, D.pE.ptr, D.pC.ptr, D.pNb.ptr,
-                  D.pDist.ptr, D.pAz.ptr, cnt[k], D.wts.ptr, D.partial.ptr);
+                  D.pDist.ptr, D.pAz.ptr, cnt[k], D.wts.ptr, D.partial.ptr, chunks[c].offset);
               OPG_CUDA(cudaGetLastError());
             }
             sum_partials(chunks[c], g);

@@ -248,6 +248,15 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   and on the host, sanitizers clean): phi tables, prod_height_adjoint and
   its backward pass are noinline on the device, prod_height_grad inline;
   re-run the GPU tests after touching that.
+  Added 2026-11-26 (NuTauOsc): a common height scale s (h -> s h for all
+  distributions; set_prod_height_scale) with the gradient parameter
+  prod_height_scale in all production-height modes; dphi/ds per bin in
+  closed form from the bin's end points. V100 (nvcc 11.8, sm_70) fix: the
+  compiler gave locals of the binned walker (the out-parameter len, then
+  the walker state) the local-memory slots of the live reverse-mode
+  checkpoints; binned_walk_next now returns the segment in the walk state,
+  and the reverse-mode walks run in functions of their own with their
+  arrays in the caller's memory.
   Not done: GL bin averages (set_bins), analytic averages and batched modes
   with production heights; possible speed-up of the gradient tables (one
   Bessel evaluation per bin, pair and k for close eigenvalues).

@@ -142,6 +142,11 @@ namespace opg {
       double        r_det  = 0;  ///< detector radius (km)
       R             atm_density = 0, atm_zoa = 0;
       int           atm_type    = -1;  ///< layer type (region) of the atmosphere
+      /// Common scale of all heights (h -> scale * h), and the index of the
+      /// gradient parameter prod_height_scale among the selected gradient
+      /// parameters (-1: not selected).
+      double        scale       = 1;
+      int           scale_param = -1;
 
       OPG_HD OPG_INLINE Segment<R> atm_segment() const
       {
@@ -306,7 +311,8 @@ namespace opg {
                                   BinSeries& s)
     {
       const double kmeV = constants::kKm2eV;
-      const double Llo = atm_length(g, hv.lo[b]), Lhi = atm_length(g, hv.hi[b]);
+      const double Llo = atm_length(g, hv.scale * hv.lo[b]);
+      const double Lhi = atm_length(g, hv.scale * hv.hi[b]);
       const double m = 0.5 * (Llo + Lhi), r = 0.5 * (Lhi - Llo);
       // nodes come in pairs +-t (i and kNodes-1-i) and P_k(-t) = (-1)^k P_k(t):
       // even orders take w (g(t) + g(-t)), odd ones w (g(t) - g(-t))
@@ -385,7 +391,44 @@ namespace opg {
     {
       double h = 0;
       for (int b = hv.off[d]; b < hv.off[d + 1]; b++) h = std::fmax(h, hv.hi[b]);
-      return atm_length(g, h) * constants::kKm2eV;
+      return atm_length(g, hv.scale * h) * constants::kKm2eV;
+    }
+
+    /// d/ds of bin b's term of phi(mu) for heights scaled by s (hv.scale),
+    /// given the term f itself. Bin b is uniform in h on [s a, s b], so (with
+    /// its probability p) f(s) = p / (s (b - a)) int_{sa}^{sb} exp(-i mu L(h)) dh
+    /// and df/ds = p (b e(s b) - a e(s a)) / (s (b - a)) - f / s,
+    /// e(h) = exp(-i mu L(h)); for a fixed height (a = b = h)
+    /// df/ds = -i mu h L'(s h) e(s h) p. Exact (closed form).
+    template <class R>
+    OPG_HD inline Complex<double> scale_deriv(const ProdHeightView<R>& hv, const AtmGeom& g,
+                                              int b, double mu, const Complex<double>& f)
+    {
+      const double s = hv.scale, a = hv.lo[b], h = hv.hi[b], p = hv.prob[b];
+      const double kmeV = constants::kKm2eV;
+      auto         e    = [&](double hh) {
+        double sn, cs;
+        const double x = mu * kmeV * atm_length(g, s * hh);
+#if OPG_ON_DEVICE
+        sincos(x, &sn, &cs);
+#else
+        sn = std::sin(x);
+        cs = std::cos(x);
+#endif
+        return Complex<double>(cs, -sn);
+      };
+      if (h > a) {
+        const Complex<double> t = h * e(h) - a * e(a);
+        return Complex<double>(p * t.re / (s * (h - a)) - f.re / s,
+                               p * t.im / (s * (h - a)) - f.im / s);
+      }
+      if (h == 0) return Complex<double>(0, 0);
+      // L'(h) = (r_s + h) / sqrt((r_s + h)^2 - r_d^2 sin^2)  (km / km)
+      const double rt = g.rs + s * h;
+      const double dL = rt / std::sqrt(rt * rt - g.minRsq) * kmeV;
+      const Complex<double> ee = e(h);
+      const double          c  = mu * h * dL * p;  // -i c ee
+      return Complex<double>(c * ee.im, -c * ee.re);
     }
 
     /// Phi_jk = phi(lam_j - lam_k) (Phi_jj = 1, Phi_kj = conj Phi_jk).
@@ -427,7 +470,8 @@ namespace opg {
     OPG_HD OPG_NOINLINE void phi_grad_tables(const ProdHeightView<R>& hv, int d, double cosZ,
                                        const R lam[N], Complex<double> (&Phi)[N][N],
                                        Complex<double> (&G)[N][N][N],
-                                       const BinSeries* pre = nullptr)
+                                       const BinSeries* pre = nullptr,
+                                       Complex<double> (*dPhi)[N] = nullptr)
     {
       const AtmGeom g  = atm_geom(hv, cosZ);
       const double  sL = std::fmax(max_length(hv, g, d), 1e-300);  // scale of L
@@ -484,6 +528,7 @@ namespace opg {
             const Complex<double> f1 = legendre_fourier(mom[0], s.deg + 1, jb) * e;
             Phi[j][k] += f;
             G[j][j][k] += Complex<double>(sL * f1.im, -sL * f1.re);
+            if (dPhi) dPhi[j][k] += scale_deriv(hv, g, b, mu, f);
           }
           G[j][j][j] += Complex<double>(0, -sL * 2 * mom[0][0]);
         }
@@ -518,6 +563,7 @@ namespace opg {
         for (int k = j + 1; k < N; k++) {
           Phi[k][j] = conj(Phi[j][k]);
           G[k][k][j] = -conj(G[j][j][k]);  // phi'(-x) = -conj(phi'(x))
+          if (dPhi) dPhi[k][j] = conj(dPhi[j][k]);
         }
       for (int j = 0; j < N; j++)
         for (int q = j + 1; q < N; q++)
@@ -590,6 +636,23 @@ namespace opg {
         }
     }
 
+    /// d<P_ab>/ds = 2 Re sum_{j<k} x_j conj(x_k) dPhi_jk, x_j = A_bj B_ja.
+    template <int N, class R>
+    OPG_HD OPG_INLINE double scale_grad(const Mat<N, R>& A, const Mat<N, R>& B,
+                                        const Complex<double> (&dPhi)[N][N], int a, int b)
+    {
+      Complex<double> x[N];
+      for (int j = 0; j < N; j++) x[j] = cd<N, R>(A(b, j) * B(j, a));
+      double o = 0;
+      for (int j = 0; j < N; j++)
+        for (int k = j + 1; k < N; k++) {
+          const Complex<double> t = x[j] * conj(x[k]);
+          o += t.re * dPhi[j][k].re - t.im * dPhi[j][k].im;
+        }
+      return 2 * o;
+    }
+
+
   } // namespace prodh
 
   //...........................................................................
@@ -637,7 +700,7 @@ namespace opg {
                                       const EarthView<R>& earth, const ProdHeightView<R>& hv,
                                       int dist, R E, R cosZ, bool nubar, R* out, R* outG,
                                       int count, const R* w, size_t stride, R (&acc)[K],
-                                      const prodh::BinSeries* pre = nullptr)
+                                      const prodh::BinSeries* pre = nullptr, int offset = 0)
   {
     constexpr int N = Model::N;
     for (int k = 0; k < K; k++) acc[k] = 0;
@@ -669,8 +732,15 @@ namespace opg {
     Mat<N, R>       dI0[K];
     Model::template initial_grad<K>(G.P, nubar, dI0);
 
-    Complex<double> Phi[N][N], Gm[N][N][N];
-    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre);
+    // direction of this pass that is the height scale (-1: none)
+    const int       ks = hv.scale_param >= offset && hv.scale_param < offset + K
+                             ? hv.scale_param - offset
+                             : -1;
+    Complex<double> Phi[N][N], Gm[N][N][N], dPhi[N][N];
+    for (int j = 0; j < N; j++)
+      for (int k = 0; k < N; k++) dPhi[j][k] = Complex<double>(0, 0);
+    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre,
+                                 ks >= 0 ? dPhi : nullptr);
 
     using C = Complex<double>;
     const Mat<N, R> Vh = adjoint(V);
@@ -718,6 +788,7 @@ namespace opg {
             d += 2 * (prodh::cd<N, R>(dA[k](b, j)) * t1).re +
                  (prodh::cd<N, R>(A(b, j)) * t2).re;
           }
+          if (k == ks) d += prodh::scale_grad<N, R>(A, B, dPhi, a, b);
           if (outG && k < count) outG[((size_t(k) * N + a) * N + b) * stride] = R(d);
           if (w) acc[k] += w[(a * N + b) * stride] * R(d);
         }
@@ -916,8 +987,12 @@ namespace opg {
     State V;
     R     lam[N];
     Model::seg_eigen(P, E, nubar, atm, V, lam);
-    C Phi[N][N], Gm[N][N][N];
-    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre);
+    const bool want_s = hv.scale_param >= 0 && hv.scale_param < npar;
+    C          Phi[N][N], Gm[N][N][N], dPhi[N][N];
+    for (int j = 0; j < N; j++)
+      for (int k = 0; k < N; k++) dPhi[j][k] = C(0, 0);
+    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre,
+                                 want_s ? dPhi : nullptr);
     const State I0 = initial_state<Model, R>(P, nubar, cosZ);
     const State A = matmul(Rf, V), B = matmul(adjoint(V), I0);
 
@@ -990,6 +1065,17 @@ namespace opg {
     prodh::adjoint_rest_backward<Model, R, K>(P, chunk, npar, earth, cosZ, atm_type, E, nubar,
                                               ckpt, nseg, lamS, acc);
 
+    // height scale: acc += sum_ab w_ab d<P_ab>/ds
+    if (want_s) {
+      double t = 0;
+      for (int a = 0; a < N; a++)
+        for (int b = 0; b < N; b++) {
+          const double wab = double(w[(a * N + b) * stride]);
+          if (wab != 0) t += wab * prodh::scale_grad<N, R>(A, B, dPhi, a, b);
+        }
+      acc[hv.scale_param] += R(t);
+    }
+
     // atmosphere: Hb = V conj(Cm) V^dag; initial state: Ib = 2 V conj(u)
     State Hb, Ib;
     for (int p = 0; p < N; p++)
@@ -1029,6 +1115,8 @@ namespace opg {
       std::vector<double> lo, hi, prob;
       double              r_surf = 0, r_det = 0, atm_density = 0, atm_zoa = 0;
       int                 atm_type = -1;
+      double              scale = 1;        ///< common height scale
+      int                 scale_param = -1; ///< see ProdHeightView
 
       int ndist() const { return int(off.size()) - 1; }
 
@@ -1134,6 +1222,8 @@ namespace opg {
         v.atm_density = R(atm_density);
         v.atm_zoa     = R(atm_zoa);
         v.atm_type    = atm_type;
+        v.scale       = scale;
+        v.scale_param = scale_param;
         return v;
       }
 

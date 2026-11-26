@@ -685,6 +685,11 @@ namespace {
              "a fixed height) and probabilities probs[d] (normalised), uniform in "
              "height within each bin. Averages are exact (one propagation per point).")
         .def_prop_ro("n_prod_heights", [](W& w) { return w.prop.n_prod_heights(); })
+        .def("set_prod_height_scale",
+             [](W& w, double sc) { w.prop.set_prod_height_scale(sc); }, "scale"_a,
+             "Common scale of all production heights (h -> scale * h, default 1); its "
+             "gradient parameter is 'prod_height_scale'.")
+        .def_prop_ro("prod_height_scale", [](W& w) { return w.prop.prod_height_scale(); })
         .def("prod_height_path_length",
              [](W& w, double c, double h) { return w.prop.prod_height_path_length(c, h); },
              "cosz"_a, "height"_a,

@@ -537,7 +537,7 @@ namespace opg {
                   R            acc[GK];
                   prod_height_grad<Model, R, GK>(P, ch.P, earth, hv, grid_dist(ic, ie), fE[ie],
                                                  fC[ic], nb == 1, c == 0 ? base + k : nullptr,
-                                                 gbase + k, ch.count, nullptr, npt, acc);
+                                                 gbase + k, ch.count, nullptr, npt, acc, nullptr, ch.offset);
                 }
               }
             }
@@ -594,7 +594,7 @@ namespace opg {
                   prod_height_grad<Model, R, GK>(P, ch.P, earth, hv, grid_dist(size_t(ic), ie),
                                                  fE[ie], fC[ic], nb == 1, nullptr, nullptr, 0,
                                                  wbase + ic * nE + ie, npt, acc,
-                                                 pre.empty() ? nullptr : pre.data());
+                                                 pre.empty() ? nullptr : pre.data(), ch.offset);
                   for (int k = 0; k < GK; k++) rowacc[k] += acc[k];
                 }
                 for (int k = 0; k < GK; k++) part[ic * GK + k] = rowacc[k];
@@ -636,7 +636,7 @@ namespace opg {
                                                dist[i], E[i], cosZ[i], nubar[i] != 0,
                                                c == 0 ? out + i : nullptr,
                                                G + size_t(ch.offset) * N * N * n + i, ch.count,
-                                               nullptr, n, acc);
+                                               nullptr, n, acc, nullptr, ch.offset);
               }
             }
           }
@@ -682,7 +682,7 @@ namespace opg {
                 R acc[GK];
                 prod_height_grad<Model, R, GK>(P, ch.P, event_earth(earth, az, i), hv, dist[i],
                                                E[i], cosZ[i], nubar[i] != 0, nullptr, nullptr, 0,
-                                               w + i, n, acc);
+                                               w + i, n, acc, nullptr, ch.offset);
                 for (int k = 0; k < GK; k++) blk[k] += acc[k];
               }
               for (int k = 0; k < GK; k++) part[b * GK + k] = blk[k];

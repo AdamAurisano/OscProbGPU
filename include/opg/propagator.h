@@ -214,11 +214,15 @@ namespace opg {
       }
 
       /// All parameters set_gradient_params() accepts: parameter_names()
-      /// followed by earth_parameter_names().
+      /// followed by earth_parameter_names() and, for models with
+      /// production-height averaging, prod_height_scale (the common scale of
+      /// all production heights, see set_prod_height_scale(); it only acts on
+      /// the production-height modes, elsewhere its derivative is 0).
       std::vector<std::string> gradient_parameter_names() const
       {
         auto n = parameter_names();
         for (auto& e : earth_parameter_names()) n.push_back(e);
+        if constexpr (supports_prod_height_grad_v<Model>) n.push_back("prod_height_scale");
         return n;
       }
 
@@ -260,6 +264,7 @@ namespace opg {
         fGradNames   = names;
         fGradIdx     = idx;
         fChunksValid = false;
+        update_prod_height_scale_param();
         fGradValid = fBinnedGradValid = false;  // their layout depends on the selection
         if (names.empty()) fChunks.clear();
       }
@@ -1101,6 +1106,8 @@ namespace opg {
         ProdHeightTable t;
         t.set_earth(fEarth);
         for (size_t d = 0; d < edges.size(); d++) t.add(edges[d], probs[d]);
+        t.scale       = fPH.scale;
+        t.scale_param = fPH.scale_param;
         fEngine->set_prod_heights(t);
         fPH     = t;
         fHavePH = true;
@@ -1111,6 +1118,20 @@ namespace opg {
 
       /// Number of production-height distributions.
       int n_prod_heights() const { return fHavePH ? fPH.ndist() : 0; }
+
+      /// Common scale s of all production heights: every distribution's
+      /// heights h become s h (bin edges scaled, probabilities kept; default
+      /// 1). Its gradient parameter is prod_height_scale (d/ds). The
+      /// atmosphere's medium extends to any height, so scaled heights above
+      /// the Earth model's own atmosphere are allowed. s must be > 0.
+      void set_prod_height_scale(double s)
+      {
+        if (!(s > 0) || !std::isfinite(s))
+          throw std::invalid_argument("set_prod_height_scale: the scale must be finite and > 0");
+        fPH.scale = s;
+        if (fHavePH) fEngine->set_prod_heights(fPH);
+      }
+      double prod_height_scale() const { return fPH.scale; }
 
       /// Path length (km) through the atmosphere for production height h (km
       /// above its base) and direction cosZ, as used by the averages.
@@ -1318,6 +1339,22 @@ namespace opg {
           analytic::check_supported<Model>(P[p], G.data() + p * size_t(nchunk), size_t(nchunk));
       }
 
+      /// Position of prod_height_scale among the selected gradient
+      /// parameters into the production-height table (and the engine).
+      void update_prod_height_scale_param()
+      {
+        if constexpr (supports_prod_height_grad_v<Model>) {
+          const int sidx = int(gradient_parameter_names().size()) - 1;
+          int       pos  = -1;
+          for (size_t k = 0; k < fGradIdx.size(); k++)
+            if (fGradIdx[k] == sidx) pos = int(k);
+          if (pos != fPH.scale_param) {
+            fPH.scale_param = pos;
+            if (fHavePH) fEngine->set_prod_heights(fPH);
+          }
+        }
+      }
+
       void require_prod_heights() const
       {
         if constexpr (!supports_prod_height_v<Model>) EngineBase<Model>::no_prod_height();
@@ -1433,8 +1470,10 @@ namespace opg {
                 Model::template param_ref<D>(pd, idx).d[k] += R(1);
               else if (idx < nmodel + ntypes)
                 c.P.zoa_type[k] = fZoaTypes[idx - nmodel];
-              else
+              else if (idx < nmodel + 2 * ntypes)
                 c.P.rho_type[k] = fZoaTypes[idx - nmodel - ntypes];
+              // else: prod_height_scale (no dual seed; the production-height
+              // code adds its derivative, see ProdHeightView::scale_param)
             }
             c.P.P    = Model::template prepare_generic<D>(pd);
             c.offset = int(off);

@@ -624,6 +624,29 @@ histogram per (E, cosZ) table cell): PISCES- or NuTauOsc-style event lists
 pass the index of the cell of each event. The plain calculators are
 untouched: index −1 runs exactly the plain per-point code.
 
+**Height scale.** `set_prod_height_scale(s)` (Python and C++; default 1)
+scales every height of every distribution, h → s·h (bin edges scaled,
+probabilities kept), e.g. for the uncertainty of the atmosphere's density
+profile, common to all parents. Its gradient parameter `prod_height_scale` is
+listed in `gradient_parameter_names` and selected like the Earth parameters
+(never by default); it acts in all production-height modes (grid and event
+lists, stored and weighted gradients, forward and reverse mode, CPU and GPU,
+PREM and binned Earth) and has derivative 0 elsewhere. Only φ depends on s:
+for a bin uniform on [s a, s b] with probability p,
+
+  dφ_bin/ds = p (b e(s b) − a e(s a)) / (s (b − a)) − φ_bin / s,  e(h) = e^{−iωL(h)}
+
+(closed form; a fixed height h gives −iω h L′(s h) e(s h) p), and
+d⟨P_ab⟩/ds = Σ_jk A_bj B_ja conj(A_bk B_ka) dφ(λ_j − λ_k)/ds. Scaled
+heights may exceed the Earth model's own atmosphere: the atmosphere's medium
+is taken to extend to any height. Separate scales per flavour (or parent) are
+possible with separate calls, one table per flavour, each with its own
+scale; for a shared scale the gradients of the calls add up. Validation
+(s = 1.3, all eight models, PREM and binned, CPU and GPU): exact vs brute
+force with scaled heights ≤ 3.6e-14, d/ds vs central finite differences ≤
+3e-7 (3+2, 3+3; 3ν ≤ 2e-8, the FD noise), forward vs reverse mode equal to
+round-off.
+
 Not covered: the GL bin averages (`set_bins`), the analytic averages and the
 batched modes (average over heights first per event or grid point, or ask).
 
