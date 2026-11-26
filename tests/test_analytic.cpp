@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <string>
 #include <vector>
 
 #include "doctest.h"
@@ -278,16 +280,20 @@ namespace antest {
   /// double (prepared state built in long double from the shifted
   /// parameters). Steps: 1e-3 for angles and phases, 1e-3 / (1.267 xmax)
   /// for splittings (xmax = largest L/E in the bins). Returns the largest
-  /// error relative to max(max |dP/dp|, floor) over parameters.
+  /// error relative to max(max |dP/dp|, floor) over parameters. sel: the
+  /// parameters (default selection if empty); step: the step of a
+  /// parameter (if > 0) instead of the rule above.
   template <class Model>
   double check_grad(const typename Model::Params& p, const std::vector<opg::AnalyticSubBin>& sub,
                     size_t nb, const Path<double>& path, bool nubar, double xmax,
-                    const char* label)
+                    const char* label, const std::vector<std::string>& sel = {},
+                    const std::function<double(const std::string&)>& step = {})
   {
     using ML = typename LongDouble<Model>::type;
     opg::Propagator<Model> prop;
     prop.set_params(p);
-    prop.set_gradient_params();
+    if (sel.empty()) prop.set_gradient_params();
+    else prop.set_gradient_params(sel);
     std::vector<double> P, dP;
     prop.avg_path_analytic_subbins_grad(sub, nb, path, nubar, P, dP);
     CHECK(prop.avg_path_analytic_subbins(sub, nb, path, nubar) == P);
@@ -303,7 +309,8 @@ namespace antest {
       auto base        = ML::template cast<long double>(p);
       const long double v = ML::template param_ref<long double>(base, idx);
       const bool        dm = names[ip].rfind("dm", 0) == 0;
-      const long double h  = dm ? 1e-3 / (1.267 * xmax) : 1e-3;
+      const double      hs = step ? step(names[ip]) : 0.0;
+      const long double h  = hs > 0 ? hs : dm ? 1e-3 / (1.267 * xmax) : 1e-3;
       auto ev = [&](int s) {
         auto q = base;
         ML::template param_ref<long double>(q, idx) = v + s * h;
@@ -795,6 +802,391 @@ TEST_CASE("Analytic averages of a sandwiched model (NUNM): fused path, cells, ba
           CHECK(g[pt * nq + q] == doctest::Approx(ref).epsilon(1e-12));
         }
     }
+  }
+}
+#endif
+
+// ---------------------------------------------------------------------------
+// SNSI (A per segment), LIV (aT3 only) and SiderealLIV (aT only, fixed
+// direction and time).
+
+namespace antest {
+
+  using SNSI        = opg::SNSI<double>;
+  using LIV         = opg::LIV<double>;
+  using SiderealLIV = opg::SiderealLIV<double>;
+
+  /// LIV point with only the dimension-3 terms (variants::liv / liv_phases).
+  inline LIV::Params liv_a3(bool phases)
+  {
+    LIV::Params p = phases ? variants::liv_phases() : variants::liv();
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++)
+        for (int c = 0; c < 3; c++) {
+          if (c > 0) p.aT[i][j][c] = p.aT_ph[i][j][c] = 0;
+          p.cT[i][j][c] = p.cT_ph[i][j][c] = 0;
+        }
+    return p;
+  }
+
+  /// SiderealLIV point without the cT terms (variants::sidereal / _fixed).
+  inline SiderealLIV::Params sidereal_a(bool fixed)
+  {
+    SiderealLIV::Params p = fixed ? variants::sidereal_fixed() : variants::sidereal();
+    for (int i = 0; i < 3; i++)
+      for (int j = 0; j < 3; j++)
+        for (int x = 0; x < 3; x++)
+          for (int y = 0; y < 3; y++) p.c[i][j][x][y] = 0;
+    return p;
+  }
+
+  /// Gradient selection of the new models' tests and finite-difference
+  /// steps of their coefficients (aT in GeV: relative to 1e-21).
+  inline std::vector<std::string> liv_names()
+  {
+    return {"th12", "th23", "dm31", "d13", "aT3_ee", "aT3_emu", "aT3_mutau", "aT3_etau",
+            "ph_aT3_emu", "ph_aT3_etau"};
+  }
+  inline std::vector<std::string> sidereal_names()
+  {
+    return {"th13", "dm31", "aX_ee", "aY_emu", "aZ_etau", "aX_mutau", "aZ_tautau"};
+  }
+  inline double coef_step(const std::string& n)
+  {
+    return n.rfind("aT", 0) == 0 || n[0] == 'a' ? 1e-24 : 0.0;
+  }
+
+  /// d/d ln rho_t and d/d zoa_t of the analytic averages vs 4-point
+  /// long-double central differences (step 1e-4) over the path; returns
+  /// the worst error relative to max(max |dP|, 1e-3).
+  template <class Model>
+  double check_earth_grad(const typename Model::Params& p, const Path<double>& path,
+                          const std::vector<double>& E, bool nubar, EMeasure m,
+                          const char* label)
+  {
+    using ML = typename LongDouble<Model>::type;
+    opg::Propagator<Model> prop;
+    prop.set_params(p);
+    std::vector<std::string> names;
+    int                      ntype = 0;
+    for (auto& s : path) ntype = std::max(ntype, s.layer + 1);
+    for (int t = 0; t < ntype; t++) {
+      names.push_back("zoa_" + std::to_string(t));
+      names.push_back("rho_" + std::to_string(t));
+    }
+    prop.set_gradient_params(names);
+    const size_t        nb = E.size() - 1, n = size_t(Model::N) * Model::N * nb;
+    std::vector<double> P, dP;
+    prop.avg_path_analytic_grad(E, path, nubar, P, dP, m);
+    const auto sub = opg::Propagator<Model>::analytic_subbins(E, path, m, BinVar::E);
+    const auto pr  = ML::prepare_generic(ML::template cast<long double>(p));
+    double     worst = 0;
+    for (size_t q = 0; q < names.size(); q++) {
+      const int  layer = int(q / 2);
+      const bool rho   = q % 2 == 1;
+      auto       ev    = [&](int s) {
+        const long double h = 1e-4;
+        Path<long double> pl;
+        for (auto& g : path) pl.push_back({g.length, g.density, g.zoa, g.layer});
+        for (auto& g : pl)
+          if (g.layer == layer) {
+            if (rho) g.density *= 1 + s * h;
+            else g.zoa += s * h;
+          }
+        std::vector<long double> o;
+        opg::analytic::average<ML>(pr, nullptr, 0, sub, nb, pl, nubar,
+                                   opg::AnalyticAvgOptions{}, o, nullptr);
+        return o;
+      };
+      auto   a = ev(-2), b = ev(-1), c = ev(1), d = ev(2);
+      double emax = 0, gmax = 0;
+      for (size_t i = 0; i < n; i++) {
+        const double fd = double((a[i] - 8 * b[i] + 8 * c[i] - d[i]) / (12 * 1e-4L));
+        emax            = std::max(emax, std::fabs(fd - dP[q * n + i]));
+        gmax            = std::max(gmax, std::fabs(fd));
+      }
+      MESSAGE(std::string(label) << " " << names[q] << ": max|dP| " << gmax << ", error "
+                                 << emax);
+      worst = std::max(worst, emax / std::max(gmax, 1e-3));
+    }
+    return worst;
+  }
+
+} // namespace antest
+
+TEST_CASE("Analytic averages of SNSI, LIV (aT3) and SiderealLIV (aT): brute-force GL")
+{
+  static_assert(opg::has_segment_vacuum<SNSI>::value, "SNSI: A per segment");
+  static_assert(opg::has_analytic_vacuum<LIV>::value && !opg::has_segment_vacuum<LIV>::value,
+                "LIV: one A without the aT terms");
+  static_assert(opg::has_analytic_hamiltonian<SiderealLIV>::value, "SiderealLIV: fixed state");
+  std::vector<double> fe;
+  for (int i = 0; i <= 60; i++) fe.push_back(0.5 * std::pow(120.0, i / 60.0));
+  std::vector<double> lo, hi;
+  e_to_u(fe, lo, hi);
+  const Path<double> one{{1300, 2.848, 0.5, 0}};
+  const Path<double> three{{1000, 2, 0.5, 0}, {1000, 4.5, 0.47, 1}, {1000, 2, 0.5, 0}};
+  const Path<double> vac{{1300, 0, 0.5, 0}};
+  // extra: opt.extra_potential (eV) on one segment / vacuum and on three
+  // segments (the default rule only sees the matter potential)
+  auto run = [&](auto& prop, const std::string& label, double extra1, double extra3) {
+    for (const auto* path : {&one, &three, &vac})
+      for (int nubar = 0; nubar < 2; nubar++)
+        for (auto m : {EMeasure::Linear, EMeasure::InvE}) {
+          if (path == &vac && m == EMeasure::Linear) continue;  // measure-limited in vacuum
+          opg::AnalyticAvgOptions opt;
+          opt.extra_potential = path == &three ? extra3 : extra1;
+          auto   a = prop.avg_path_analytic(fe, *path, nubar, m, BinVar::E, opt);
+          double d = max_abs_diff(a, brute(prop, lo, hi, *path, nubar, m, 2.6e-3));
+          MESSAGE(label << " " << path->size() << " segment(s) rho " << (*path)[0].density
+                        << ", nubar " << nubar << ", measure " << int(m) << ": " << d);
+          CHECK(d < 3e-6);
+        }
+  };
+  {
+    // the scalar term changes the mass term between segments of different
+    // density (large here: |n eps| ~ 0.2 m1)
+    opg::Propagator<SNSI> prop;
+    prop.set_params(variants::snsi());
+    run(prop, "SNSI", 0, 3e-11);
+    prop.set_params(variants::snsi_io());
+    run(prop, "SNSI IO", 0, 3e-11);
+  }
+  {
+    // aT3 up to 2e-21 GeV = 2e-12 eV, ~20x the matter potential;
+    // extra_potential ~ 2x the largest coefficient (SiderealLIV: 4x, the
+    // direction factors)
+    opg::Propagator<LIV> prop;
+    prop.set_params(liv_a3(false));
+    run(prop, "LIV aT3", 4e-12, 4e-12);
+    prop.set_params(liv_a3(true));
+    run(prop, "LIV aT3 phases", 3e-12, 3e-12);
+  }
+  {
+    opg::Propagator<SiderealLIV> prop;
+    prop.set_params(sidereal_a(false));
+    run(prop, "SiderealLIV", 2.4e-13, 2.4e-13);
+    prop.set_params(sidereal_a(true));
+    run(prop, "SiderealLIV fixed", 1.2e-12, 1.2e-12);
+  }
+}
+
+TEST_CASE("Analytic averages: LIV and SiderealLIV without LIV terms equal Fast")
+{
+  std::vector<double> fe;
+  for (int i = 0; i <= 30; i++) fe.push_back(0.5 * std::pow(120.0, i / 30.0));
+  const Path<double> path{{1000, 2, 0.5, 0}, {1000, 4.5, 0.47, 1}};
+  opg::Propagator<Fast> pf;
+  Fast::Params          fp;
+  fp.mix = variants::nominal_mix<3>();
+  pf.set_params(fp);
+  opg::Propagator<LIV>         pl;
+  opg::Propagator<SiderealLIV> ps;
+  LIV::Params                  lp;
+  SiderealLIV::Params          sp;
+  lp.mix = sp.mix = fp.mix;
+  sp.SetNeutrinoDirection(40, 70);
+  pl.set_params(lp);
+  ps.set_params(sp);
+  for (int nubar = 0; nubar < 2; nubar++) {
+    const auto a = pf.avg_path_analytic(fe, path, nubar);
+    CHECK(max_abs_diff(a, pl.avg_path_analytic(fe, path, nubar)) < 1e-13);
+    CHECK(max_abs_diff(a, ps.avg_path_analytic(fe, path, nubar)) < 1e-13);
+  }
+}
+
+TEST_CASE("Analytic averages refuse LIV terms that grow with E")
+{
+  const Path<double>        path{{1300, 2.848, 0.5, 0}};
+  const std::vector<double> E{0.5, 1.0, 2.0, 5.0};
+  {
+    opg::Propagator<LIV> prop;
+    prop.set_params(liv_a3(false));
+    CHECK_NOTHROW(prop.avg_path_analytic(E, path, false));
+    for (int k = 0; k < 2; k++) {
+      LIV::Params p = liv_a3(false);
+      if (k == 0) p.SetcT(1, 1, 4, 1e-30, 0);  // even a tiny cT4
+      else p.SetaT(0, 1, 5, 1e-35, 0);
+      prop.set_params(p);
+      CHECK_THROWS_AS(prop.avg_path_analytic(E, path, false), std::invalid_argument);
+      CHECK(prop.avg_path(E, 4, path, false).size() == 9 * 3);  // GL still works
+      // batches: a refused point fails the call (host handle)
+      prop.set_params(liv_a3(false));
+      auto b = prop.analytic_batch(E, path, false);
+      std::vector<double> out;
+      CHECK_THROWS_AS(prop.avg_path_analytic_batch(b, {liv_a3(false), p}, out),
+                      std::invalid_argument);
+    }
+#ifndef OPG_DISABLE_GRADIENTS
+    // derivatives with respect to d >= 4 coefficients (even at zero)
+    std::vector<double> P, dP;
+    for (const char* n : {"cT4_mumu", "aT5_emu", "cT8_tautau"}) {
+      prop.set_gradient_params({"th23", n});
+      CHECK_THROWS_AS(prop.avg_path_analytic_grad(E, path, false, P, dP),
+                      std::invalid_argument);
+    }
+    prop.set_gradient_params();  // the default selection includes cT4
+    CHECK_THROWS_AS(prop.avg_path_analytic_grad(E, path, false, P, dP), std::invalid_argument);
+    // a phase of a zero d >= 4 coefficient does not enter (its derivative is 0)
+    prop.set_gradient_params({"th23", "ph_cT4_emu"});
+    prop.avg_path_analytic_grad(E, path, false, P, dP);
+    CHECK(std::all_of(dP.begin() + long(P.size()), dP.end(), [](double v) { return v == 0; }));
+#endif
+  }
+  {
+    opg::Propagator<SiderealLIV> prop;
+    SiderealLIV::Params          p = sidereal_a(true);
+    prop.set_params(p);
+    CHECK_NOTHROW(prop.avg_path_analytic(E, path, true));
+    p.SetC(0, 1, 0, 2, 1e-30);
+    prop.set_params(p);
+    CHECK_THROWS_AS(prop.avg_path_analytic(E, path, true), std::invalid_argument);
+#ifndef OPG_DISABLE_GRADIENTS
+    prop.set_params(sidereal_a(true));
+    std::vector<double> P, dP;
+    prop.set_gradient_params({"aX_emu", "cXZ_emu"});
+    CHECK_THROWS_AS(prop.avg_path_analytic_grad(E, path, false, P, dP), std::invalid_argument);
+#endif
+  }
+}
+
+#ifndef OPG_DISABLE_GRADIENTS
+TEST_CASE("Analytic average gradients of SNSI, LIV and SiderealLIV")
+{
+  std::vector<double> fe;
+  for (int i = 0; i <= 20; i++) fe.push_back(0.5 * std::pow(40.0, i / 20.0));
+  const Path<double> one{{1300, 2.848, 0.5, 0}};
+  const Path<double> three{{1000, 2, 0.5, 0}, {1000, 4.5, 0.47, 1}, {1000, 2, 0.5, 0}};
+  for (const auto* path : {&one, &three}) {
+    const double xmax = (path->size() == 1 ? 1300 : 3000) / 0.5;
+    for (auto m : {EMeasure::Linear, EMeasure::InvE}) {
+      auto sub = opg::Propagator<SNSI>::analytic_subbins(fe, *path, m, BinVar::E);
+      const size_t nb = fe.size() - 1;
+      for (int nubar = 0; nubar < 2; nubar++) {
+        // mlight: not at 0 (snsi_io), where its derivative is one-sided
+        std::vector<std::string> sn = SNSI::default_param_names();
+        auto snsi_step = [](const std::string& n) {
+          return n == "mlight" || n.rfind("eps", 0) == 0 ? 1e-4 : 0.0;
+        };
+        CHECK(check_grad<SNSI>(variants::snsi_io(), sub, nb, *path, nubar, xmax, "SNSI IO", sn,
+                               snsi_step) < 1e-6);
+        sn.push_back("mlight");
+        CHECK(check_grad<SNSI>(variants::snsi(), sub, nb, *path, nubar, xmax, "SNSI", sn,
+                               snsi_step) < 1e-6);
+        CHECK(check_grad<LIV>(liv_a3(true), sub, nb, *path, nubar, xmax, "LIV", liv_names(),
+                              coef_step) < 1e-6);
+        CHECK(check_grad<SiderealLIV>(sidereal_a(false), sub, nb, *path, nubar, xmax,
+                                      "SiderealLIV", sidereal_names(), coef_step) < 1e-6);
+      }
+    }
+    // Earth parameters: SNSI's A depends on density and Z/A
+    const std::vector<double> E{0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 20.0};
+    for (int nubar = 0; nubar < 2; nubar++) {
+      CHECK(check_earth_grad<SNSI>(variants::snsi(), *path, E, nubar, EMeasure::InvE, "SNSI") <
+            1e-8);
+      CHECK(check_earth_grad<SNSI>(variants::snsi_io(), *path, E, nubar, EMeasure::Linear,
+                                   "SNSI IO") < 1e-8);
+      CHECK(check_earth_grad<LIV>(liv_a3(true), *path, E, nubar, EMeasure::InvE, "LIV") < 1e-8);
+      CHECK(check_earth_grad<SiderealLIV>(sidereal_a(true), *path, E, nubar, EMeasure::InvE,
+                                          "SiderealLIV") < 1e-8);
+    }
+  }
+}
+
+TEST_CASE("Analytic averages of SNSI, LIV, SiderealLIV: fused path, cells, rows, batches")
+{
+  std::vector<double> fe;
+  for (int i = 0; i <= 60; i++) fe.push_back(0.5 * std::pow(120.0, i / 60.0));
+  const Path<double> one{{1300, 2.848, 0.5, 0}}, two{{650, 2.848, 0.5, 0}, {650, 2.848, 0.5, 0}};
+  const size_t       nb = fe.size() - 1, n = 9 * nb;
+  auto check = [&](auto& prop, const auto& p, const auto& p2, std::vector<std::string> names,
+                   const char* label) {
+    names.push_back("zoa_0");
+    names.push_back("rho_0");
+    prop.set_params(p);
+    prop.set_gradient_params(names);
+    auto sub = std::decay_t<decltype(prop)>::analytic_subbins(fe, one, EMeasure::Linear,
+                                                              BinVar::E);
+    for (int nubar = 0; nubar < 2; nubar++) {
+      std::vector<double> P1, dP1, P2, dP2;
+      prop.avg_path_analytic_subbins_grad(sub, nb, one, nubar, P1, dP1);
+      prop.avg_path_analytic_subbins_grad(sub, nb, two, nubar, P2, dP2);
+      double sg = 1;
+      for (double x : dP2) sg = std::max(sg, std::fabs(x));
+      MESSAGE(label << " nubar " << nubar << ", " << names.size()
+                    << " parameters: fused vs general P " << max_abs_diff(P1, P2)
+                    << ", dP (rel) " << max_abs_diff(dP1, dP2) / sg);
+      CHECK(max_abs_diff(P1, P2) < 1e-11);
+      CHECK(max_abs_diff(dP1, dP2) / sg < 1e-10);
+
+      opg::AnalyticAvgOptions r;  // rows = {e, mu}
+      r.rows = 3;
+      for (const auto* path : {&one, &two}) {
+        std::vector<double> Pr, dPr;
+        prop.avg_path_analytic_subbins_grad(sub, nb, *path, nubar, Pr, dPr, r);
+        const auto& Pf  = path == &one ? P1 : P2;
+        const auto& dPf = path == &one ? dP1 : dP2;
+        bool        ok  = Pr.size() == n;
+        for (size_t q = 0; q < Pr.size() / nb; q++)
+          for (size_t b = 0; b < nb; b++)
+            ok = ok && ((q % 9) / 3 < 2 ? Pr[q * nb + b] == Pf[q * nb + b] : Pr[q * nb + b] == 0);
+        for (size_t q = 0; q < dPr.size() / nb; q++)
+          for (size_t b = 0; b < nb; b++)
+            ok = ok &&
+                 ((q % 9) / 3 < 2 ? dPr[q * nb + b] == dPf[q * nb + b] : dPr[q * nb + b] == 0);
+        CHECK(ok);
+      }
+
+      // batch handles (host backend): bit-identical to single calls, also
+      // with cells; weighted gradients
+      for (int o = 0; o < 2; o++) {
+        opg::AnalyticAvgOptions opt;
+        opt.cells = o == 1;
+        std::vector<double> Ps, dPs, Qs, dQs;
+        prop.set_params(p);
+        prop.avg_path_analytic_grad(fe, one, nubar, Ps, dPs, EMeasure::Linear, BinVar::E, opt);
+        prop.set_params(p2);
+        prop.avg_path_analytic_grad(fe, one, nubar, Qs, dQs, EMeasure::Linear, BinVar::E, opt);
+        prop.set_params(p);
+        auto b = prop.analytic_batch(fe, one, nubar, EMeasure::Linear, BinVar::E, opt);
+        std::vector<double> bo, bd;
+        prop.avg_path_analytic_batch(b, {p, p2}, bo, &bd);
+        const size_t nq = names.size();
+        CHECK(std::equal(Ps.begin(), Ps.end(), bo.begin()));
+        CHECK(std::equal(Qs.begin(), Qs.end(), bo.begin() + long(n)));
+        CHECK(std::equal(dPs.begin(), dPs.end(), bd.begin()));
+        CHECK(std::equal(dQs.begin(), dQs.end(), bd.begin() + long(nq * n)));
+        std::vector<double> w(bo.size()), g;
+        for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i));
+        prop.avg_path_analytic_batch_weighted(b, {p, p2}, w, g);
+        REQUIRE(g.size() == 2 * nq);
+        for (size_t pt = 0; pt < 2; pt++)
+          for (size_t q = 0; q < nq; q++) {
+            double ref = 0;
+            for (size_t c = 0; c < n; c++) ref += w[pt * n + c] * bd[(pt * nq + q) * n + c];
+            CHECK(g[pt * nq + q] == doctest::Approx(ref).epsilon(1e-12));
+          }
+      }
+    }
+  };
+  {
+    opg::Propagator<SNSI>    prop;
+    std::vector<std::string> sn = SNSI::default_param_names();
+    sn.push_back("mlight");
+    REQUIRE(sn.size() + 2 > size_t(opg::analytic::FUSED_MAXP));
+    check(prop, variants::snsi(), variants::snsi_io(), sn, "SNSI");
+  }
+  {
+    opg::Propagator<LIV> prop;
+    check(prop, liv_a3(true), liv_a3(false), liv_names(), "LIV");
+  }
+  {
+    // per-point direction and sidereal time (part of the parameters)
+    opg::Propagator<SiderealLIV> prop;
+    SiderealLIV::Params          p2 = sidereal_a(false);
+    p2.SetNeutrinoDirection(100, 20);
+    p2.SetTimeHours(13.5);
+    check(prop, sidereal_a(true), p2, sidereal_names(), "SiderealLIV");
   }
 }
 #endif

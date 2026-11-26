@@ -455,3 +455,148 @@ TEST_CASE("GPU batched analytic averages of a sandwiched model (NUNM)")
     }
   }
 }
+
+namespace {
+  /// max over gradient parameters q of max |a - b| / max(max |b|, floor),
+  /// each parameter q (blocks of n = N*N*nbins) with its own scale.
+  double rel_diff_q(const std::vector<double>& a, const std::vector<double>& b, size_t n,
+                    double floor)
+  {
+    REQUIRE(a.size() == b.size());
+    double worst = 0;
+    for (size_t q = 0; q * n < a.size(); q++) {
+      double m = 0, s = floor;
+      for (size_t i = q * n; i < (q + 1) * n; i++) {
+        m = std::max(m, std::fabs(a[i] - b[i]));
+        s = std::max(s, std::fabs(b[i]));
+      }
+      worst = std::max(worst, m / s);
+    }
+    return worst;
+  }
+
+  /// SNSI, LIV, SiderealLIV: single calls (GPU vs host), batches (GPU vs
+  /// host, GPU batch vs GPU single calls) and weighted batches, for one
+  /// segment (fused kernels), one segment with cells and three segments.
+  template <class Model>
+  void check_new_model(int dev, const std::vector<typename Model::Params>& pts,
+                       const std::vector<std::string>& names, double extra,
+                       const std::string& label)
+  {
+    opg::Propagator<Model> gpu(opg::PremModel(), {dev}), cpu;
+    gpu.set_gradient_params(names);
+    cpu.set_gradient_params(names);
+    std::vector<double> fe, ne;
+    for (int i = 0; i <= 60; i++) fe.push_back(0.5 * std::pow(120.0, i / 60.0));
+    for (int i = 0; i <= 200; i++) ne.push_back(0.001 * std::pow(1000.0, i / 200.0));
+    const std::vector<opg::Segment<double>> fd{{1300, 2.848, 0.5, 0}}, nd{{0.574, 2.848, 0.5, 0}},
+        three{{1000, 2, 0.5, 0}, {1000, 4.5, 0.47, 1}, {1000, 2, 0.5, 0}};
+    for (int cfg = 0; cfg < 3; cfg++) {
+      const bool  isnd  = cfg == 1;
+      const auto& edges = isnd ? ne : fe;
+      const auto& path  = cfg == 2 ? three : isnd ? nd : fd;
+      const auto  var   = isnd ? opg::BinVar::LoE : opg::BinVar::E;
+      const auto  meas  = isnd ? opg::EMeasure::InvE : opg::EMeasure::Linear;
+      opg::AnalyticAvgOptions o, h;
+      o.cells = isnd;
+      o.extra_potential = extra;
+      h      = o;
+      h.host = true;
+      for (int nubar = 0; nubar < 2; nubar++) {
+        const size_t        n = Model::N * Model::N * (edges.size() - 1);
+        std::vector<double> Pg, dPg, Pc, dPc;
+        gpu.set_params(pts[0]);
+        cpu.set_params(pts[0]);
+        gpu.avg_path_analytic_grad(edges, path, nubar, Pg, dPg, meas, var, o);
+        cpu.avg_path_analytic_grad(edges, path, nubar, Pc, dPc, meas, var, h);
+        const double sp = rel_diff_q(Pg, Pc, n, 1.0), sg = rel_diff_q(dPg, dPc, n, 1.0);
+
+        auto b  = gpu.analytic_batch(edges, path, nubar, meas, var, o);
+        auto bc = cpu.analytic_batch(edges, path, nubar, meas, var, o);
+        REQUIRE(b.on_device());
+        std::vector<double> out, dout, co, cd;
+        gpu.avg_path_analytic_batch(b, pts, out, &dout);
+        cpu.avg_path_analytic_batch(bc, pts, co, &cd);
+        const size_t nq = names.size();
+        const double ep = rel_diff_q(out, co, n, 1.0), eg = rel_diff_q(dout, cd, n, 1.0);
+        // GPU batch point 0 vs the GPU single call
+        const std::vector<double> o0(out.begin(), out.begin() + long(n)),
+            d0(dout.begin(), dout.begin() + long(nq * n));
+        const double bp = rel_diff_q(o0, Pg, n, 1.0), bg = rel_diff_q(d0, dPg, n, 1.0);
+
+        std::vector<double> w(out.size()), g, gc, ref(pts.size() * nq, 0.0), sc(ref.size(), 0.0);
+        for (size_t i = 0; i < w.size(); i++) w[i] = std::sin(0.37 * double(i) + 1.0);
+        gpu.avg_path_analytic_batch_weighted(b, pts, w, g);
+        cpu.avg_path_analytic_batch_weighted(bc, pts, w, gc);
+        for (size_t p = 0; p < pts.size(); p++)
+          for (size_t k = 0; k < nq; k++)
+            for (size_t c = 0; c < n; c++) {
+              const double t = w[p * n + c] * dout[(p * nq + k) * n + c];
+              ref[p * nq + k] += t;
+              sc[p * nq + k] += std::fabs(t);
+            }
+        double ew = 0, ec = 0;
+        for (size_t i = 0; i < g.size(); i++) {
+          ew = std::max(ew, std::fabs(g[i] - ref[i]) / std::max(sc[i], 1e-300));
+          ec = std::max(ec, std::fabs(g[i] - gc[i]) / std::max(sc[i], 1e-300));
+        }
+        MESSAGE(label << " config " << cfg << " nubar " << nubar << ": single GPU vs host P "
+                      << sp << ", dP (rel) " << sg << "; batch GPU vs host P " << ep << ", dP "
+                      << eg << "; batch vs single (GPU) P " << bp << ", dP " << bg
+                      << "; weighted vs contracted " << ew << ", vs host " << ec);
+        CHECK(sp < 1e-10);
+        CHECK(sg < 1e-9);
+        CHECK(ep < 1e-10);
+        CHECK(eg < 1e-9);
+        CHECK(bp < 1e-12);
+        CHECK(bg < 1e-11);
+        CHECK(ew < 1e-9);
+        CHECK(ec < 1e-9);
+      }
+    }
+  }
+} // namespace
+
+TEST_CASE("GPU analytic averages of SNSI, LIV (aT3) and SiderealLIV (aT)")
+{
+  const int dev = devs("OPG_TEST_DEVICES", "0").front();
+  {
+    auto io = variants::snsi_io();
+    io.SetLowestMass(0.01);
+    std::vector<std::string> n = opg::SNSI<>::default_param_names();
+    n.push_back("mlight");
+    n.push_back("zoa_0");
+    n.push_back("rho_0");
+    check_new_model<opg::SNSI<>>(dev, {variants::snsi(), io}, n, 3e-11, "SNSI");
+  }
+  {
+    std::vector<opg::LIV<>::Params> pts;
+    for (auto p : {variants::liv(), variants::liv_phases()}) {
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+          for (int c = 0; c < 3; c++) {
+            if (c > 0) p.aT[i][j][c] = p.aT_ph[i][j][c] = 0;
+            p.cT[i][j][c] = p.cT_ph[i][j][c] = 0;
+          }
+      pts.push_back(p);
+    }
+    check_new_model<opg::LIV<>>(dev, pts,
+                                {"th23", "dm31", "d13", "aT3_ee", "aT3_emu", "aT3_mutau",
+                                 "ph_aT3_emu", "zoa_0", "rho_0"},
+                                4e-12, "LIV");
+  }
+  {
+    std::vector<opg::SiderealLIV<>::Params> pts;
+    for (auto p : {variants::sidereal_fixed(), variants::sidereal()}) {
+      for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+          for (int x = 0; x < 3; x++)
+            for (int y = 0; y < 3; y++) p.c[i][j][x][y] = 0;
+      pts.push_back(p);
+    }
+    check_new_model<opg::SiderealLIV<>>(dev, pts,
+                                        {"th23", "dm31", "aX_emu", "aZ_mutau", "aY_tautau",
+                                         "zoa_0", "rho_0"},
+                                        1.2e-12, "SiderealLIV");
+  }
+}

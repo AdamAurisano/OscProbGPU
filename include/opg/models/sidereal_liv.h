@@ -100,6 +100,7 @@ namespace opg {
       double              zen;            ///< fixed zenith, radians
       bool                fixed_dir;
       double              sw, cw;         ///< sin, cos(omega_sidereal T)
+      double              Nfix[3];        ///< direction of fixed paths (zen, azi)
   };
 
   /// Amplitudes plus the direction of the path and the sidereal phase.
@@ -191,6 +192,7 @@ namespace opg {
         out.fixed_dir = p.fixed_dir;
         out.sw        = std::sin(kOmegaSidereal * p.time);
         out.cw        = std::cos(kOmegaSidereal * p.time);
+        fixed_direction(out.chi, out.zen, out.azi, out.Nfix);
         return out;
       }
 
@@ -207,6 +209,70 @@ namespace opg {
         n[0] = R(cos(chi) * sin(zen) * cos(azi) + sin(chi) * cos(zen));
         n[1] = R(sin(zen) * sin(azi));
         n[2] = R(-sin(chi) * sin(zen) * cos(azi) + cos(chi) * cos(zen));
+      }
+      /// direction() before the conversion to R.
+      static void fixed_direction(double chi, double zen, double azi, double n[3])
+      {
+        using std::cos;
+        using std::sin;
+        n[0] = cos(chi) * sin(zen) * cos(azi) + sin(chi) * cos(zen);
+        n[1] = sin(zen) * sin(azi);
+        n[2] = -sin(chi) * sin(zen) * cos(azi) + cos(chi) * cos(zen);
+      }
+
+      // --- analytic bin averages (avg/analytic.h) -------------------------------
+      // A fixed path with the direction and sidereal time of the prepared
+      // state (SetNeutrinoDirection, SetTimeHours; per batch point, the
+      // point's). H = Hms/2E + V_cc + (aT terms) is affine in 1/E with
+      // A = Hms/2; the cT terms grow as E and are refused (values and
+      // derivatives).
+      static constexpr bool analytic_avg             = true;
+      static constexpr bool analytic_vacuum_term     = true;
+      static constexpr bool analytic_own_hamiltonian = true;
+      static constexpr bool analytic_restricted      = true;
+
+      /// The state of a fixed path (as initial(P, nubar)) for any scalar type.
+      template <class S> OPG_HD OPG_INLINE static State fixed_state(const PreparedT<S>& P)
+      {
+        State st;
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++) st.N[i] = R(P.Nfix[i]);
+        st.sw = R(P.sw);
+        st.cw = R(P.cw);
+        return st;
+      }
+      template <class S, class Seg>
+      OPG_HD OPG_INLINE static void analytic_hamiltonian(const PreparedT<S>& P, R E, bool nubar,
+                                                         const Seg& s, Mat<3, S>& H)
+      {
+        hamiltonian(P, fixed_state(P), E, nubar, s, H);
+      }
+      /// The 1/E coefficient of hamiltonian(), E in GeV (upper triangle).
+      template <class S, class Seg>
+      OPG_HD OPG_INLINE static void analytic_vacuum(const PreparedT<S>& P, bool nubar,
+                                                    const Seg&, Mat<3, S>& A)
+      {
+        const S lv = S(2 * R(constants::kGeV2eV));
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+        for (int j = i; j < 3; j++) {
+          A(i, j) = P.common.Hms(i, j) / lv;
+          if (nubar && j > i) A(i, j) = conj(A(i, j));
+        }
+      }
+      /// Why the analytic averages cannot take P (values, and with dual
+      /// numbers the derivative directions), or nullptr.
+      template <class S> static const char* analytic_unsupported(const PreparedT<S>& P)
+      {
+        for (int i = 0; i < 3; i++)
+          for (int j = i; j < 3; j++)
+            for (int q = 0; q < 5; q++)
+              if (!is_exact_zero(P.c[i][j][q]))
+                return "the cT terms grow as E and are not affine in 1/E: the analytic "
+                       "averages need them zero and not differentiated (only the aT terms are "
+                       "supported); use the Gauss-Legendre averages (avg_path) instead";
+        return nullptr;
       }
 
       /// Port of PMNS_SiderealLIV::UpdateHam (upper triangle + diagonal), for

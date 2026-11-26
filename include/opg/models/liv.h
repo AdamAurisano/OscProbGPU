@@ -75,6 +75,16 @@ namespace opg {
       /// LIV terms are present in vacuum: always diagonalise.
       static constexpr bool vacuum_shortcut = false;
 
+      /// Analytic bin averages (avg/analytic.h): H = Hms/2E + V_cc + aT^(3)
+      /// is affine in 1/E with the E-independent aT^(3) terms in the
+      /// constant part, so A = Hms/2 (analytic_vacuum). The terms of
+      /// dimension d >= 4 grow as E^(d-3): points with any of them nonzero,
+      /// and derivatives with respect to them, are refused
+      /// (analytic_unsupported).
+      static constexpr bool analytic_avg         = true;
+      static constexpr bool analytic_vacuum_term = true;
+      static constexpr bool analytic_restricted  = true;
+
       /// Derivative directions per gradient pass (see opg::grad_traits).
 #ifdef OPG_LIV_GRAD_CHUNK
       static constexpr int grad_chunk = OPG_LIV_GRAD_CHUNK;
@@ -229,6 +239,41 @@ namespace opg {
             OPG_UNROLL
           for (int j = i + 1; j < 3; j++) H(i, j) = conj(H(i, j));
         }
+      }
+
+      /// The 1/E coefficient of hamiltonian(), E in GeV (upper triangle):
+      /// Hms / 2 GeV, conjugated for antineutrinos.
+      template <class S, class Seg>
+      OPG_HD OPG_INLINE static void analytic_vacuum(const PreparedT<S>& P, bool nubar,
+                                                    const Seg&, Mat<3, S>& A)
+      {
+        const S lv = S(2 * R(constants::kGeV2eV));
+        OPG_UNROLL
+        for (int i = 0; i < 3; i++)
+          OPG_UNROLL
+        for (int j = i; j < 3; j++) {
+          A(i, j) = P.common.Hms(i, j) / lv;
+          if (nubar && j > i) A(i, j) = conj(A(i, j));
+        }
+      }
+
+      /// Why the analytic averages cannot take P (any scalar type: values,
+      /// and with dual numbers the derivative directions), or nullptr.
+      template <class S> static const char* analytic_unsupported(const PreparedT<S>& P)
+      {
+        for (int i = 0; i < 3; i++)
+          for (int j = i; j < 3; j++)
+            for (int c = 0; c < 3; c++) {
+              const bool a = c > 0 && !(is_exact_zero(P.aT[i][j][c].re) &&
+                                        is_exact_zero(P.aT[i][j][c].im));
+              const bool t = !(is_exact_zero(P.cT[i][j][c].re) && is_exact_zero(P.cT[i][j][c].im));
+              if (a || t)
+                return "LIV terms of dimension d >= 4 (cT4..cT8, aT5, aT7) grow as E^(d-3) and "
+                       "are not affine in 1/E: the analytic averages need them zero and not "
+                       "differentiated (only aT3 is supported); use the Gauss-Legendre "
+                       "averages (avg_path) instead";
+            }
+        return nullptr;
       }
 
       OPG_HD OPG_INLINE static Mat<3, R> initial(const Prepared&, bool)

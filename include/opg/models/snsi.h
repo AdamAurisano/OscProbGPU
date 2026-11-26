@@ -156,12 +156,43 @@ namespace opg {
         return prepare_generic<R>(cast<R>(p));
       }
 
+      /// Analytic bin averages (avg/analytic.h): H = A(rho, Z/A) / E + V_cc
+      /// with the mass term A = (M + n_f eps)^2 / 2 depending on the
+      /// segment (analytic_vacuum = mass_term at E = 1 GeV).
+      static constexpr bool analytic_avg            = true;
+      static constexpr bool analytic_vacuum_term    = true;
+      static constexpr bool analytic_segment_vacuum = true;
+
+      template <class S, class Seg>
+      OPG_HD OPG_INLINE static void analytic_vacuum(const PreparedT<S>& P, bool nubar,
+                                                    const Seg& s, Mat<3, S>& A)
+      {
+        mass_term(P, R(1), nubar, s, A);
+      }
+
       /// Port of PMNS_SNSI::UpdateHam (upper triangle + diagonal), for any
       /// scalar type S of the prepared state and segment type Seg.
       template <class S, class Seg>
       OPG_HD OPG_INLINE static void hamiltonian(const PreparedT<S>& P, R E,
                                                 bool nubar, const Seg& s,
                                                 Mat<3, S>& H)
+      {
+        mass_term(P, E, nubar, s, H);
+
+        // Add matter potential in eV (kK2 * sqrt2 * Gf * rho * zoa)
+        S kr2GNe = P.common.vfac;
+        kr2GNe *= s.density;
+        kr2GNe *= s.zoa;
+        if (!nubar)
+          H(0, 0).re += kr2GNe;
+        else
+          H(0, 0).re -= kr2GNe;
+      }
+
+      /// The (M + n_f eps)^2 / 2E part of hamiltonian() (upper triangle).
+      template <class S, class Seg>
+      OPG_HD OPG_INLINE static void mass_term(const PreparedT<S>& P, R E, bool nubar,
+                                              const Seg& s, Mat<3, S>& H)
       {
         using C = Complex<S>;
         using std::sqrt;
@@ -220,15 +251,6 @@ namespace opg {
           H(i, j) = acc;
         }
         (void)c1;
-
-        // Add matter potential in eV (kK2 * sqrt2 * Gf * rho * zoa)
-        S kr2GNe = P.common.vfac;
-        kr2GNe *= s.density;
-        kr2GNe *= s.zoa;
-        if (!nubar)
-          H(0, 0).re += kr2GNe;
-        else
-          H(0, 0).re -= kr2GNe;
       }
 
       OPG_HD OPG_INLINE static Mat<3, R> initial(const Prepared&, bool)
