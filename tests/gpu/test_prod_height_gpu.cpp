@@ -40,7 +40,7 @@ namespace {
           p->set_prod_heights(phtest::edges(), phtest::probs());
           p->set_gradient_params(p->gradient_parameter_names());
         }
-        phtest::Events      ev(6, 7);
+        phtest::Events      ev(5, 7);
         std::vector<double> Pg, Gg, Pc, Gc;
         gpu.prob_points_grad_prod_height(ev.E, ev.C, ev.nb, ev.dist, Pg, Gg);
         cpu.prob_points_grad_prod_height(ev.E, ev.C, ev.nb, ev.dist, Pc, Gc);

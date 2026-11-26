@@ -53,11 +53,13 @@
 ///   G(j,l,k) = [phi(lam_j - lam_k) - phi(lam_l - lam_k)] / (lam_j - lam_l),
 ///   M = V^dag dH V,
 ///
-/// with G(j,j,k) = phi'(lam_j - lam_k). Divided differences of close
-/// arguments (|lam_j - lam_l| L_max < 0.2) are evaluated as
+/// with G(j,j,k) = phi'(lam_j - lam_k) = <-i L exp(-i (lam_j - lam_k) L)>
+/// (from the Bessel functions of phi). Divided differences of close
+/// arguments (|lam_j - lam_l| L_max < 2e-3) are evaluated as
 /// G = <-i L sinc(d L) exp(-i mu L)> (mu, d the mid point and half
-/// difference) with sinc expanded to order (dL)^8, from Legendre series of
-/// g L^p (p odd <= 9); other ones directly. The rest of the path is
+/// difference) with sinc expanded until the terms are below 1e-18, from
+/// Legendre series of g L^p (p odd); other ones directly (relative error
+/// < 5e-13 from cancellation). The rest of the path is
 /// differentiated with the models' existing forward (step_grad) or reverse
 /// (adj_step) machinery.
 ///
@@ -148,9 +150,9 @@ namespace opg {
     /// Highest Legendre order used.
     constexpr int kMaxOrder = kNodes - 1 + kMomDeg;
     /// Divided differences with |lam_j - lam_l| / 2 * L_max below this use
-    /// the series (truncation ~ x^10 / 11!), others the plain difference
-    /// (cancellation ~ eps / x).
-    constexpr double kNear = 0.1;
+    /// the series (to x^4, truncation < 1e-18), others the plain difference
+    /// (relative cancellation error ~ 2 eps / x < 5e-13).
+    constexpr double kNear = 1e-3;
 
     /// Positive half of the 12-point Gauss-Legendre rule.
     OPG_HD OPG_INLINE double gl_x(int i)
@@ -349,10 +351,14 @@ namespace opg {
     }
 
     /// exp(-i mu m) sum_k c_k int P_k exp(-i mu r t) dt.
+    /// (jb: j_0 .. j_nbes(mu r) on return, nbes >= deg; the values of
+    /// j_0 .. j_deg depend on nbes in the last bits, so callers that must
+    /// agree bit for bit use the same nbes.)
     OPG_HD OPG_INLINE Complex<double> bin_ft(double mu, double m, double r, const double* c,
-                                             int deg, double* jb)
+                                             int deg, double* jb, int nbes,
+                                             Complex<double>* phase = nullptr)
     {
-      sph_bessel(mu * r, deg, jb);
+      sph_bessel(mu * r, nbes, jb);
       const Complex<double> f = legendre_fourier(c, deg, jb);
       double                sn, cs;
 #if OPG_ON_DEVICE
@@ -361,6 +367,7 @@ namespace opg {
       sn = std::sin(mu * m);
       cs = std::cos(mu * m);
 #endif
+      if (phase) *phase = Complex<double>(cs, -sn);
       return f * Complex<double>(cs, -sn);
     }
 
@@ -375,23 +382,25 @@ namespace opg {
 
     /// Phi_jk = phi(lam_j - lam_k) (Phi_jj = 1, Phi_kj = conj Phi_jk).
     template <int N, class R>
-    OPG_HD inline void phi_table(const ProdHeightView<R>& hv, int d, double cosZ,
+    OPG_HD OPG_NOINLINE void phi_table(const ProdHeightView<R>& hv, int d, double cosZ,
                                  const R lam[N], Complex<double> (&Phi)[N][N],
                                  const BinSeries* pre = nullptr)
     {
       const AtmGeom g = atm_geom(hv, cosZ);
       for (int j = 0; j < N; j++)
         for (int k = 0; k < N; k++) Phi[j][k] = Complex<double>(j == k ? 1 : 0, 0);
-      double jb[kNodes];
+      double jb[kNodes + 1];
       for (int b = hv.off[d]; b < hv.off[d + 1]; b++) {
         if (hv.prob[b] == 0) continue;
-        BinSeries s_;
-        if (!pre) bin_series(hv, g, b, s_);
-        const BinSeries& s = pre ? pre[b - hv.off[d]] : s_;
+        BinSeries s;
+        if (pre)
+          s = pre[b - hv.off[d]];
+        else
+          bin_series(hv, g, b, s);
         for (int j = 0; j < N; j++)
           for (int k = j + 1; k < N; k++) {
             const double mu = double(lam[j]) - double(lam[k]);
-            Phi[j][k] += bin_ft(mu, s.m, s.r, s.c, s.deg, jb);
+            Phi[j][k] += bin_ft(mu, s.m, s.r, s.c, s.deg, jb, s.deg + 1);
           }
       }
       for (int j = 0; j < N; j++)
@@ -400,8 +409,14 @@ namespace opg {
 
     /// Phi as phi_table, and G[j][l][k] = Gamma(lam_j - lam_k, lam_l - lam_k)
     /// (divided difference of phi; G[j][j][k] = phi'(lam_j - lam_k)).
+    ///
+    /// Not inlined on the device: inlined into its callers, nvcc 13.0 (sm_75,
+    /// -O3) produced wrong tables (the first bins' contributions lost) in
+    /// some contexts, while -G, -Xcicc -O0 and the host were right and
+    /// compute-sanitizer, ASan and UBSan found nothing; as a function it is
+    /// right everywhere.
     template <int N, class R>
-    OPG_HD inline void phi_grad_tables(const ProdHeightView<R>& hv, int d, double cosZ,
+    OPG_HD OPG_NOINLINE void phi_grad_tables(const ProdHeightView<R>& hv, int d, double cosZ,
                                        const R lam[N], Complex<double> (&Phi)[N][N],
                                        Complex<double> (&G)[N][N][N],
                                        const BinSeries* pre = nullptr)
@@ -435,12 +450,11 @@ namespace opg {
       double jb[kMaxOrder + 1];
       for (int b = hv.off[d]; b < hv.off[d + 1]; b++) {
         if (hv.prob[b] == 0) continue;
-        BinSeries s_;
-        if (!pre) bin_series(hv, g, b, s_);
-        const BinSeries& s = pre ? pre[b - hv.off[d]] : s_;
-        for (int j = 0; j < N; j++)
-          for (int k = j + 1; k < N; k++)
-            Phi[j][k] += bin_ft(l[j] - l[k], s.m, s.r, s.c, s.deg, jb);
+        BinSeries s;
+        if (pre)
+          s = pre[b - hv.off[d]];
+        else
+          bin_series(hv, g, b, s);
         // series of g (L / sL)^p, p = 1, 3, .., 2 mmax - 1
         double        mom[NP][kMaxOrder + 1];
         double        cur[kMaxOrder + 2];
@@ -452,8 +466,22 @@ namespace opg {
           if (p % 2 == 1)
             for (int k = 0; k <= deg; k++) mom[p / 2][k] = cur[k];
         }
+        // phi(lam_j - lam_k) and phi'(lam_j - lam_k) = <-iL exp(..)> (= G[j][j][k])
+        // from one set of Bessel functions; phi'(0) = -i <L>
+        for (int j = 0; j < N; j++) {
+          for (int k = j + 1; k < N; k++) {
+            Complex<double>       e;
+            const double          mu = l[j] - l[k];
+            const Complex<double> f  = bin_ft(mu, s.m, s.r, s.c, s.deg, jb, s.deg + 1, &e);
+            const Complex<double> f1 = legendre_fourier(mom[0], s.deg + 1, jb) * e;
+            Phi[j][k] += f;
+            G[j][j][k] += Complex<double>(sL * f1.im, -sL * f1.re);
+          }
+          G[j][j][j] += Complex<double>(0, -sL * 2 * mom[0][0]);
+        }
+        // close pairs j != q: G = <-i L sinc(d L) exp(-i mu L)>
         for (int j = 0; j < N; j++)
-          for (int q = j; q < N; q++) {
+          for (int q = j + 1; q < N; q++) {
             if (!near[j][q]) continue;
             const double dd = 0.5 * (l[j] - l[q]) * sL;
             // sinc(x) = sum_m (-1)^m x^2m / (2m+1)!
@@ -472,16 +500,19 @@ namespace opg {
             }
             for (int k = 0; k < N; k++) {
               const double          mu = 0.5 * (l[j] + l[q]) - l[k];
-              const Complex<double> e  = bin_ft(mu, s.m, s.r, cc, dmax, jb);
+              const Complex<double> e  = bin_ft(mu, s.m, s.r, cc, dmax, jb, dmax);
               // -i sL e
               G[j][q][k] += Complex<double>(sL * e.im, -sL * e.re);
             }
           }
       }
       for (int j = 0; j < N; j++)
-        for (int k = j + 1; k < N; k++) Phi[k][j] = conj(Phi[j][k]);
+        for (int k = j + 1; k < N; k++) {
+          Phi[k][j] = conj(Phi[j][k]);
+          G[k][k][j] = -conj(G[j][j][k]);  // phi'(-x) = -conj(phi'(x))
+        }
       for (int j = 0; j < N; j++)
-        for (int q = j; q < N; q++)
+        for (int q = j + 1; q < N; q++)
           for (int k = 0; k < N; k++) {
             if (!near[j][q]) G[j][q][k] = (Phi[j][k] - Phi[q][k]) / (l[j] - l[q]);
             G[q][j][k] = G[j][q][k];
