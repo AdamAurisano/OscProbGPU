@@ -149,6 +149,16 @@ TEST_CASE("GPU Sterile matches OscProb and the CPU backend")
   check_model<opg::Sterile<>>(p, "sterile_phases", 1e-10, 1e-10);
 }
 
+TEST_CASE("GPU Sterile 3+2 and 3+3 match OscProb and the CPU backend")
+{
+  opg::Sterile5<>::Params p5;
+  p5.mix = variants::sterile5_mix();
+  check_model<opg::Sterile5<>>(p5, "sterile5", 1e-10, 1e-10);
+  opg::Sterile6<>::Params p6;
+  p6.mix = variants::sterile6_mix();
+  check_model<opg::Sterile6<>>(p6, "sterile6", 1e-10, 1e-10);
+}
+
 TEST_CASE("GPU Decay matches OscProb and the CPU backend")
 {
   check_model<opg::Decay<>>(variants::decay(), "decay", 1e-10, 1e-10);

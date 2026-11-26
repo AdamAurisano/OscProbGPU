@@ -118,7 +118,7 @@ def test_batch_point_arguments(devices):
 # analytic averages
 
 def test_analytic_models():
-    for cls in (opg.Fast, opg.NSI, opg.NUNM, opg.Sterile):
+    for cls in (opg.Fast, opg.NSI, opg.NUNM, opg.Sterile, opg.Sterile5, opg.Sterile6):
         assert hasattr(cls, "avg_path_analytic") and hasattr(cls, "analytic_batch")
     for cls in (opg.Decay, opg.LIV, opg.SNSI, opg.Deco, opg.SiderealLIV, opg.OQS):
         assert not hasattr(cls, "avg_path_analytic")
@@ -162,6 +162,51 @@ def test_analytic_single_calls(devices, path):
     dn = p.avg_path_analytic(E, path, measure="invE")
     _set(p, "th24", 0.1)
     assert np.abs((up - dn) / (2 * h) - dA[0]).max() < 1e-6
+
+
+@pytest.mark.parametrize("nus", [5, 6])
+@pytest.mark.parametrize("path", [FD, TWO], ids=["one_segment", "two_segments"])
+def test_analytic_sterile_n(devices, path, nus):
+    """3+2, 3+3: analytic averages against Gauss-Legendre, FD and batches."""
+    _need_gradients()
+    p = set_nominal(opg.Sterile(devices=devices, nus=nus))
+    p.set_dm(4, 0.5)
+    p.set_dm(5, 1.3)
+    p.set_angle(2, 4, 0.1)
+    p.set_angle(2, 5, 0.12)
+    p.set_angle(1, 5, 0.05)
+    p.set_delta(2, 5, 0.7)
+    if nus == 6:
+        p.set_dm(6, 3.0)
+        p.set_angle(2, 6, 0.08)
+        p.set_angle(5, 6, 0.2)
+    names = ["th25", f"dm{nus}1"]
+    p.set_gradient_params(names)
+    E = np.geomspace(0.5, 10, 21)
+    A, dA = p.avg_path_analytic_grad(E, path, measure="invE")
+    assert A.shape == (nus, nus, 20) and dA.shape == (2, nus, nus, 20)
+    assert np.allclose(A.sum(axis=1), 1, atol=1e-12)
+    G = p.avg_path(E, 1500, path, False, "invE")   # dm61 = 3 eV^2: ~150 periods per bin
+    assert np.abs(A - G).max() < 2e-5
+    h = 1e-6
+    _set(p, "th25", 0.12 + h)
+    up = p.avg_path_analytic(E, path, measure="invE")
+    _set(p, "th25", 0.12 - h)
+    dn = p.avg_path_analytic(E, path, measure="invE")
+    _set(p, "th25", 0.12)
+    assert np.abs((up - dn) / (2 * h) - dA[0]).max() < 1e-6
+    # batches: each point equals the single call
+    vals = np.array([[0.12, p.get_dm(nus)], [0.05, 2.0]])
+    hb = p.analytic_batch(E, path, measure="invE")
+    B, dB = p.avg_path_analytic_batch(hb, names, vals, gradient=True)
+    tol = 1e-12 if devices else 0
+    assert np.abs(B[0] - A).max() <= tol
+    assert np.abs(dB[0] - dA).max() <= tol * max(1, np.abs(dA).max())
+    w = np.random.default_rng(4).normal(size=B.shape)
+    g = p.avg_path_analytic_batch_weighted(hb, names, vals, w)
+    ref = np.einsum("pabk,pqabk->pq", w, dB)
+    sc = np.einsum("pabk,pqabk->pq", np.abs(w), np.abs(dB))
+    assert np.all(np.abs(g - ref) <= 1e-12 * sc)
 
 
 @pytest.mark.parametrize("path", [FD, TWO], ids=["one_segment", "two_segments"])

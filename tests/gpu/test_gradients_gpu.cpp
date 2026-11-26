@@ -112,16 +112,17 @@ TEST_CASE("GPU gradients agree with the CPU backend; multi-GPU identical")
 }
 
 TEST_CASE_TEMPLATE("GPU G3/G4 gradients match long-double finite differences", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6,
                    gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
   opg::Propagator<M> gpu(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
-  gradtest::check_against_ld(gpu, 1e-9);
+  // 3+2, 3+3: noise of the reference (see the CPU test)
+  gradtest::check_against_ld(gpu, M::N > 4 ? 1e-8 : 1e-9);
 }
 
 TEST_CASE_TEMPLATE("GPU G3/G4 probabilities unchanged with gradients on", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6,
                    gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
@@ -130,7 +131,7 @@ TEST_CASE_TEMPLATE("GPU G3/G4 probabilities unchanged with gradients on", M,
 }
 
 TEST_CASE_TEMPLATE("GPU G3/G4 grid / event-list / weighted gradients are consistent", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6,
                    gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
@@ -139,7 +140,7 @@ TEST_CASE_TEMPLATE("GPU G3/G4 grid / event-list / weighted gradients are consist
 }
 
 TEST_CASE_TEMPLATE("GPU G3/G4 gradients agree with the CPU backend; multi-GPU identical", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6,
                    gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
@@ -147,7 +148,7 @@ TEST_CASE_TEMPLATE("GPU G3/G4 gradients agree with the CPU backend; multi-GPU id
 }
 
 TEST_CASE_TEMPLATE("GPU binned and avg_path gradients", M, gradtest::Fast,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6, gradtest::Decay,
                    gradtest::LIV, gradtest::SNSI, gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
   opg::Propagator<M> prop(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
@@ -156,7 +157,7 @@ TEST_CASE_TEMPLATE("GPU binned and avg_path gradients", M, gradtest::Fast,
 
 
 TEST_CASE_TEMPLATE("GPU Earth Z/A gradients", M, gradtest::Fast, gradtest::NSI, gradtest::NUNM,
-                   gradtest::Sterile, gradtest::Decay, gradtest::LIV, gradtest::SNSI,
+                   gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6, gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
   opg::Propagator<M> prop(opg::PremModel(), devs("OPG_TEST_DEVICES", "0"));
@@ -165,14 +166,14 @@ TEST_CASE_TEMPLATE("GPU Earth Z/A gradients", M, gradtest::Fast, gradtest::NSI, 
 
 
 TEST_CASE_TEMPLATE("GPU reverse-mode weighted gradients equal forward mode; multi-GPU", M,
-                   gradtest::Fast, gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::LIV,
+                   gradtest::Fast, gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6, gradtest::LIV,
                    gradtest::SNSI, gradtest::SiderealLIV, gradtest::OQS)
 {
   static_assert(opg::Propagator<M>::has_adjoint_gradients());
   for (auto d : {devs("OPG_TEST_DEVICES", "0"), devs("OPG_TEST_MULTI_DEVICES", "0,1")}) {
     if (opg::cuda_device_count() < int(d.size())) continue;
     opg::Propagator<M> prop(opg::PremModel(), d);
-    gradtest::check_adjoint(prop, 1e-11);
+    gradtest::check_adjoint(prop, M::N > 4 ? 1e-10 : 1e-11);
   }
 }
 

@@ -24,6 +24,13 @@ namespace gradtest {
   template <template <class> class M, class R> struct LongDouble<M<R>> {
       using type = M<LD>;
   };
+  // (Sterile<double> = Sterile<double, 4> matches M<R> above)
+  template <> struct LongDouble<opg::Sterile<double, 5>> {
+      using type = opg::Sterile<LD, 5>;
+  };
+  template <> struct LongDouble<opg::Sterile<double, 6>> {
+      using type = opg::Sterile<LD, 6>;
+  };
 
   /// Number of mixing parameters (they come first in param_names()).
   template <class Model> size_t MixingCount()
@@ -111,6 +118,41 @@ namespace gradtest {
     p.mix.SetDm(4, 2.0e-3);  // near the atmospheric splitting
     v.push_back({"dm41~dm31", p});
     return v;
+  }
+
+  /// 3+2 and 3+3: the reference variant, zero sterile mixing, and the
+  /// lightest sterile state near the atmospheric splitting.
+  using Sterile5 = opg::Sterile5<double>;
+  using Sterile6 = opg::Sterile6<double>;
+  template <int NF>
+  std::vector<std::pair<std::string, typename opg::Sterile<double, NF>::Params>> sterile_n_points()
+  {
+    using M = opg::Sterile<double, NF>;
+    std::vector<std::pair<std::string, typename M::Params>> v;
+    typename M::Params p;
+    if constexpr (NF == 5)
+      p.mix = variants::sterile5_mix();
+    else
+      p.mix = variants::sterile6_mix();
+    const auto ref = p.mix;
+    v.push_back({"sterile" + std::to_string(NF), p});
+    p.mix.SetDm(4, 2.0e-3);  // near the atmospheric splitting
+    v.push_back({"dm41~dm31", p});
+    p.mix = ref;
+    for (int j = 4; j <= NF; j++)
+      for (int i = 1; i < j; i++) p.mix.SetAngle(i, j, 0);
+    v.push_back({"no sterile mixing", p});
+    return v;
+  }
+  template <>
+  inline std::vector<std::pair<std::string, Sterile5::Params>> param_points<Sterile5>()
+  {
+    return sterile_n_points<5>();
+  }
+  template <>
+  inline std::vector<std::pair<std::string, Sterile6::Params>> param_points<Sterile6>()
+  {
+    return sterile_n_points<6>();
   }
 
   using Decay = opg::Decay<double>;

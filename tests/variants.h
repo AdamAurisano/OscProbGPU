@@ -54,6 +54,58 @@ namespace variants {
     return p;
   }
 
+  /// 3+2 with complex phases (reference tag sterile5)
+  inline opg::MixingParams<5> sterile5_mix()
+  {
+    auto p = nominal_mix<5>();
+    p.SetDm(4, 0.5);
+    p.SetDm(5, 1.3);
+    p.SetAngle(1, 4, 0.15);
+    p.SetAngle(2, 4, 0.1);
+    p.SetAngle(3, 4, 0.2);
+    p.SetAngle(1, 5, 0.05);
+    p.SetAngle(2, 5, 0.12);
+    p.SetAngle(3, 5, 0.1);
+    p.SetAngle(4, 5, 0.3);
+    p.SetDelta(1, 4, 0.9);
+    p.SetDelta(2, 4, -1.7);
+    p.SetDelta(1, 5, 0.4);
+    p.SetDelta(2, 5, 2.2);
+    p.SetDelta(3, 5, -0.6);
+    return p;
+  }
+
+  /// 3+3 with complex phases (reference tag sterile6)
+  inline opg::MixingParams<6> sterile6_mix()
+  {
+    auto p = nominal_mix<6>();
+    p.SetDm(4, 0.1);
+    p.SetDm(5, 0.8);
+    p.SetDm(6, 1.7);
+    p.SetAngle(1, 4, 0.1);
+    p.SetAngle(2, 4, 0.1);
+    p.SetAngle(3, 4, 0.1);
+    p.SetAngle(1, 5, 0.08);
+    p.SetAngle(2, 5, 0.06);
+    p.SetAngle(3, 5, 0.04);
+    p.SetAngle(4, 5, 0.2);
+    p.SetAngle(1, 6, 0.05);
+    p.SetAngle(2, 6, 0.07);
+    p.SetAngle(3, 6, 0.03);
+    p.SetAngle(4, 6, 0.15);
+    p.SetAngle(5, 6, 0.25);
+    p.SetDelta(1, 4, 0.3);
+    p.SetDelta(2, 4, -1.1);
+    p.SetDelta(1, 5, 1.9);
+    p.SetDelta(2, 5, -0.4);
+    p.SetDelta(3, 5, 0.8);
+    p.SetDelta(1, 6, -2.5);
+    p.SetDelta(2, 6, 1.2);
+    p.SetDelta(3, 6, 0.5);
+    p.SetDelta(4, 6, -0.9);
+    return p;
+  }
+
   //...........................................................................
   inline opg::NSI<>::Params nsi()
   {

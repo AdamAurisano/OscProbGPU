@@ -22,6 +22,12 @@ TEST_CASE("Gradient parameter registry")
   CHECK(opg::Propagator<opg::Sterile<>>::parameter_names() ==
         std::vector<std::string>{"th12", "th13", "th23", "th14", "th24", "th34", "d13",
                                  "d14", "d24", "dm21", "dm31", "dm41"});
+  CHECK(opg::Propagator<opg::Sterile5<>>::parameter_names() ==
+        std::vector<std::string>{"th12", "th13", "th23", "th14", "th24", "th34", "th15",
+                                 "th25", "th35", "th45", "d13", "d14", "d24", "d15", "d25",
+                                 "d35", "dm21", "dm31", "dm41", "dm51"});
+  CHECK(opg::Propagator<opg::Sterile6<>>::parameter_names().size() == 30);
+  CHECK(opg::Propagator<opg::Sterile6<>>::parameter_names().back() == "dm61");
   CHECK(opg::Propagator<opg::NSI<>>::parameter_names() ==
         std::vector<std::string>{"th12", "th13", "th23", "d13", "dm21", "dm31",
                                  "eps_ee", "eps_emu", "eps_etau", "eps_mumu",
@@ -139,7 +145,7 @@ TEST_CASE_TEMPLATE("G3/G4 gradients match long-double finite differences (CPU)",
 }
 
 TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU)", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6,
                    gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
@@ -148,7 +154,7 @@ TEST_CASE_TEMPLATE("G3/G4 probabilities are unchanged when gradients are on (CPU
 }
 
 TEST_CASE_TEMPLATE("G3/G4 grid, event-list and weighted gradients are consistent (CPU)", M,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6,
                    gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
@@ -163,6 +169,27 @@ TEST_CASE_TEMPLATE("Reverse-mode weighted gradients equal forward mode (CPU)", M
   static_assert(opg::Propagator<M>::has_adjoint_gradients());
   opg::Propagator<M> prop;
   gradtest::check_adjoint(prop, 1e-11);
+}
+
+// 3+2 and 3+3: the long-double finite-difference reference itself carries
+// ~1e-11 absolute noise here (long-double round-off of phases ~1e4-1e5 rad,
+// divided by the step 1e-4): Sterile<long double, N> forward-mode gradients
+// show the same deviation from it as the double ones. Relative to the small
+// derivatives with respect to phases of weakly mixed states (~1e-2) that
+// is up to ~3e-9. Likewise reverse mode sums more round-off with N = 5, 6.
+TEST_CASE_TEMPLATE("3+N Sterile gradients match long-double finite differences (CPU)", M,
+                   gradtest::Sterile5, gradtest::Sterile6)
+{
+  opg::Propagator<M> prop;
+  gradtest::check_against_ld(prop, 1e-8);
+}
+
+TEST_CASE_TEMPLATE("3+N Sterile reverse-mode weighted gradients equal forward mode (CPU)", M,
+                   gradtest::Sterile5, gradtest::Sterile6)
+{
+  static_assert(opg::Propagator<M>::has_adjoint_gradients());
+  opg::Propagator<M> prop;
+  gradtest::check_adjoint(prop, 1e-10);
 }
 
 TEST_CASE("SNSI gradients at a massless lightest state (inverted ordering)")
@@ -231,7 +258,7 @@ TEST_CASE("NSI/NUNM prepared values do not depend on the derivative seeds")
 
 
 TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
-                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Decay,
+                   gradtest::NSI, gradtest::NUNM, gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6, gradtest::Decay,
                    gradtest::LIV, gradtest::SNSI, gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
   opg::Propagator<M> prop;
@@ -240,7 +267,7 @@ TEST_CASE_TEMPLATE("Binned and avg_path gradients (CPU)", M, gradtest::Fast,
 
 
 TEST_CASE_TEMPLATE("Earth Z/A gradients (CPU)", M, gradtest::Fast, gradtest::NSI, gradtest::NUNM,
-                   gradtest::Sterile, gradtest::Decay, gradtest::LIV, gradtest::SNSI,
+                   gradtest::Sterile, gradtest::Sterile5, gradtest::Sterile6, gradtest::Decay, gradtest::LIV, gradtest::SNSI,
                    gradtest::Deco, gradtest::SiderealLIV, gradtest::OQS)
 {
   opg::Propagator<M> prop;
