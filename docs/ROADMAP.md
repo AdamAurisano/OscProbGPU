@@ -84,10 +84,11 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   eigensystem (with Padé fallback) were less accurate near degeneracies
   (5e-9 vs 1e-11 in the gradient tests, 1e-13 vs 1e-14 against OscProb) and
   1.8x slower on the CPU, so Decay keeps Padé for values.
-* Done: `tests/data` (OscProb references, ~39 MB) published as release
+* Done: `tests/data` (OscProb references, ~52 MB) published as release
   assets (testdata-v1; testdata-v2 adds OQS; testdata-v3 regenerates
-  SiderealLIV with OscProb 7c06b3e); `scripts/fetch_test_data.sh`
-  (default testdata-v3) checks them against
+  SiderealLIV with OscProb 7c06b3e; testdata-v4 adds EarthModelBinned and
+  PMNS_Sterile(5), (6)); `scripts/fetch_test_data.sh`
+  (default testdata-v4) checks them against
   `tests/data/SHA256SUMS`. A new data version needs a new tag and manifest.
 * Done (2026-10-27): analytic 3x3 hermitian eigensolver `eigh3`
   (`include/opg/linalg/eigh3.h`, BSD) replaces the rescaled Kopp `zheevh3`

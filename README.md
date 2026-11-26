@@ -702,7 +702,7 @@ averages and `AvgProb` values (≈ 39 MB, not committed). Download it into
 `tests/data/` with
 
 ```sh
-scripts/fetch_test_data.sh          # release asset testdata-v3, checked against tests/data/SHA256SUMS
+scripts/fetch_test_data.sh          # release asset testdata-v4, checked against tests/data/SHA256SUMS
 ```
 
 or regenerate it with `reference/make_reference.sh`, which builds OscProb

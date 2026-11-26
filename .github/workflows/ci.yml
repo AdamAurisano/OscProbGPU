@@ -49,10 +49,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tests/data/*.npy
-          key: testdata-v3-${{ hashFiles('tests/data/SHA256SUMS') }}
+          key: testdata-v4-${{ hashFiles('tests/data/SHA256SUMS') }}
       - name: Fetch the reference data
         if: steps.data.outputs.cache-hit != 'true'
-        run: scripts/fetch_test_data.sh testdata-v3
+        run: scripts/fetch_test_data.sh testdata-v4
       - name: Compiler target (FMA availability)
         run: g++ --version | head -1; g++ -Q --help=target | grep -E '^ +-march=|^ +-mfma ' || true
       - name: Configure
@@ -79,10 +79,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tests/data/*.npy
-          key: testdata-v3-${{ hashFiles('tests/data/SHA256SUMS') }}
+          key: testdata-v4-${{ hashFiles('tests/data/SHA256SUMS') }}
       - name: Fetch the reference data
         if: steps.data.outputs.cache-hit != 'true'
-        run: scripts/fetch_test_data.sh testdata-v3
+        run: scripts/fetch_test_data.sh testdata-v4
       - name: Build and install the wheel
         run: |
           python -m pip install pytest
