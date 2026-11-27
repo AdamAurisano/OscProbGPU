@@ -650,6 +650,16 @@ round-off.
 Not covered: the GL bin averages (`set_bins`), the analytic averages and the
 batched modes (average over heights first per event or grid point, or ask).
 
+**Compiler note (GPU).** The production-height gradient kernels, above all
+with the binned Earth, have exposed optimiser bugs in nvcc: 11.8 (sm_70)
+gave live local arrays and the binned walker's state the same local-memory
+slots, and 13.0 (sm_75) produced wrong results or out-of-bounds local reads
+for some inlining choices. The code works around both (non-inlined walk and
+table functions, walker output kept in its state; see `docs/ROADMAP.md`).
+After changing `include/opg/avg/prod_height.h`, the binned walker or the
+nvcc version, re-run the GPU production-height tests on every architecture
+you use; the CPU results are the reference.
+
 **Validation** (`tests/test_prod_height.cpp`, `tests/gpu/test_prod_height_gpu.cpp`,
 `python/tests/test_prod_height.py`; five distributions including a Honda-like
 9-bin histogram to 70 km, one bin [0, 80] km, a fixed height and a mixture;
