@@ -256,7 +256,11 @@ optional core Z/A), `opg_bench` modes `grad_binned` and `grad_points`, README.
   the walker state) the local-memory slots of the live reverse-mode
   checkpoints; binned_walk_next now returns the segment in the walk state,
   and the reverse-mode walks run in functions of their own with their
-  arrays in the caller's memory.
+  arrays in the caller's memory. nvcc 13.0 (sm_75) needed the same for the
+  forward mode (out-of-bounds local reads of the walker state in
+  binned_walk_init, LIV grid gradients): the forward-mode rest walk is
+  prodh::grad_rest_forward, not inlined, and phi_grad_tables takes the
+  dphi/ds table by reference with a flag rather than a nullable pointer.
   Not done: GL bin averages (set_bins), analytic averages and batched modes
   with production heights; possible speed-up of the gradient tables (one
   Bessel evaluation per bin, pair and k for close eigenvalues).

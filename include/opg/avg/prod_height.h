@@ -470,8 +470,8 @@ namespace opg {
     OPG_HD OPG_NOINLINE void phi_grad_tables(const ProdHeightView<R>& hv, int d, double cosZ,
                                        const R lam[N], Complex<double> (&Phi)[N][N],
                                        Complex<double> (&G)[N][N][N],
-                                       const BinSeries* pre = nullptr,
-                                       Complex<double> (*dPhi)[N] = nullptr)
+                                       const BinSeries* pre, Complex<double> (&dPhi)[N][N],
+                                       bool want_ds)
     {
       const AtmGeom g  = atm_geom(hv, cosZ);
       const double  sL = std::fmax(max_length(hv, g, d), 1e-300);  // scale of L
@@ -528,7 +528,7 @@ namespace opg {
             const Complex<double> f1 = legendre_fourier(mom[0], s.deg + 1, jb) * e;
             Phi[j][k] += f;
             G[j][j][k] += Complex<double>(sL * f1.im, -sL * f1.re);
-            if (dPhi) dPhi[j][k] += scale_deriv(hv, g, b, mu, f);
+            if (want_ds) dPhi[j][k] += scale_deriv(hv, g, b, mu, f);
           }
           G[j][j][j] += Complex<double>(0, -sL * 2 * mom[0][0]);
         }
@@ -563,7 +563,7 @@ namespace opg {
         for (int k = j + 1; k < N; k++) {
           Phi[k][j] = conj(Phi[j][k]);
           G[k][k][j] = -conj(G[j][j][k]);  // phi'(-x) = -conj(phi'(x))
-          if (dPhi) dPhi[k][j] = conj(dPhi[j][k]);
+          if (want_ds) dPhi[k][j] = conj(dPhi[j][k]);
         }
       for (int j = 0; j < N; j++)
         for (int q = j + 1; q < N; q++)
@@ -690,6 +690,28 @@ namespace opg {
     prodh::avg_probs<N, R>(A, B, Phi, out, stride);
   }
 
+  namespace prodh {
+    /// Forward-mode pass over the rest of the path from the identity: S and
+    /// dS (before finalize). Not inlined, for the same reason as the reverse
+    /// mode's walks below: nvcc 13.0 (-O3, sm_75), with the walk inlined
+    /// into prod_height_grad, handed the binned Earth's walker an invalid
+    /// local address for its state (compute-sanitizer: out-of-bounds local
+    /// reads in binned_walk_init, LIV grid gradients with the height scale).
+    template <class Model, class R, int K>
+    OPG_HD OPG_NOINLINE void grad_rest_forward(const typename Model::Prepared& P,
+                                               const GradPrepared<Model, K>& G,
+                                               const EarthView<R>& earth, R cosZ, int atm_type,
+                                               R E, bool nubar, Mat<Model::N, R>& S,
+                                               Mat<Model::N, R> (&dS)[K])
+    {
+      S = Mat<Model::N, R>::identity();
+      for (int k = 0; k < K; k++) dS[k] = Mat<Model::N, R>::zero();
+      for_each_rest_segment(earth, cosZ, atm_type, [&](const Segment<R>& s) {
+        Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, s), S, dS);
+      });
+    }
+  } // namespace prodh
+
   /// Averaged probabilities (out, if not null) and their derivatives for
   /// one gradient pass: dP_ab/dp_k written to outG[((k*N + a)*N + b) *
   /// stride] for k < count (if outG is not null), and, if w is not null,
@@ -720,11 +742,8 @@ namespace opg {
     Model::template seg_hamiltonian_dual<K>(G.P, E, nubar, seed_segment(G, atm), HD);
 
     // rest of the path from the identity, with derivatives
-    Mat<N, R> S = Mat<N, R>::identity(), dS[K];
-    for (int k = 0; k < K; k++) dS[k] = Mat<N, R>::zero();
-    prodh::for_each_rest_segment(earth, cosZ, hv.atm_type, [&](const Segment<R>& s) {
-      Model::template step_grad<K>(P, G.P, E, nubar, seed_segment(G, s), S, dS);
-    });
+    Mat<N, R> S, dS[K];
+    prodh::grad_rest_forward<Model, R, K>(P, G, earth, cosZ, hv.atm_type, E, nubar, S, dS);
     Model::template finalize_grad<K>(P, G.P, nubar, S, dS);
     Model::finalize(P, nubar, S);
 
@@ -739,8 +758,7 @@ namespace opg {
     Complex<double> Phi[N][N], Gm[N][N][N], dPhi[N][N];
     for (int j = 0; j < N; j++)
       for (int k = 0; k < N; k++) dPhi[j][k] = Complex<double>(0, 0);
-    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre,
-                                 ks >= 0 ? dPhi : nullptr);
+    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre, dPhi, ks >= 0);
 
     using C = Complex<double>;
     const Mat<N, R> Vh = adjoint(V);
@@ -991,8 +1009,7 @@ namespace opg {
     C          Phi[N][N], Gm[N][N][N], dPhi[N][N];
     for (int j = 0; j < N; j++)
       for (int k = 0; k < N; k++) dPhi[j][k] = C(0, 0);
-    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre,
-                                 want_s ? dPhi : nullptr);
+    prodh::phi_grad_tables<N, R>(hv, dist, double(cosZ), lam, Phi, Gm, pre, dPhi, want_s);
     const State I0 = initial_state<Model, R>(P, nubar, cosZ);
     const State A = matmul(Rf, V), B = matmul(adjoint(V), I0);
 
