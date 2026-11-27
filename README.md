@@ -627,7 +627,8 @@ untouched: index −1 runs exactly the plain per-point code.
 **Height scale.** `set_prod_height_scale(s)` (Python and C++; default 1)
 scales every height of every distribution, h → s·h (bin edges scaled,
 probabilities kept), e.g. for the uncertainty of the atmosphere's density
-profile, common to all parents. Its gradient parameter `prod_height_scale` is
+profile, common to all parents; changing it re-uploads nothing (cheap in a
+fit loop). Its gradient parameter `prod_height_scale` is
 listed in `gradient_parameter_names` and selected like the Earth parameters
 (never by default); it acts in all production-height modes (grid and event
 lists, stored and weighted gradients, forward and reverse mode, CPU and GPU,

@@ -1707,6 +1707,18 @@ namespace opg {
         }
       }
 
+      // The kernels take the view by value: only its host copies change.
+      void set_prod_height_scale(double s, int param) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }
+        else {
+          for (auto& Dp : fDev) {
+            Dp->ph.scale       = s;
+            Dp->ph.scale_param = param;
+          }
+        }
+      }
+
       void set_grid_prod_heights(const std::vector<int>& dist, bool per_point) override
       {
         if constexpr (!supports_prod_height_v<Model>) { this->no_prod_height(); }

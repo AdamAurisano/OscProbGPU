@@ -382,6 +382,10 @@ namespace opg {
       }
       /// Height distributions and the atmosphere of the current Earth model.
       virtual void set_prod_heights(const ProdHeightTable&) { no_prod_height(); }
+      /// Common height scale and the position of its gradient parameter
+      /// (ProdHeightView::scale, scale_param) of the table already set: no
+      /// re-upload of the distributions.
+      virtual void set_prod_height_scale(double, int) { no_prod_height(); }
       /// Distribution of each grid point: dist[iC] (per_point false) or
       /// dist[iC * nE + iE] (per_point true), for the current grid.
       virtual void set_grid_prod_heights(const std::vector<int>&, bool) { no_prod_height(); }

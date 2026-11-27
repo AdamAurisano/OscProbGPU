@@ -481,6 +481,13 @@ namespace opg {
         fPH = t;
       }
 
+      void set_prod_height_scale(double s, int param) override
+      {
+        if constexpr (!supports_prod_height_v<Model>) this->no_prod_height();
+        fPH.scale       = s;
+        fPH.scale_param = param;
+      }
+
       void set_grid_prod_heights(const std::vector<int>& dist, bool per_point) override
       {
         if constexpr (!supports_prod_height_v<Model>) this->no_prod_height();

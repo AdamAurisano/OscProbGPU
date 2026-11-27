@@ -1129,7 +1129,7 @@ namespace opg {
         if (!(s > 0) || !std::isfinite(s))
           throw std::invalid_argument("set_prod_height_scale: the scale must be finite and > 0");
         fPH.scale = s;
-        if (fHavePH) fEngine->set_prod_heights(fPH);
+        if (fHavePH) fEngine->set_prod_height_scale(fPH.scale, fPH.scale_param);
       }
       double prod_height_scale() const { return fPH.scale; }
 
@@ -1350,7 +1350,7 @@ namespace opg {
             if (fGradIdx[k] == sidx) pos = int(k);
           if (pos != fPH.scale_param) {
             fPH.scale_param = pos;
-            if (fHavePH) fEngine->set_prod_heights(fPH);
+            if (fHavePH) fEngine->set_prod_height_scale(fPH.scale, fPH.scale_param);
           }
         }
       }
